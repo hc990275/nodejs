@@ -1,29 +1,38 @@
-const { execSync } = require('child_process');
+const { execSync, spawn } = require('child_process');
+const fs = require('fs');
 
-// 1. 自动获取 Katabump 或系统分配的端口
-// 如果都没有，随机生成一个 (10000-65000)
-const PORT = process.env.SERVER_PORT || process.env.PORT || Math.floor(Math.random() * (65000 - 10000 + 1)) + 10000;
+// 1. 自动获取 Lunes Host 或系统分配的端口
+// Lunes Host / Pterodactyl 通常使用 SERVER_PORT
+const PORT = process.env.SERVER_PORT || process.env.PORT || 3000;
 
-console.log(`\n=== [Kata-Node] 自动安装模式 ===`);
-console.log(`[目标端口] ${PORT}`);
+console.log(`\n=== [Kata-Node for Lunes] 启动引导 ===`);
+console.log(`[检测端口] ${PORT}`);
 
-try {
-  // 2. 构造命令：echo 端口 | bash <(curl ...)
-  // echo "${PORT}" 会自动回答脚本中的 "请输入端口" 提问
-  const installCmd = `echo "${PORT}" | bash <(curl -sL https://raw.githubusercontent.com/hc990275/kata-nodejs/main/install.sh)`;
+// 2. 检查是否已经安装过 (检查 start.sh 是否存在)
+if (fs.existsSync('./start.sh')) {
+    console.log('[状态] 检测到已安装，正在启动服务...');
+    // 直接执行 start.sh
+    try {
+        execSync('bash start.sh', { stdio: 'inherit' });
+    } catch (err) {
+        console.error('[错误] 服务启动失败，可能需要重新安装。');
+    }
+} else {
+    // 3. 初次安装逻辑
+    console.log('[状态] 未检测到配置文件，准备执行安装脚本...');
+    
+    try {
+        // 赋予 install.sh 执行权限
+        execSync('chmod +x install.sh', { stdio: 'inherit' });
 
-  console.log(`[执行操作] 正在拉取脚本并自动安装...`);
-  
-  // 3. 执行命令
-  // 关键修正：shell: '/bin/bash' 解决了 "Syntax error"
-  // 关键修正：stdio: 'inherit' 让我们可以看到脚本的输出
-  execSync(installCmd, { 
-    stdio: 'inherit', 
-    shell: '/bin/bash' 
-  });
+        // 执行本地 install.sh，并将端口作为参数传入
+        // 使用 spawn 或 execSync 均可，这里用 execSync 以便在日志中看到输出
+        execSync(`./install.sh "${PORT}"`, { 
+            stdio: 'inherit', 
+            shell: '/bin/bash' 
+        });
 
-} catch (error) {
-  // 注意：安装脚本最后会运行 npm start，这可能会导致 execSync 这里的代码看起来像"卡住"或报错，
-  // 但只要服务器跑起来了，这里的报错可以忽略。
-  console.log('[提示] 安装脚本执行结束或接管了进程。如果服务器已显示 Running，请忽略此消息。');
+    } catch (error) {
+        console.error('[注意] 安装脚本执行完成或已接管进程。');
+    }
 }
