@@ -21,10 +21,10 @@
 3. **获取代码**：在面板左侧导航栏进入 **[Files] (文件管理)**。
 4. **上传文件**：下载本仓库下的 `index.js` 和 `package.json` 两个核心文件，然后点击面板里的 `Upload` 按钮，将这两个文件上传至服务器主目录 (`/home/container`)。
 5. **设置启动指令及变量**：在左侧导航栏进入 **[Startup] (启动设置)** 页面，依据你的不同平台进行精准设置以确保 Node 不会执行错乱：
-   - **👉 对于 Lunes Host ([https://ctrl.lunes.host/](https://ctrl.lunes.host/)) (如 图1 所示)**：
+   - **👉 对于 Lunes Host ([https://ctrl.lunes.host/](https://ctrl.lunes.host/)) **：
      - 在页面上方的 **`STARTUP COMMAND`** 外壳启动命令处填写：`node index.js`
      - 在下方的 Variables (环境变量) 区域里找到 **`STARTUP COMMAND`** 这个变量框，同样填写：`node index.js`
-   - **👉 对于 KataBump ([https://dashboard.katabump.com/](https://dashboard.katabump.com/)) (如 图2 所示)**：
+   - **👉 对于 KataBump ([https://dashboard.katabump.com/](https://dashboard.katabump.com/)) **：
      - 确保页面上方的 **`Startup Command`** 显示为（或修改为）：`node /home/container/index.js`
      - 在下方的 Variables 区块中找到 **`JS FILE`** 框，并填写：`index.js`。（如果有 ADDITIONAL NODE PACKAGES 留空即可）
 6. **一键启动**：回到 **[Console] (控制台)**，点击 **Start(启动)**。脚本一旦检测到自己在支持的面板上，就会全自动加载静默模式，截获系统给你分配的安全端口，并且跳过多余的问卷调查，建立进程看护守护程序。
