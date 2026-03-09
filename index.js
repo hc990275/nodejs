@@ -10,9 +10,12 @@ const isLunes = !!process.env.P_SERVER_UUID;
 
 // 动态前缀探测 (用于区分 Katabump 和 Lunes Host)
 // Katabump 通常会注入 JS_FILE 变量，且 P_SERVER_HOSTNAME 包含 katabump
-const hostnameCheck = process.env.P_SERVER_HOSTNAME || "";
-const isKata = hostnameCheck.includes("katabump") || !!process.env.JS_FILE;
+const hostnameCheck = (process.env.P_SERVER_HOSTNAME || "").toLowerCase();
+const jsFileCheck = (process.env.JS_FILE || "").toLowerCase();
+const isKata = hostnameCheck.includes("katabump") || jsFileCheck.includes("index.js");
 const platformPrefix = isKata ? "kata" : "Lunes";
+
+console.log(`[DEBUG] 探测到平台: ${platformPrefix} (主机名: ${hostnameCheck}, JS文件: ${jsFileCheck})`);
 
 if (isLunes) {
     // ==========================================
