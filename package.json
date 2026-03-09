@@ -1,0 +1,14 @@
+{
+  "name": "kata-node-lunes-integrated",
+  "version": "4.0.0",
+  "description": "Kata-Node 与 Lunes Host 多平台融合的全自动 SingBox 部署核心",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.0"
+  },
+  "author": "hc990275",
+  "license": "MIT"
+}
