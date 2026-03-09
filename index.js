@@ -27,7 +27,7 @@ export REALITY_PORT="\${PORT}"
 
 # ================== 基础配置 ==================
 TUIC_NAME="Lunes-TUIC"
-REALITY_NAME="Lunes-Reality"
+REALITY_NAME="Lunes-vless"
 export FILE_PATH="\${PWD}/.lunes_cache"
 mkdir -p "\${FILE_PATH}"
 cd "\${FILE_PATH}"
@@ -154,14 +154,14 @@ while true; do
   fi
   sleep 15
 done
-\`;
+`;
 
     const runnerFile = 'lunes_sb_runner.sh';
     fs.writeFileSync(runnerFile, bashScript);
 
     try {
         // stdio: 'inherit' 让子进程完全继承当前外壳的输出，不干扰日志显示能力，完美符合 Lunes 设计！
-        execSync(`bash ${runnerFile}`, { stdio: 'inherit' });
+        execSync(`bash ${ runnerFile }`, { stdio: 'inherit' });
     } catch (error) {
         console.log("⚠️ 守护主服务终止结束，容器将触发退出循环重启。");
     }
@@ -172,17 +172,17 @@ done
     // ==========================================
     const PORT = process.env.SERVER_PORT || process.env.PORT || Math.floor(Math.random() * (65000 - 10000 + 1)) + 10000;
 
-    console.log(`\n=== [Kata-Node] 未检测到翼龙面板，进入标准服务器自动安装模式 ===`);
-    console.log(`[目标端口] ${PORT}`);
+    console.log(`\n === [Kata - Node] 未检测到翼龙面板，进入标准服务器自动安装模式 === `);
+    console.log(`[目标端口] ${ PORT } `);
 
     try {
-        const installCmd = `echo "${PORT}" | bash <(curl -sL https://raw.githubusercontent.com/hc990275/kata-nodejs/main/install.sh)`;
-        console.log(`[执行操作] 正在拉取基于远端的自动部署构建命令...`);
-        execSync(installCmd, {
-            stdio: 'inherit',
-            shell: '/bin/bash'
-        });
-    } catch (error) {
-        console.log('[提示] 远端安装脚本执行结束或成功接管了核心进程挂起。');
-    }
+        const installCmd = `echo "${PORT}" | bash <(curl -sL https://raw.githubusercontent.com/hc990275/kata-nodejs/main/install.sh | sed 's/tuic法国/kata-TUIC/g; s/vless法国/kata-vless/g')`;
+    console.log(`[执行操作] 正在拉取基于远端的自动部署构建命令...`);
+    execSync(installCmd, {
+        stdio: 'inherit',
+        shell: '/bin/bash'
+    });
+} catch (error) {
+    console.log('[提示] 远端安装脚本执行结束或成功接管了核心进程挂起。');
+}
 }
