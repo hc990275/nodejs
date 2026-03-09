@@ -1,33 +1,24 @@
 const { execSync } = require('child_process');
 const fs = require('fs');
 
-// ==========================================
-// 自动平台监测探测器
-// ==========================================
-// Lunes / Pterodactyl 翼龙面板总是会隐式注入 P_SERVER_UUID 等环境变量
-// Kata-Node 或者普通的宿主机/VPS则通常不会有此环境变量
-const isLunes = !!process.env.P_SERVER_UUID;
+/**
+ * Kata-Node & Lunes Host 统一自动部署脚本 (v4.1.0)
+ * 采用全新的 hc990275 统一命名规范，不再区分平台前缀。
+ * 强制执行 Scheme A (面板直连拉起流)，确保全自动零配置。
+ */
 
-// 动态前缀探测 (用于区分 Katabump 和 Lunes Host)
-// Katabump 通常会注入 JS_FILE 变量，且 P_SERVER_HOSTNAME 包含 katabump
-const hostnameCheck = (process.env.P_SERVER_HOSTNAME || "").toLowerCase();
-const jsFileCheck = (process.env.JS_FILE || "").toLowerCase();
-const isKata = hostnameCheck.includes("katabump") || jsFileCheck.includes("index.js");
-const platformPrefix = isKata ? "kata" : "Lunes";
+// Pterodactyl 环境变量探测 (用于捕捉分配端口)
+let PORT = process.env.SERVER_PORT || process.env.PORT || 8080;
+if (PORT === '-1') PORT = 8080;
 
-console.log(`[DEBUG] 探测到平台: ${platformPrefix} (主机名: ${hostnameCheck}, JS文件: ${jsFileCheck})`);
+console.log(`\n=== [hc990275-Node] 启动 Sing-Box 统一自动部署模式 ===`);
+console.log(`[工作侦听端口] ${PORT}`);
 
-if (isLunes) {
-    // ==========================================
-    // 方案 A: Lunes Host (翼龙面板无交互容器专用部署)
-    // ==========================================
-    let PORT = process.env.SERVER_PORT || process.env.PORT || 8080;
-    if (PORT === '-1') PORT = 8080;
+// 统一节点名称
+const TUIC_NAME = "hc990275-TUIC";
+const REALITY_NAME = "hc990275-vless";
 
-    console.log(`\n=== [Lunes-Node] 检测到翼龙面板特有环境变量，启动 Sing-Box 守护模式 ===`);
-    console.log(`[目标工作侦听端口] ${PORT}`);
-
-    const bashScript = `#!/bin/bash
+const bashScript = `#!/bin/bash
 set -e
 
 export PORT="${PORT}"
@@ -35,9 +26,9 @@ export TUIC_PORT="\${PORT}"
 export REALITY_PORT="\${PORT}"
 
 # ================== 基础配置 ==================
-TUIC_NAME="${platformPrefix}-TUIC"
-REALITY_NAME="${platformPrefix}-vless"
-export FILE_PATH="\${PWD}/.lunes_cache"
+TUIC_NAME="${TUIC_NAME}"
+REALITY_NAME="${REALITY_NAME}"
+export FILE_PATH="\${PWD}/.node_cache"
 mkdir -p "\${FILE_PATH}"
 cd "\${FILE_PATH}"
 
@@ -46,14 +37,13 @@ UUID_FILE="uuid.txt"
 if [ -f "\$UUID_FILE" ]; then
     UUID=\$(cat "\$UUID_FILE")
 else
-    # 尝试多种 UUID 生成方式防止面板权限不够
     UUID=\$(cat /proc/sys/kernel/random/uuid 2>/dev/null || node -e "console.log(require('crypto').randomUUID())")
     echo "\$UUID" > "\$UUID_FILE"
     chmod 600 "\$UUID_FILE" 2>/dev/null || true
 fi
 echo "🔹 [UUID] \$UUID"
 
-# ================== 下载 sing-box ==================
+# ================== 下载核心 ==================
 ARCH=\$(uname -m)
 case "\$ARCH" in
     arm*|aarch64) URL="https://arm64.ssss.nyc.mn/sb" ;;
@@ -80,7 +70,6 @@ PRIVATE_KEY=\$(grep "PrivateKey:" "\$KEY" | awk '{print \$2}')
 PUBLIC_KEY=\$(grep "PublicKey:" "\$KEY" | awk '{print \$2}')
 
 if ! command -v openssl >/dev/null; then
-  # 面板无 openssl 时回退到预置证书
   cat > "private.key" << 'KEYEOF'
 -----BEGIN EC PRIVATE KEY-----
 MHcCAQEEIM4792SEtPqIt1ywqTd/0bYidBqpYV/+siNnfBYsdUYsAoGCCqGSM49
@@ -132,7 +121,6 @@ CONF
 # ================== 启动 & 订阅 ==================
 ./"\$SB" run -c "config.json" &
 PID=\$!
-# 静默获取面板母鸡 IP
 IP=\$(curl -s --max-time 5 ipv4.ip.sb || echo "面板外网域名IP")
 
 urlencode() {
@@ -146,7 +134,7 @@ urlencode() {
 }
 
 echo -e "\n============================================="
-echo -e "🎉 面板节点配置完毕 (Sing-Box TUIC / Reality)"
+echo -e "🎉 节点全自动配置完毕 (Sing-Box TUIC / vless)"
 echo -e "============================================="
 echo "tuic://\${UUID}:admin@\${IP}:\${TUIC_PORT}?sni=www.bing.com&alpn=h3&congestion_control=bbr&allowInsecure=1#\$(urlencode "\$TUIC_NAME")" | tee "list.txt"
 echo "vless://\${UUID}@\${IP}:\${REALITY_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.nazhumi.com&fp=firefox&pbk=\${PUBLIC_KEY}&type=tcp#\$(urlencode "\$REALITY_NAME")" | tee -a "list.txt"
@@ -165,33 +153,11 @@ while true; do
 done
 `;
 
-    const runnerFile = 'lunes_sb_runner.sh';
-    fs.writeFileSync(runnerFile, bashScript);
+const runnerFile = 'sb_runner.sh';
+fs.writeFileSync(runnerFile, bashScript);
 
-    try {
-        // stdio: 'inherit' 让子进程完全继承当前外壳的输出，不干扰日志显示能力，完美符合 Lunes 设计！
-        execSync(`bash ${ runnerFile }`, { stdio: 'inherit' });
-    } catch (error) {
-        console.log("⚠️ 守护主服务终止结束，容器将触发退出循环重启。");
-    }
-
-} else {
-    // ==========================================
-    // 方案 B: Kata-Node / 普通云服务器 (交互安装模式对接)
-    // ==========================================
-    const PORT = process.env.SERVER_PORT || process.env.PORT || Math.floor(Math.random() * (65000 - 10000 + 1)) + 10000;
-
-    console.log(`\n === [Kata - Node] 未检测到翼龙面板，进入标准服务器自动安装模式 === `);
-    console.log(`[目标端口] ${ PORT } `);
-
-    try {
-        const installCmd = `echo "${PORT}" | bash <(curl -sL https://raw.githubusercontent.com/hc990275/kata-nodejs/main/install.sh | sed 's/tuic法国/${platformPrefix}-TUIC/g; s/vless法国/${platformPrefix}-vless/g')`;
-    console.log(`[执行操作] 正在拉取基于远端的自动部署构建命令...`);
-    execSync(installCmd, {
-        stdio: 'inherit',
-        shell: '/bin/bash'
-    });
+try {
+    execSync(`bash ${runnerFile}`, { stdio: 'inherit' });
 } catch (error) {
-    console.log('[提示] 远端安装脚本执行结束或成功接管了核心进程挂起。');
-}
+    console.log("⚠️ 守护主服务终止结束。");
 }
