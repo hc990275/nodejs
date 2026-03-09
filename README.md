@@ -97,6 +97,10 @@ npm install && npm start
 
 ## 📝 版本更新日志 (Changelog)
 
+### v4.0.2 (2026-03-09)
+* **fix**: 实现了基于 `P_SERVER_HOSTNAME` 的动态平台前缀检测。
+* **feat**: 彻底解决了 Katabump 与 Lunes Host 节点名称混淆的问题，现在脚本能自动识别运行平台并下发正确的 `kata-` 或 `Lunes-` 前缀。
+
 ### v4.0.1 (2026-03-09)
 * **fix**: 修复了 `Lunes` 环境下模板字符串反引号未闭合导致的 `Unexpected identifier 'bash'` 语法错误。
 * **feat**: 区分了不同宿主机环境的节点名称，现在 `Kata-Node` 环境下生成的节点名统一定义为 `kata-TUIC` 和 `kata-vless`，`Lunes` 为 `Lunes-TUIC` 和 `Lunes-vless`。

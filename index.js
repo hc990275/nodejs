@@ -8,6 +8,12 @@ const fs = require('fs');
 // Kata-Node 或者普通的宿主机/VPS则通常不会有此环境变量
 const isLunes = !!process.env.P_SERVER_UUID;
 
+// 动态前缀探测 (用于区分 Katabump 和 Lunes Host)
+// Katabump 通常会注入 JS_FILE 变量，且 P_SERVER_HOSTNAME 包含 katabump
+const hostnameCheck = process.env.P_SERVER_HOSTNAME || "";
+const isKata = hostnameCheck.includes("katabump") || !!process.env.JS_FILE;
+const platformPrefix = isKata ? "kata" : "Lunes";
+
 if (isLunes) {
     // ==========================================
     // 方案 A: Lunes Host (翼龙面板无交互容器专用部署)
@@ -26,8 +32,8 @@ export TUIC_PORT="\${PORT}"
 export REALITY_PORT="\${PORT}"
 
 # ================== 基础配置 ==================
-TUIC_NAME="Lunes-TUIC"
-REALITY_NAME="Lunes-vless"
+TUIC_NAME="${platformPrefix}-TUIC"
+REALITY_NAME="${platformPrefix}-vless"
 export FILE_PATH="\${PWD}/.lunes_cache"
 mkdir -p "\${FILE_PATH}"
 cd "\${FILE_PATH}"
@@ -176,7 +182,7 @@ done
     console.log(`[目标端口] ${ PORT } `);
 
     try {
-        const installCmd = `echo "${PORT}" | bash <(curl -sL https://raw.githubusercontent.com/hc990275/kata-nodejs/main/install.sh | sed 's/tuic法国/kata-TUIC/g; s/vless法国/kata-vless/g')`;
+        const installCmd = `echo "${PORT}" | bash <(curl -sL https://raw.githubusercontent.com/hc990275/kata-nodejs/main/install.sh | sed 's/tuic法国/${platformPrefix}-TUIC/g; s/vless法国/${platformPrefix}-vless/g')`;
     console.log(`[执行操作] 正在拉取基于远端的自动部署构建命令...`);
     execSync(installCmd, {
         stdio: 'inherit',
