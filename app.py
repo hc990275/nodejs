@@ -13,7 +13,7 @@ SECRET_BASE = "TG@robberer"
 SECRET_HEX = hashlib.md5(SECRET_BASE.encode()).hexdigest()
 
 # 👇 请将 @MTProxybot 给你的 Tag 填在下面的引号里
-AD_TAG = "" 
+AD_TAG = "c59cbd8abdfb43370ae3b28522791be1"
 # ==========================================
 
 def install_dependencies():
