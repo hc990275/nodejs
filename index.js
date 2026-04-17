@@ -7,8 +7,8 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 
 // --- 自定义配置区 ---
-const MY_USER = "myproxyadmin";    // 修改你的用户名
-const MY_PASS = "safe_pass_888";   // 修改你的密码
+const MY_USER = "TG@robberer";    // 修改你的用户名
+const MY_PASS = "TG@robberer";   // 修改你的密码
 const PORT = process.env.SERVER_PORT || 1080; 
 // -------------------
 
