@@ -1,0 +1,96 @@
+/**
+ * 翼龙面板专用：MTProto 终极版 (基于 mtg 核心引擎)
+ * 修复了 Go 语言在 Docker 容器下的 DNS 解析失败问题
+ */
+
+const { execSync, spawn } = require('child_process');
+const fs = require('fs');
+const crypto = require('crypto');
+const http = require('http');
+
+// ================= 配置区 =================
+const PORT = process.env.SERVER_PORT || 1080;
+// 你的专属标识，将用于生成混淆密钥
+const SECRET_BASE = "TG@robberer";
+// 伪装域名（TLS 混淆），更换为 bing.com 以避免 Cloudflare 的拦截机制
+const TLS_DOMAIN = "bing.com";
+// ==========================================
+
+// 1. 生成标准的 Fake-TLS 混淆密钥
+const randomKey = crypto.createHash('md5').update(SECRET_BASE).digest('hex');
+const domainHex = Buffer.from(TLS_DOMAIN).toString('hex');
+const SECRET = "ee" + randomKey + domainHex;
+
+// 2. 自动匹配系统架构并下载 mtg 核心引擎 (如果已有则跳过)
+const arch = process.arch === 'arm64' ? 'arm64' : 'amd64';
+const MTG_VER = '2.1.1'; 
+const MTG_URL = `https://github.com/9seconds/mtg/releases/download/v${MTG_VER}/mtg-${MTG_VER}-linux-${arch}.tar.gz`;
+const FOLDER_NAME = `mtg-${MTG_VER}-linux-${arch}`;
+
+console.log("----------------------------------------------------");
+console.log("开始环境预检...");
+
+if (!fs.existsSync('./mtg_core')) {
+    console.log("📦 正在拉取稳定版 MTProto 核心二进制引擎...");
+    try {
+        execSync(`wget -qO mtg.tar.gz ${MTG_URL}`);
+        execSync(`tar -xzf mtg.tar.gz`);
+        execSync(`mv ${FOLDER_NAME}/mtg ./mtg_core`);
+        execSync(`chmod +x ./mtg_core`);
+        execSync(`rm -rf mtg.tar.gz ${FOLDER_NAME}`);
+        console.log("✅ 引擎部署成功！");
+    } catch (err) {
+        console.error("❌ 部署失败:", err.message);
+        process.exit(1);
+    }
+} else {
+    console.log("✅ 核心引擎已存在，跳过下载步骤。");
+}
+
+// 3. 动态生成 mtg v2 引擎所需的配置文件
+const tomlConfig = `
+secret = "${SECRET}"
+bind-to = "0.0.0.0:${PORT}"
+`;
+fs.writeFileSync('./mtg.toml', tomlConfig.trim());
+
+// 4. 打印包含连接信息的控制台面板
+function printInfo(port, secret, ip) {
+    const link = `https://t.me/proxy?server=${ip}&port=${port}&secret=${secret}`;
+    console.log("\n\x1b[32m====================================================\x1b[0m");
+    console.log("\x1b[36m🛡️  MTProto 终极引擎已成功启动\x1b[0m");
+    console.log("\x1b[33m🔗 你的专属直连链接 (点击或复制即可):\x1b[0m");
+    console.log("\x1b[1m\x1b[34m" + link + "\x1b[0m");
+    console.log("\x1b[32m----------------------------------------------------\x1b[0m");
+    console.log(`📍 服务器 IP: ${ip} | 🔢 面板端口: ${port}`);
+    console.log(`🔑 混淆密钥:  ${secret}`);
+    console.log(`🌐 伪装域名:  ${TLS_DOMAIN}`);
+    console.log("\x1b[32m====================================================\x1b[0m\n");
+}
+
+// 5. 启动代理引擎并将流量接管
+http.get({ host: 'api.ipify.org', port: 80, path: '/' }, (resp) => {
+    let ip = '';
+    resp.on('data', chunk => ip += chunk);
+    resp.on('end', () => {
+        printInfo(PORT, SECRET, ip.trim());
+        
+        console.log("🚀 正在将系统流量托管至核心引擎...");
+        
+        // 【核心修复】强行指定 GODEBUG=netdns=cgo 解决 Docker 容器下的 DNS 解析报错
+        const mtgProcess = spawn('./mtg_core', ['run', './mtg.toml'], {
+            stdio: 'inherit',
+            env: { ...process.env, GODEBUG: 'netdns=cgo' }
+        });
+
+        mtgProcess.on('close', (code) => {
+            console.log(`\x1b[31m引擎意外退出，退出码 ${code}\x1b[0m`);
+        });
+    });
+}).on('error', () => {
+    console.log("无法获取外网 IP，尝试以静默模式直接启动引擎...");
+    spawn('./mtg_core', ['run', './mtg.toml'], { 
+        stdio: 'inherit',
+        env: { ...process.env, GODEBUG: 'netdns=cgo' } 
+    });
+});
