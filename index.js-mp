@@ -1,97 +1,96 @@
 /**
- * 翼龙面板专用：MTProto 代理（支持赞助频道）
- * 配置说明：
- * 1. 运行此脚本获取 Secret。
- * 2. 去 @MTProxybot 注册并获取 Tag。
- * 3. 将 Tag 填回下方的 PROXY_TAG 处，重启即可。
+ * 翼龙面板专用：MTProto 终极版 (基于 mtg 核心引擎)
+ * 修复了 Go 语言在 Docker 容器下的 DNS 解析失败问题
  */
 
-const { execSync } = require('child_process');
+const { execSync, spawn } = require('child_process');
 const fs = require('fs');
 const crypto = require('crypto');
-
-// --- 配置区 ---
-const PORT = process.env.SERVER_PORT || 1080; 
-const TLS_DOMAIN = "www.google.com"; // 伪装域名
-
-// 重要：从 @MTProxybot 获取 Tag 后填在这里
-// 如果不填写，代理可以正常使用，但不会显示赞助频道
-const PROXY_TAG = ""; 
-// --------------
-
-// 1. 环境检查与依赖安装
-if (!fs.existsSync('./node_modules/mtprotoproxy')) {
-    console.log('----------------------------------------------------');
-    console.log('正在安装 MTProto 核心组件 (mtprotoproxy)...');
-    try {
-        execSync('npm install mtprotoproxy --no-audit --no-fund --quiet');
-        console.log('✅ 安装成功！');
-    } catch (err) {
-        console.error('❌ 安装失败，请检查网络。');
-        process.exit(1);
-    }
-}
-
-const MTProtoProxy = require('mtprotoproxy');
 const http = require('http');
 
-// 2. 生成固定的 Secret (防止重启后 Secret 变化导致机器人失效)
-// 我们将 Secret 保存在本地文件中，确保持久化
-let secret;
-const SECRET_FILE = './.proxy_secret';
-if (fs.existsSync(SECRET_FILE)) {
-    secret = fs.readFileSync(SECRET_FILE, 'utf8');
+// ================= 配置区 =================
+const PORT = process.env.SERVER_PORT || 1080;
+// 你的专属标识，将用于生成混淆密钥
+const SECRET_BASE = "TG@robberer";
+// 伪装域名（TLS 混淆），更换为 bing.com 以避免 Cloudflare 的拦截机制
+const TLS_DOMAIN = "bing.com";
+// ==========================================
+
+// 1. 生成标准的 Fake-TLS 混淆密钥
+const randomKey = crypto.createHash('md5').update(SECRET_BASE).digest('hex');
+const domainHex = Buffer.from(TLS_DOMAIN).toString('hex');
+const SECRET = "ee" + randomKey + domainHex;
+
+// 2. 自动匹配系统架构并下载 mtg 核心引擎 (如果已有则跳过)
+const arch = process.arch === 'arm64' ? 'arm64' : 'amd64';
+const MTG_VER = '2.1.1'; 
+const MTG_URL = `https://github.com/9seconds/mtg/releases/download/v${MTG_VER}/mtg-${MTG_VER}-linux-${arch}.tar.gz`;
+const FOLDER_NAME = `mtg-${MTG_VER}-linux-${arch}`;
+
+console.log("----------------------------------------------------");
+console.log("开始环境预检...");
+
+if (!fs.existsSync('./mtg_core')) {
+    console.log("📦 正在拉取稳定版 MTProto 核心二进制引擎...");
+    try {
+        execSync(`wget -qO mtg.tar.gz ${MTG_URL}`);
+        execSync(`tar -xzf mtg.tar.gz`);
+        execSync(`mv ${FOLDER_NAME}/mtg ./mtg_core`);
+        execSync(`chmod +x ./mtg_core`);
+        execSync(`rm -rf mtg.tar.gz ${FOLDER_NAME}`);
+        console.log("✅ 引擎部署成功！");
+    } catch (err) {
+        console.error("❌ 部署失败:", err.message);
+        process.exit(1);
+    }
 } else {
-    secret = crypto.randomBytes(16).toString('hex');
-    fs.writeFileSync(SECRET_FILE, secret);
+    console.log("✅ 核心引擎已存在，跳过下载步骤。");
 }
 
-/**
- * 打印直连链接和注册信息
- */
-function displayInfo(port, sec, domain, tag) {
-    http.get({ host: 'api.ipify.org', port: 80, path: '/' }, (resp) => {
-        resp.on('data', (ip) => {
-            const publicIP = ip.toString();
-            const domainHex = Buffer.from(domain).toString('hex');
-            
-            // 生成带 TLS 伪装的前缀链接 (ee + secret + domainHex)
-            const finalSecret = "ee" + sec + domainHex;
-            const tgLink = `https://t.me/proxy?server=${publicIP}&port=${port}&secret=${finalSecret}`;
-            
-            console.log("\n\x1b[32m====================================================\x1b[0m");
-            console.log("\x1b[36m🛡️  MTProto 代理已启动\x1b[0m");
-            console.log("\x1b[33m🔗 你的 Telegram 直连链接:\x1b[0m");
-            console.log("\x1b[1m\x1b[34m" + tgLink + "\x1b[0m");
-            console.log("\x1b[32m----------------------------------------------------\x1b[0m");
-            console.log("\x1b[35m📝 注册赞助频道所需信息 (@MTProxybot):\x1b[0m");
-            console.log(`📍 IP: ${publicIP}`);
-            console.log(`🔢 Port: ${port}`);
-            console.log(`🔑 Secret (原始): ${sec}`);
-            console.log(`🏷️  当前已设 Tag: ${tag || "未设置"}`);
-            console.log("\x1b[32m====================================================\x1b[0m\n");
+// 3. 动态生成 mtg v2 引擎所需的配置文件
+const tomlConfig = `
+secret = "${SECRET}"
+bind-to = "0.0.0.0:${PORT}"
+`;
+fs.writeFileSync('./mtg.toml', tomlConfig.trim());
+
+// 4. 打印包含连接信息的控制台面板
+function printInfo(port, secret, ip) {
+    const link = `https://t.me/proxy?server=${ip}&port=${port}&secret=${secret}`;
+    console.log("\n\x1b[32m====================================================\x1b[0m");
+    console.log("\x1b[36m🛡️  MTProto 终极引擎已成功启动\x1b[0m");
+    console.log("\x1b[33m🔗 你的专属直连链接 (点击或复制即可):\x1b[0m");
+    console.log("\x1b[1m\x1b[34m" + link + "\x1b[0m");
+    console.log("\x1b[32m----------------------------------------------------\x1b[0m");
+    console.log(`📍 服务器 IP: ${ip} | 🔢 面板端口: ${port}`);
+    console.log(`🔑 混淆密钥:  ${secret}`);
+    console.log(`🌐 伪装域名:  ${TLS_DOMAIN}`);
+    console.log("\x1b[32m====================================================\x1b[0m\n");
+}
+
+// 5. 启动代理引擎并将流量接管
+http.get({ host: 'api.ipify.org', port: 80, path: '/' }, (resp) => {
+    let ip = '';
+    resp.on('data', chunk => ip += chunk);
+    resp.on('end', () => {
+        printInfo(PORT, SECRET, ip.trim());
+        
+        console.log("🚀 正在将系统流量托管至核心引擎...");
+        
+        // 【核心修复】强行指定 GODEBUG=netdns=cgo 解决 Docker 容器下的 DNS 解析报错
+        const mtgProcess = spawn('./mtg_core', ['run', './mtg.toml'], {
+            stdio: 'inherit',
+            env: { ...process.env, GODEBUG: 'netdns=cgo' }
         });
-    }).on('error', () => {
-        console.log(`\n[警告] 无法获取 IP，请手动检查面板 IP。`);
+
+        mtgProcess.on('close', (code) => {
+            console.log(`\x1b[31m引擎意外退出，退出码 ${code}\x1b[0m`);
+        });
     });
-}
-
-// 3. 运行代理服务器
-const config = {
-    port: PORT,
-    secret: secret,
-    tls: TLS_DOMAIN
-};
-
-// 如果填了 Tag 则加入配置
-if (PROXY_TAG && PROXY_TAG.length > 0) {
-    config.tag = PROXY_TAG;
-}
-
-const proxy = new MTProtoProxy(config);
-
-proxy.run().then(() => {
-    displayInfo(PORT, secret, TLS_DOMAIN, PROXY_TAG);
-}).catch(err => {
-    console.error("启动失败: " + err.message);
+}).on('error', () => {
+    console.log("无法获取外网 IP，尝试以静默模式直接启动引擎...");
+    spawn('./mtg_core', ['run', './mtg.toml'], { 
+        stdio: 'inherit',
+        env: { ...process.env, GODEBUG: 'netdns=cgo' } 
+    });
 });
