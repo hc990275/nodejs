@@ -14,6 +14,17 @@ const ARGO_TOKEN = process.env.ARGO_TOKEN || "";
 const ARGO_DOMAIN = process.env.ARGO_DOMAIN || "";
 const OPTIMIZED_DOMAIN = process.env.OPTIMIZED_DOMAIN || "";
 
+// 多节点集群/异地节点拓展支持 (支持 JSON 数组字符串注入)
+let extraNodesConfig = [];
+try {
+    if (process.env.EXTRA_NODES && process.env.EXTRA_NODES.trim() !== "") {
+        extraNodesConfig = JSON.parse(process.env.EXTRA_NODES);
+        console.log(`[Cluster] 已成功载入 ${extraNodesConfig.length} 个异地扩展集群节点`);
+    }
+} catch (e) {
+    console.warn("[Cluster] 外部集群节点配置解析异常:", e.message);
+}
+
 const PORT_TUNNEL = 8001;
 const INTERNAL_VMESS_PORT = 10011;
 const INTERNAL_VLESS_PORT = 10012;
@@ -31,10 +42,46 @@ let singboxProcess = null;
 let isReloading = false;
 let isTunnelAvailable = Boolean(ARGO_TOKEN && ARGO_TOKEN.trim() !== "" && ARGO_DOMAIN && ARGO_DOMAIN.trim() !== "");
 
-const activeSessions = new Map();
+// 用户会话与管理员独立隔离会话存储
+const activeSessions = new Map();       // user session: token -> username
+const adminSessions = new Map();        // admin session: token -> expireTime
 
-// ==================== 2. 用户数据库存储与权限核验 ====================
+// 节点在线活跃状态感知存储: uuid -> { activeConnections: number, lastSeenAt: number }
+const userActivityMap = new Map();
+
+function getUserActivity(uuid) {
+    if (!userActivityMap.has(uuid)) {
+        userActivityMap.set(uuid, { activeConnections: 0, lastSeenAt: 0 });
+    }
+    return userActivityMap.get(uuid);
+}
+
+function formatRelativeTime(ts) {
+    if (!ts || ts <= 0) return "从未在线";
+    const diff = Date.now() - ts;
+    if (diff < 10000) return "刚刚在线";
+    if (diff < 60000) return `${Math.floor(diff / 1000)} 秒前`;
+    if (diff < 3600000) return `${Math.floor(diff / 60000)} 分钟前`;
+    if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时前`;
+    return `${Math.floor(diff / 86400000)} 天前`;
+}
+
+// ==================== 2. 异步非阻塞写锁队列与用户存储 ====================
 let usersDatabase = [];
+
+// 全局异步文件写锁队列，彻底防止并发写入冲突
+let fileWriteQueue = Promise.resolve();
+
+function safeWriteFileAsync(filePath, content) {
+    fileWriteQueue = fileWriteQueue.then(async () => {
+        try {
+            await fs.promises.writeFile(filePath, content, "utf8");
+        } catch (err) {
+            console.error(`[FS-Async] 写入文件失败 (${filePath}):`, err.message);
+        }
+    });
+    return fileWriteQueue;
+}
 
 function hashPassword(password) {
     if (!password) return "";
@@ -45,9 +92,12 @@ function hashPassword(password) {
 function loadUsers() {
     if (fs.existsSync(USERS_FILE)) {
         try {
-            usersDatabase = JSON.parse(fs.readFileSync(USERS_FILE, "utf8"));
-            console.log(`[Database] 数据载入成功，当前总注册用户: ${usersDatabase.length}`);
-            return;
+            const raw = fs.readFileSync(USERS_FILE, "utf8").trim();
+            if (raw.length > 0) {
+                usersDatabase = JSON.parse(raw);
+                console.log(`[Database] 数据载入成功，当前总注册用户: ${usersDatabase.length}`);
+                return;
+            }
         } catch (err) {
             console.error("[Database] 数据库读取异常，重置存储:", err.message);
         }
@@ -57,11 +107,7 @@ function loadUsers() {
 }
 
 function saveUsers() {
-    try {
-        fs.writeFileSync(USERS_FILE, JSON.stringify(usersDatabase, null, 2), "utf8");
-    } catch (err) {
-        console.error("[Database] 保存用户数据失败:", err.message);
-    }
+    safeWriteFileAsync(USERS_FILE, JSON.stringify(usersDatabase, null, 2));
 }
 
 function isUserInvalid(user) {
@@ -131,13 +177,30 @@ function generateSingboxConfig() {
         ]
     };
 
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), "utf8");
+    safeWriteFileAsync(CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
 function killPortOccupants() {
     try {
-        execSync(`fuser -k -9 ${INTERNAL_VMESS_PORT}/tcp ${INTERNAL_VLESS_PORT}/tcp ${INTERNAL_TROJAN_PORT}/tcp 2>/dev/null || true`);
-    } catch (e) {}
+        if (process.platform === "win32") {
+            // Windows 环境下查杀端口兼容
+            [INTERNAL_VMESS_PORT, INTERNAL_VLESS_PORT, INTERNAL_TROJAN_PORT].forEach((port) => {
+                try {
+                    const out = execSync(`netstat -ano | findstr :${port}`).toString();
+                    const lines = out.split("\r\n");
+                    for (const line of lines) {
+                        const parts = line.trim().split(/\s+/);
+                        if (parts.length >= 5 && parts[1].endsWith(`:${port}`)) {
+                            const pid = parts[parts.length - 1];
+                            if (pid && pid !== "0") execSync(`taskkill /F /PID ${pid} 2>nul`);
+                        }
+                    }
+                } catch (e) {}
+            });
+        } else {
+            execSync(`fuser -k -9 ${INTERNAL_VMESS_PORT}/tcp ${INTERNAL_VLESS_PORT}/tcp ${INTERNAL_TROJAN_PORT}/tcp 2>/dev/null || true`);
+        }
+    } catch (e) { }
 }
 
 function safeReloadSingbox() {
@@ -150,7 +213,7 @@ function safeReloadSingbox() {
         try {
             singboxProcess.removeAllListeners();
             singboxProcess.kill("SIGKILL");
-        } catch (e) {}
+        } catch (e) { }
         singboxProcess = null;
     }
 
@@ -183,7 +246,7 @@ function initSingboxCore() {
             safeReloadSingbox();
         });
     } else {
-        fs.chmodSync(SINGBOX_BIN, "755");
+        try { fs.chmodSync(SINGBOX_BIN, "755"); } catch (e) {}
         safeReloadSingbox();
     }
 }
@@ -204,12 +267,12 @@ function initAndStartCloudflared() {
         const downloadCmd = `curl -sSL -o "${CLOUDFLARED_BIN}" "https://github.com/cloudflare/cloudflared/releases/latest/download/${binName}" && chmod +x "${CLOUDFLARED_BIN}"`;
         exec(downloadCmd, start);
     } else {
-        fs.chmodSync(CLOUDFLARED_BIN, "755");
+        try { fs.chmodSync(CLOUDFLARED_BIN, "755"); } catch (e) {}
         start();
     }
 }
 
-// ==================== 4. 辅助函数与节点构建 ====================
+// ==================== 4. 辅助函数、多节点与订阅构建 ====================
 function formatBytes(bytes) {
     if (!bytes || bytes <= 0) return "0 B";
     const k = 1024;
@@ -239,6 +302,18 @@ function parseBytesToInput(bytes) {
     return { val: (bytes / mb).toFixed(2), unit: "MB" };
 }
 
+function formatExpireDate(expireTime) {
+    if (!expireTime || isNaN(expireTime) || Number(expireTime) <= 0) return "永久有效";
+    const d = new Date(Number(expireTime));
+    if (isNaN(d.getTime())) return "永久有效";
+    try {
+        return d.toISOString().split("T")[0];
+    } catch (e) {
+        return "永久有效";
+    }
+}
+
+// 提取前台普通用户 Session
 function getSessionUser(req) {
     const cookieHeader = req.headers.cookie || "";
     const match = cookieHeader.match(/session_token=([a-zA-Z0-9]+)/);
@@ -248,34 +323,314 @@ function getSessionUser(req) {
     return usersDatabase.find((u) => u.username === username) || null;
 }
 
-function getNodesForUser(user) {
+// 验证管理后台专属认证 (Cookie 隔离优先，兼容 Query Token)
+function checkAdminAuth(req, query) {
+    const cookieHeader = req.headers.cookie || "";
+    const match = cookieHeader.match(/admin_session_token=([a-zA-Z0-9]+)/);
+    if (match) {
+        const expire = adminSessions.get(match[1]);
+        if (expire && expire > Date.now()) {
+            return true;
+        }
+        if (expire) adminSessions.delete(match[1]);
+    }
+    // 兼容历史 URL ?token=...
+    if (query && query.get("token") === ADMIN_TOKEN) {
+        return true;
+    }
+    return false;
+}
+
+// 生成结构化节点池 (支持多节点集群与异地节点)
+function getStructuredNodesForUser(user) {
     const uuid = user.uuid;
     const nameSuffix = `-${user.username}`;
-
-    const vlessPath = encodeURIComponent(`/vless/${uuid}`);
+    const vlessPath = `/vless/${uuid}`;
     const vmessPath = `/vmess/${uuid}`;
-    const trojanPath = encodeURIComponent(`/trojan/${uuid}`);
+    const trojanPath = `/trojan/${uuid}`;
 
-    const directVless = `vless://${uuid}@${DIRECT_IP}:${SERVER_PORT}?type=ws&security=none&path=${vlessPath}#直连-VLESS${nameSuffix}`;
-    const directVmess = "vmess://" + Buffer.from(JSON.stringify({
-        v: "2", ps: `直连-VMess${nameSuffix}`, add: DIRECT_IP, port: String(SERVER_PORT),
-        id: uuid, aid: "0", net: "ws", type: "none", host: DIRECT_IP, path: vmessPath, tls: ""
-    })).toString("base64");
-    const directTrojan = `trojan://${uuid}@${DIRECT_IP}:${SERVER_PORT}?security=none&type=ws&path=${trojanPath}#直连-Trojan${nameSuffix}`;
+    const nodes = [];
 
-    const list = [directVless, directVmess, directTrojan];
+    // 1. 直连节点 (VLESS / VMess / Trojan)
+    nodes.push({
+        name: `直连-VLESS${nameSuffix}`,
+        type: "vless",
+        server: DIRECT_IP,
+        port: SERVER_PORT,
+        uuid: uuid,
+        tls: false,
+        network: "ws",
+        wsPath: vlessPath,
+        wsHeaders: { Host: DIRECT_IP }
+    });
 
+    nodes.push({
+        name: `直连-VMess${nameSuffix}`,
+        type: "vmess",
+        server: DIRECT_IP,
+        port: SERVER_PORT,
+        uuid: uuid,
+        alterId: 0,
+        cipher: "auto",
+        tls: false,
+        network: "ws",
+        wsPath: vmessPath,
+        wsHeaders: { Host: DIRECT_IP }
+    });
+
+    nodes.push({
+        name: `直连-Trojan${nameSuffix}`,
+        type: "trojan",
+        server: DIRECT_IP,
+        port: SERVER_PORT,
+        password: uuid,
+        tls: false,
+        network: "ws",
+        wsPath: trojanPath,
+        wsHeaders: { Host: DIRECT_IP }
+    });
+
+    // 2. Argo 优选穿透节点
     if (isTunnelAvailable) {
         const optAddress = OPTIMIZED_DOMAIN || ARGO_DOMAIN;
-        list.push(`vless://${uuid}@${optAddress}:443?type=ws&security=tls&sni=${ARGO_DOMAIN}&host=${ARGO_DOMAIN}&path=${vlessPath}#优选-VLESS${nameSuffix}`);
-        list.push("vmess://" + Buffer.from(JSON.stringify({
-            v: "2", ps: `优选-VMess${nameSuffix}`, add: optAddress, port: "443",
-            id: uuid, aid: "0", net: "ws", type: "none", host: ARGO_DOMAIN, path: vmessPath, tls: "tls", sni: ARGO_DOMAIN
-        })).toString("base64"));
-        list.push(`trojan://${uuid}@${optAddress}:443?security=tls&sni=${ARGO_DOMAIN}&type=ws&host=${ARGO_DOMAIN}&path=${trojanPath}#优选-Trojan${nameSuffix}`);
+        nodes.push({
+            name: `优选-VLESS${nameSuffix}`,
+            type: "vless",
+            server: optAddress,
+            port: 443,
+            uuid: uuid,
+            tls: true,
+            sni: ARGO_DOMAIN,
+            network: "ws",
+            wsPath: vlessPath,
+            wsHeaders: { Host: ARGO_DOMAIN }
+        });
+
+        nodes.push({
+            name: `优选-VMess${nameSuffix}`,
+            type: "vmess",
+            server: optAddress,
+            port: 443,
+            uuid: uuid,
+            alterId: 0,
+            cipher: "auto",
+            tls: true,
+            sni: ARGO_DOMAIN,
+            network: "ws",
+            wsPath: vmessPath,
+            wsHeaders: { Host: ARGO_DOMAIN }
+        });
+
+        nodes.push({
+            name: `优选-Trojan${nameSuffix}`,
+            type: "trojan",
+            server: optAddress,
+            port: 443,
+            password: uuid,
+            tls: true,
+            sni: ARGO_DOMAIN,
+            network: "ws",
+            wsPath: trojanPath,
+            wsHeaders: { Host: ARGO_DOMAIN }
+        });
     }
 
-    return Buffer.from(list.join("\n")).toString("base64");
+    // 3. 动态扩展集群节点 (从 EXTRA_NODES 配置注入)
+    if (Array.isArray(extraNodesConfig) && extraNodesConfig.length > 0) {
+        extraNodesConfig.forEach((ext, idx) => {
+            const extName = `${ext.name || `集群节点-${idx + 1}`}${nameSuffix}`;
+            const extType = String(ext.type || "vless").toLowerCase();
+            const extServer = ext.server || ext.address || DIRECT_IP;
+            const extPort = parseInt(ext.port || 443, 10);
+            const extTls = ext.tls !== undefined ? Boolean(ext.tls) : true;
+            const extSni = ext.sni || ext.host || extServer;
+            const extPath = ext.path ? ext.path.replace("{uuid}", uuid) : `/vless/${uuid}`;
+
+            nodes.push({
+                name: extName,
+                type: extType,
+                server: extServer,
+                port: extPort,
+                uuid: uuid,
+                password: uuid,
+                alterId: 0,
+                cipher: "auto",
+                tls: extTls,
+                sni: extSni,
+                network: ext.network || "ws",
+                wsPath: extPath,
+                wsHeaders: { Host: ext.host || extSni }
+            });
+        });
+    }
+
+    return nodes;
+}
+
+// 生成通用 Base64 订阅链接列表 (V2RayN / Clash 等单链接)
+function getNodesForUser(user) {
+    const rawNodes = getStructuredNodesForUser(user);
+    const linkList = [];
+
+    for (const n of rawNodes) {
+        if (n.type === "vless") {
+            const tlsStr = n.tls ? "security=tls&" : "security=none&";
+            const sniStr = n.sni ? `sni=${n.sni}&` : "";
+            const hostStr = n.wsHeaders && n.wsHeaders.Host ? `host=${n.wsHeaders.Host}&` : "";
+            const encPath = encodeURIComponent(n.wsPath);
+            linkList.push(`vless://${n.uuid}@${n.server}:${n.port}?type=ws&${tlsStr}${sniStr}${hostStr}path=${encPath}#${n.name}`);
+        } else if (n.type === "vmess") {
+            const vmessObj = {
+                v: "2",
+                ps: n.name,
+                add: n.server,
+                port: String(n.port),
+                id: n.uuid,
+                aid: "0",
+                net: "ws",
+                type: "none",
+                host: (n.wsHeaders && n.wsHeaders.Host) || n.server,
+                path: n.wsPath,
+                tls: n.tls ? "tls" : "",
+                sni: n.sni || ""
+            };
+            linkList.push("vmess://" + Buffer.from(JSON.stringify(vmessObj)).toString("base64"));
+        } else if (n.type === "trojan") {
+            const tlsStr = n.tls ? "security=tls&" : "security=none&";
+            const sniStr = n.sni ? `sni=${n.sni}&` : "";
+            const hostStr = n.wsHeaders && n.wsHeaders.Host ? `host=${n.wsHeaders.Host}&` : "";
+            const encPath = encodeURIComponent(n.wsPath);
+            linkList.push(`trojan://${n.password}@${n.server}:${n.port}?${tlsStr}${sniStr}${hostStr}type=ws&path=${encPath}#${n.name}`);
+        }
+    }
+
+    return Buffer.from(linkList.join("\n")).toString("base64");
+}
+
+// 自动生成符合 Clash Meta (Mihomo) 规范的标准 YAML 配置
+function generateClashConfig(user) {
+    const nodes = getStructuredNodesForUser(user);
+
+    let proxiesYaml = "";
+    const proxyNames = [];
+
+    for (const n of nodes) {
+        proxyNames.push(n.name);
+        if (n.type === "vless") {
+            proxiesYaml += `  - name: "${n.name}"\n`;
+            proxiesYaml += `    type: vless\n`;
+            proxiesYaml += `    server: ${n.server}\n`;
+            proxiesYaml += `    port: ${n.port}\n`;
+            proxiesYaml += `    uuid: ${n.uuid}\n`;
+            proxiesYaml += `    udp: true\n`;
+            proxiesYaml += `    tls: ${n.tls}\n`;
+            if (n.sni) proxiesYaml += `    servername: ${n.sni}\n`;
+            proxiesYaml += `    network: ws\n`;
+            proxiesYaml += `    ws-opts:\n`;
+            proxiesYaml += `      path: "${n.wsPath}"\n`;
+            if (n.wsHeaders && n.wsHeaders.Host) {
+                proxiesYaml += `      headers:\n`;
+                proxiesYaml += `        Host: ${n.wsHeaders.Host}\n`;
+            }
+        } else if (n.type === "vmess") {
+            proxiesYaml += `  - name: "${n.name}"\n`;
+            proxiesYaml += `    type: vmess\n`;
+            proxiesYaml += `    server: ${n.server}\n`;
+            proxiesYaml += `    port: ${n.port}\n`;
+            proxiesYaml += `    uuid: ${n.uuid}\n`;
+            proxiesYaml += `    alterId: 0\n`;
+            proxiesYaml += `    cipher: auto\n`;
+            proxiesYaml += `    udp: true\n`;
+            proxiesYaml += `    tls: ${n.tls}\n`;
+            if (n.sni) proxiesYaml += `    servername: ${n.sni}\n`;
+            proxiesYaml += `    network: ws\n`;
+            proxiesYaml += `    ws-opts:\n`;
+            proxiesYaml += `      path: "${n.wsPath}"\n`;
+            if (n.wsHeaders && n.wsHeaders.Host) {
+                proxiesYaml += `      headers:\n`;
+                proxiesYaml += `        Host: ${n.wsHeaders.Host}\n`;
+            }
+        } else if (n.type === "trojan") {
+            proxiesYaml += `  - name: "${n.name}"\n`;
+            proxiesYaml += `    type: trojan\n`;
+            proxiesYaml += `    server: ${n.server}\n`;
+            proxiesYaml += `    port: ${n.port}\n`;
+            proxiesYaml += `    password: ${n.password}\n`;
+            proxiesYaml += `    udp: true\n`;
+            proxiesYaml += `    tls: ${n.tls}\n`;
+            if (n.sni) proxiesYaml += `    sni: ${n.sni}\n`;
+            proxiesYaml += `    network: ws\n`;
+            proxiesYaml += `    ws-opts:\n`;
+            proxiesYaml += `      path: "${n.wsPath}"\n`;
+            if (n.wsHeaders && n.wsHeaders.Host) {
+                proxiesYaml += `      headers:\n`;
+                proxiesYaml += `        Host: ${n.wsHeaders.Host}\n`;
+            }
+        }
+    }
+
+    const proxyNameListStr = proxyNames.map((name) => `      - "${name}"`).join("\n");
+
+    return `port: 7890
+socks-port: 7891
+mixed-port: 7892
+allow-lan: false
+mode: rule
+log-level: info
+ipv6: false
+external-controller: 127.0.0.1:9090
+
+dns:
+  enable: true
+  listen: 0.0.0.0:1053
+  ipv6: false
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+  fallback:
+    - 1.1.1.1
+    - 8.8.8.8
+
+proxies:
+${proxiesYaml}
+
+proxy-groups:
+  - name: "🚀 节点选择"
+    type: select
+    proxies:
+      - "♻️ 自动优选"
+      - "⚡ 故障转移"
+${proxyNameListStr}
+      - DIRECT
+
+  - name: "♻️ 自动优选"
+    type: url-test
+    url: http://cp.cloudflare.com/generate_204
+    interval: 300
+    tolerance: 50
+    proxies:
+${proxyNameListStr}
+
+  - name: "⚡ 故障转移"
+    type: fallback
+    url: http://cp.cloudflare.com/generate_204
+    interval: 300
+    proxies:
+${proxyNameListStr}
+
+  - name: "🐟 漏网之鱼"
+    type: select
+    proxies:
+      - "🚀 节点选择"
+      - DIRECT
+
+rules:
+  - GEOIP,LAN,DIRECT,no-resolve
+  - GEOIP,CN,DIRECT,no-resolve
+  - MATCH,🐟 漏网之鱼
+`;
 }
 
 // ==================== 5. HTTP 业务层与前端 ====================
@@ -284,7 +639,7 @@ function handleHttpRequest(req, res) {
     const pathname = parsedUrl.pathname;
     const query = parsedUrl.searchParams;
 
-    // 1. 订阅分发
+    // 1. 订阅分发 (支持 Base64 与 Clash 规则订阅)
     if (pathname === "/sub") {
         const token = query.get("token");
         const user = usersDatabase.find((u) => u.uuid === token);
@@ -295,9 +650,24 @@ function handleHttpRequest(req, res) {
             return res.end(`[Access Denied] 拒绝订阅下发：${invalidReason}。请联系管理员续约。`);
         }
 
+        const isClash = query.get("type") === "clash" || 
+                        query.get("format") === "clash" || 
+                        /clash|meta|mihomo|stash/i.test(req.headers["user-agent"] || "");
+
+        const subUserInfo = `upload=0; download=${user.trafficUsed}; total=${user.trafficLimit}; expire=${Math.floor(user.expireTime / 1000)}`;
+
+        if (isClash) {
+            res.writeHead(200, {
+                "Content-Type": "text/yaml; charset=utf-8",
+                "Content-Disposition": `attachment; filename*=UTF-8''clash_${encodeURIComponent(user.username)}.yaml`,
+                "Subscription-Userinfo": subUserInfo
+            });
+            return res.end(generateClashConfig(user));
+        }
+
         res.writeHead(200, {
             "Content-Type": "text/plain; charset=utf-8",
-            "Subscription-Userinfo": `upload=0; download=${user.trafficUsed}; total=${user.trafficLimit}; expire=${Math.floor(user.expireTime / 1000)}`
+            "Subscription-Userinfo": subUserInfo
         });
         return res.end(getNodesForUser(user));
     }
@@ -314,16 +684,20 @@ function handleHttpRequest(req, res) {
             ? Math.min(100, (currentUser.trafficUsed / currentUser.trafficLimit * 100)).toFixed(1)
             : 0;
 
+        const act = getUserActivity(currentUser.uuid);
+
         res.writeHead(200, { "Content-Type": "application/json" });
         return res.end(JSON.stringify({
             usedFormatted: formatBytes(currentUser.trafficUsed),
             totalFormatted: formatBytes(currentUser.trafficLimit),
             percentage,
-            daysLeft: Math.max(0, Math.ceil((currentUser.expireTime - Date.now()) / 86400000))
+            daysLeft: Math.max(0, Math.ceil((currentUser.expireTime - Date.now()) / 86400000)),
+            activeConnections: act.activeConnections,
+            lastSeen: formatRelativeTime(act.lastSeenAt)
         }));
     }
 
-    // 3. 注册 API
+    // 3. 用户注册 API
     if (pathname === "/api/register" && req.method === "POST") {
         let body = "";
         req.on("data", (c) => { body += c; });
@@ -367,7 +741,7 @@ function handleHttpRequest(req, res) {
         return;
     }
 
-    // 4. 登录 API
+    // 4. 用户前台登录 API
     if (pathname === "/api/login" && req.method === "POST") {
         let body = "";
         req.on("data", (c) => { body += c; });
@@ -410,12 +784,189 @@ function handleHttpRequest(req, res) {
         return res.end();
     }
 
-    // 5. 后台管理 API
+    // 5. 后台独立登录页面与鉴权 (/admin/login)
+    if (pathname === "/admin/login") {
+        if (req.method === "GET") {
+            // 如果已登录管理会话，直接跳到 /admin
+            if (checkAdminAuth(req, query)) {
+                res.writeHead(302, { Location: "/admin" });
+                return res.end();
+            }
+
+            res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+            return res.end(`
+                <!DOCTYPE html>
+                <html lang="zh-CN">
+                <head>
+                    <meta charset="utf-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1">
+                    <title>总控中心 · 管理员登入</title>
+                    <style>
+                        * { box-sizing: border-box; margin: 0; padding: 0; }
+                        body {
+                            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                            background: radial-gradient(circle at 50% 20%, #1e1b4b 0%, #030712 70%);
+                            min-height: 100vh;
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;
+                            color: #f8fafc;
+                            padding: 20px;
+                        }
+                        .admin-login-card {
+                            background: rgba(15, 23, 42, 0.75);
+                            backdrop-filter: blur(20px);
+                            border: 1px solid rgba(255, 255, 255, 0.1);
+                            border-radius: 24px;
+                            padding: 42px 36px;
+                            width: 100%;
+                            max-width: 400px;
+                            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+                        }
+                        .logo-badge {
+                            width: 52px; height: 52px; border-radius: 14px;
+                            background: linear-gradient(135deg, #6366f1, #3b82f6);
+                            display: flex; align-items: center; justify-content: center;
+                            margin: 0 auto 16px auto; font-size: 26px;
+                            box-shadow: 0 10px 25px -5px rgba(99, 102, 241, 0.5);
+                        }
+                        .header-title { font-size: 20px; font-weight: 700; text-align: center; margin-bottom: 6px; }
+                        .header-sub { font-size: 13px; color: #94a3b8; text-align: center; margin-bottom: 28px; }
+                        .input-box { margin-bottom: 20px; }
+                        .input-box label { display: block; font-size: 12px; color: #cbd5e1; margin-bottom: 8px; font-weight: 500; }
+                        input {
+                            width: 100%;
+                            padding: 13px 16px;
+                            background: rgba(0, 0, 0, 0.4);
+                            border: 1px solid rgba(255, 255, 255, 0.1);
+                            border-radius: 12px;
+                            color: #fff;
+                            font-size: 14px;
+                            outline: none;
+                            transition: 0.2s;
+                        }
+                        input:focus { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25); }
+                        .btn-login {
+                            width: 100%;
+                            padding: 13px;
+                            background: #4f46e5;
+                            color: #fff;
+                            border: none;
+                            border-radius: 12px;
+                            font-size: 14px;
+                            font-weight: 600;
+                            cursor: pointer;
+                            transition: 0.2s;
+                        }
+                        .btn-login:hover { background: #4338ca; transform: translateY(-1px); }
+                        .error-msg {
+                            display: none;
+                            background: rgba(239, 68, 68, 0.15);
+                            border: 1px solid rgba(239, 68, 68, 0.3);
+                            color: #f87171;
+                            padding: 10px 14px;
+                            border-radius: 10px;
+                            font-size: 13px;
+                            margin-bottom: 20px;
+                            text-align: center;
+                        }
+                    </style>
+                </head>
+                <body>
+                    <div class="admin-login-card">
+                        <div class="logo-badge">🛡️</div>
+                        <h2 class="header-title">系统总控中心</h2>
+                        <div class="header-sub">管理凭据隔离鉴权 · 会话保护</div>
+                        <div class="error-msg" id="errMsg"></div>
+                        <div class="input-box">
+                            <label>管理员安全口令</label>
+                            <input type="password" id="adminToken" placeholder="输入 ADMIN_TOKEN 密码" autofocus />
+                        </div>
+                        <button class="btn-login" id="loginBtn" onclick="doAdminLogin()">验证登入</button>
+                    </div>
+
+                    <script>
+                        async function doAdminLogin() {
+                            const pwd = document.getElementById("adminToken").value.trim();
+                            const err = document.getElementById("errMsg");
+                            if (!pwd) {
+                                err.innerText = "请输入管理安全口令";
+                                err.style.display = "block";
+                                return;
+                            }
+                            const btn = document.getElementById("loginBtn");
+                            btn.innerText = "正在验证...";
+                            btn.disabled = true;
+                            try {
+                                const res = await fetch("/admin/login", {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({ token: pwd })
+                                });
+                                const data = await res.json();
+                                if (res.ok && data.success) {
+                                    location.href = "/admin";
+                                } else {
+                                    err.innerText = data.error || "口令无效";
+                                    err.style.display = "block";
+                                    btn.innerText = "验证登入";
+                                    btn.disabled = false;
+                                }
+                            } catch (e) {
+                                err.innerText = "网络通信异常";
+                                err.style.display = "block";
+                                btn.innerText = "验证登入";
+                                btn.disabled = false;
+                            }
+                        }
+                        document.getElementById("adminToken").addEventListener("keydown", (e) => {
+                            if (e.key === "Enter") doAdminLogin();
+                        });
+                    </script>
+                </body>
+                </html>
+            `);
+        }
+
+        if (req.method === "POST") {
+            let body = "";
+            req.on("data", (c) => { body += c; });
+            req.on("end", () => {
+                try {
+                    const { token } = JSON.parse(body || "{}");
+                    if (token !== ADMIN_TOKEN) {
+                        res.writeHead(401, { "Content-Type": "application/json; charset=utf-8" });
+                        return res.end(JSON.stringify({ error: "安全密钥未通过核验" }));
+                    }
+
+                    const adminSessionToken = crypto.randomBytes(24).toString("hex");
+                    const expireTime = Date.now() + 24 * 3600 * 1000;
+                    adminSessions.set(adminSessionToken, expireTime);
+
+                    res.writeHead(200, {
+                        "Content-Type": "application/json; charset=utf-8",
+                        "Set-Cookie": `admin_session_token=${adminSessionToken}; Path=/admin; HttpOnly; SameSite=Lax; Max-Age=86400`
+                    });
+                    res.end(JSON.stringify({ success: true }));
+                } catch (e) {
+                    res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+                    res.end(JSON.stringify({ error: "服务器处理异常" }));
+                }
+            });
+            return;
+        }
+    }
+
+    if (pathname === "/admin/logout") {
+        res.writeHead(302, { "Set-Cookie": "admin_session_token=; Path=/admin; Max-Age=0", Location: "/admin/login" });
+        return res.end();
+    }
+
+    // 6. 后台管理 API (严格经过 checkAdminAuth 隔离校验)
     if (pathname.startsWith("/admin/api/")) {
-        const token = query.get("token");
-        if (token !== ADMIN_TOKEN) {
+        if (!checkAdminAuth(req, query)) {
             res.writeHead(401, { "Content-Type": "application/json; charset=utf-8" });
-            return res.end(JSON.stringify({ error: "管理密钥未通过验证" }));
+            return res.end(JSON.stringify({ error: "管理凭据未授权或会话已过期" }));
         }
 
         if (pathname === "/admin/api/update" && req.method === "POST") {
@@ -437,11 +988,17 @@ function handleHttpRequest(req, res) {
                     user.trafficLimit = convertToBytes(trafficLimitVal, trafficLimitUnit || "GB");
                 }
 
-                if (expireDate) {
-                    const parts = expireDate.split("-");
-                    if (parts.length === 3) {
-                        const endOfDay = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10), 23, 59, 59, 999);
-                        user.expireTime = endOfDay.getTime();
+                if (expireDate !== undefined) {
+                    if (!expireDate || String(expireDate).trim() === "") {
+                        user.expireTime = 0;
+                    } else {
+                        const parts = String(expireDate).trim().split("-");
+                        if (parts.length === 3) {
+                            const endOfDay = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10), 23, 59, 59, 999);
+                            if (!isNaN(endOfDay.getTime())) {
+                                user.expireTime = endOfDay.getTime();
+                            }
+                        }
                     }
                 }
 
@@ -481,6 +1038,7 @@ function handleHttpRequest(req, res) {
             req.on("end", () => {
                 const { uuid } = JSON.parse(body || "{}");
                 usersDatabase = usersDatabase.filter((u) => u.uuid !== uuid);
+                userActivityMap.delete(uuid);
                 saveUsers();
                 safeReloadSingbox();
                 res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
@@ -527,25 +1085,22 @@ function handleHttpRequest(req, res) {
         }
     }
 
-    // 6. 后台管理页面 (/admin) - 弹窗添加版
+    // 7. 后台管理页面 (/admin) - 独立 Cookie 鉴权与在线感知看板
     if (pathname === "/admin") {
-        const token = query.get("token");
-        if (token !== ADMIN_TOKEN) {
-            res.writeHead(403, { "Content-Type": "text/html; charset=utf-8" });
-            return res.end(`
-                <body style="background:#090d16; color:#f8fafc; font-family:-apple-system,sans-serif; display:flex; justify-content:center; align-items:center; height:100vh; margin:0;">
-                    <div style="text-align:center; padding:36px; background:#131b2e; border:1px solid #1e293b; border-radius:16px; box-shadow:0 20px 40px rgba(0,0,0,0.5);">
-                        <div style="font-size:36px; margin-bottom:12px;">🔒</div>
-                        <h2 style="margin:0 0 8px 0; color:#ef4444; font-size:20px;">访问受限 · 密钥无效</h2>
-                        <p style="color:#94a3b8; font-size:13px; margin:0;">请在链接后缀中附带有效密钥：<code>/admin?token=123456-这个123456是你设置的密码，在11行</code></p>
-                    </div>
-                </body>
-            `);
+        if (!checkAdminAuth(req, query)) {
+            res.writeHead(302, { Location: "/admin/login" });
+            return res.end();
         }
 
         const totalUsers = usersDatabase.length;
         const activeUsersCount = getActiveUsers().length;
         const totalTrafficSum = usersDatabase.reduce((acc, u) => acc + (u.trafficUsed || 0), 0);
+
+        // 统计实时全站在线连接数
+        let totalLiveConnections = 0;
+        userActivityMap.forEach((act) => {
+            totalLiveConnections += (act.activeConnections || 0);
+        });
 
         const userRows = usersDatabase.map((u) => {
             const invalidMsg = isUserInvalid(u);
@@ -554,11 +1109,18 @@ function handleHttpRequest(req, res) {
             else if (invalidMsg === "账号已过有效期限") statusBadge = `<span class="badge badge-danger"><span class="badge-dot"></span>已过期</span>`;
             else if (invalidMsg === "流量配额已耗尽") statusBadge = `<span class="badge badge-warning"><span class="badge-dot"></span>已超额</span>`;
 
-            const subUrl = isTunnelAvailable
+            const act = getUserActivity(u.uuid);
+            let onlineBadge = `<span class="badge-online-offline">⚪ 离线 (${formatRelativeTime(act.lastSeenAt)})</span>`;
+            if (act.activeConnections > 0) {
+                onlineBadge = `<span class="badge-online-live"><span class="badge-dot-live"></span>在线 (${act.activeConnections}设备)</span>`;
+            }
+
+            const baseSubUrl = isTunnelAvailable
                 ? `https://${ARGO_DOMAIN}/sub?token=${u.uuid}`
                 : `http://${DIRECT_IP}:${SERVER_PORT}/sub?token=${u.uuid}`;
+            const clashSubUrl = `${baseSubUrl}&type=clash`;
 
-            const dateStr = new Date(u.expireTime).toISOString().split("T")[0];
+            const dateStr = formatExpireDate(u.expireTime);
             const parsedLimit = parseBytesToInput(u.trafficLimit);
 
             return `
@@ -578,16 +1140,17 @@ function handleHttpRequest(req, res) {
                     </td>
                     <td class="date-cell">${dateStr}</td>
                     <td>${statusBadge}</td>
+                    <td>${onlineBadge}</td>
                     <td>
-                        <button class="btn btn-copy-sub" onclick="copyText('${subUrl}')">
-                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-                            复制订阅
-                        </button>
+                        <div class="sub-btn-group">
+                            <button class="btn btn-copy-sub" onclick="copyText('${baseSubUrl}')" title="复制标准 Base64 订阅链接">常规</button>
+                            <button class="btn btn-copy-sub btn-copy-clash" onclick="copyText('${clashSubUrl}')" title="复制 Clash Meta 规则配置订阅">Clash</button>
+                        </div>
                     </td>
                     <td>
                         <div class="actions-group">
                             <button class="btn btn-action-edit" onclick="openEditModal('${u.uuid}', '${u.username}', '${parsedLimit.val}', '${parsedLimit.unit}', '${dateStr}', ${u.enabled})">编辑</button>
-                            <button class="btn btn-action-reset" onclick="resetTraffic('${u.uuid}')">重置流量</button>
+                            <button class="btn btn-action-reset" onclick="resetTraffic('${u.uuid}')">重置</button>
                             <button class="btn btn-action-del" onclick="deleteUser('${u.uuid}')">注销</button>
                         </div>
                     </td>
@@ -630,9 +1193,16 @@ function handleHttpRequest(req, res) {
                         margin-bottom: 24px;
                     }
                     .header-title { font-size: 24px; font-weight: 700; letter-spacing: -0.5px; }
+                    .header-right { display: flex; align-items: center; gap: 12px; }
+                    .logout-btn {
+                        color: #f87171; text-decoration: none; font-size: 13px; font-weight: 500;
+                        padding: 6px 14px; border-radius: 8px; border: 1px solid rgba(239, 68, 68, 0.25);
+                        transition: 0.2s; background: rgba(239, 68, 68, 0.05);
+                    }
+                    .logout-btn:hover { background: rgba(239, 68, 68, 0.15); }
                     .stats-grid {
                         display: grid;
-                        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+                        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
                         gap: 16px;
                         margin-bottom: 24px;
                     }
@@ -706,14 +1276,18 @@ function handleHttpRequest(req, res) {
                     }
                     .btn-primary { background: var(--primary); color: #fff; }
                     .btn-primary:hover { background: var(--primary-hover); transform: translateY(-1px); }
+                    .sub-btn-group { display: flex; gap: 4px; }
                     .btn-copy-sub {
                         background: rgba(255, 255, 255, 0.04);
                         border: 1px solid var(--card-border);
                         color: #93c5fd;
-                        font-size: 12px;
-                        padding: 7px 12px;
+                        font-size: 11px;
+                        padding: 5px 8px;
+                        border-radius: 6px;
                     }
                     .btn-copy-sub:hover { background: rgba(59, 130, 246, 0.1); border-color: rgba(59, 130, 246, 0.3); }
+                    .btn-copy-clash { color: #a78bfa; }
+                    .btn-copy-clash:hover { background: rgba(167, 139, 250, 0.1); border-color: rgba(167, 139, 250, 0.3); }
                     .table-wrapper { width: 100%; overflow-x: auto; }
                     table { width: 100%; border-collapse: collapse; margin-top: 4px; }
                     th, td { padding: 14px 16px; text-align: left; border-bottom: 1px solid var(--card-border); }
@@ -746,49 +1320,48 @@ function handleHttpRequest(req, res) {
                     .badge-success { background: rgba(34, 197, 94, 0.12); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.25); }
                     .badge-danger { background: rgba(239, 68, 68, 0.12); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.25); }
                     .badge-warning { background: rgba(245, 158, 11, 0.12); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.25); }
-                    .actions-group { display: flex; gap: 8px; }
+                    .badge-online-live {
+                        display: inline-flex; align-items: center; gap: 5px;
+                        color: #38bdf8; font-size: 11px; font-weight: 600;
+                    }
+                    .badge-dot-live {
+                        width: 7px; height: 7px; border-radius: 50%;
+                        background: #38bdf8; box-shadow: 0 0 8px #38bdf8;
+                    }
+                    .badge-online-offline { font-size: 11px; color: #64748b; }
+                    .actions-group { display: flex; gap: 6px; }
                     .btn-action-edit {
                         background: rgba(59, 130, 246, 0.1);
                         border: 1px solid rgba(59, 130, 246, 0.25);
-                        color: #60a5fa;
-                        padding: 6px 12px;
-                        font-size: 12px;
+                        color: #60a5fa; padding: 5px 10px; font-size: 12px;
                     }
                     .btn-action-edit:hover { background: var(--primary); color: #fff; }
                     .btn-action-reset {
                         background: rgba(245, 158, 11, 0.08);
                         border: 1px solid rgba(245, 158, 11, 0.2);
-                        color: #fbbf24;
-                        padding: 6px 12px;
-                        font-size: 12px;
+                        color: #fbbf24; padding: 5px 10px; font-size: 12px;
                     }
                     .btn-action-reset:hover { background: #f59e0b; color: #000; }
                     .btn-action-del {
                         background: rgba(239, 68, 68, 0.08);
                         border: 1px solid rgba(239, 68, 68, 0.2);
-                        color: #f87171;
-                        padding: 6px 12px;
-                        font-size: 12px;
+                        color: #f87171; padding: 5px 10px; font-size: 12px;
                     }
                     .btn-action-del:hover { background: #ef4444; color: #fff; }
                     
-                    /* 通用模态框 */
+                    /* 模态框 */
                     .modal-mask {
                         position: fixed; inset: 0;
                         background: rgba(0, 0, 0, 0.7);
                         backdrop-filter: blur(8px);
-                        display: none;
-                        align-items: center;
-                        justify-content: center;
+                        display: none; align-items: center; justify-content: center;
                         z-index: 99;
                     }
                     .modal {
                         background: #0e131f;
                         border: 1px solid var(--card-border);
                         border-radius: 20px;
-                        width: 100%;
-                        max-width: 440px;
-                        padding: 28px;
+                        width: 100%; max-width: 440px; padding: 28px;
                         box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6);
                     }
                     .modal h4 { font-size: 18px; margin-bottom: 20px; letter-spacing: -0.3px; }
@@ -801,7 +1374,10 @@ function handleHttpRequest(req, res) {
                 <div class="header">
                     <div>
                         <h2 class="header-title">系统控制中枢</h2>
-                        <span style="font-size:13px; color:var(--text-muted);">实时流式入账 · 直连与隧道双模支持</span>
+                        <span style="font-size:13px; color:var(--text-muted);">异步非阻塞写锁 · 实时流式记账 · 多节点集群支持</span>
+                    </div>
+                    <div class="header-right">
+                        <a href="/admin/logout" class="logout-btn">退出管理</a>
                     </div>
                 </div>
 
@@ -813,6 +1389,10 @@ function handleHttpRequest(req, res) {
                     <div class="stat-card">
                         <div class="stat-title">有效通行凭证</div>
                         <div class="stat-value" style="color:#4ade80;">${activeUsersCount} <span class="stat-unit">活跃</span></div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-title">实时活跃网络连接</div>
+                        <div class="stat-value" style="color:#a78bfa;">${totalLiveConnections} <span class="stat-unit">连线</span></div>
                     </div>
                     <div class="stat-card">
                         <div class="stat-title">全站已产生总流量</div>
@@ -835,8 +1415,9 @@ function handleHttpRequest(req, res) {
                                     <th>用户主体</th>
                                     <th>流量消耗 / 上限</th>
                                     <th>过期时间</th>
-                                    <th>状态</th>
-                                    <th>专属订阅</th>
+                                    <th>账号状态</th>
+                                    <th>实时活跃状态</th>
+                                    <th>专属订阅 (普通/Clash)</th>
                                     <th>运维操作</th>
                                 </tr>
                             </thead>
@@ -918,11 +1499,66 @@ function handleHttpRequest(req, res) {
                 </div>
 
                 <script>
-                    const TOKEN = "${token}";
+                    function showToast(msg) {
+                        let el = document.getElementById("__toast_msg__");
+                        if (!el) {
+                            el = document.createElement("div");
+                            el.id = "__toast_msg__";
+                            el.style.position = "fixed";
+                            el.style.bottom = "40px";
+                            el.style.left = "50%";
+                            el.style.transform = "translateX(-50%)";
+                            el.style.background = "rgba(15, 23, 42, 0.95)";
+                            el.style.color = "#38bdf8";
+                            el.style.border = "1px solid rgba(56, 189, 248, 0.4)";
+                            el.style.boxShadow = "0 10px 30px rgba(0,0,0,0.6)";
+                            el.style.padding = "10px 24px";
+                            el.style.borderRadius = "30px";
+                            el.style.fontSize = "13px";
+                            el.style.fontWeight = "600";
+                            el.style.zIndex = "99999";
+                            el.style.transition = "opacity 0.3s ease";
+                            document.body.appendChild(el);
+                        }
+                        el.innerText = msg;
+                        el.style.opacity = "1";
+                        clearTimeout(el.__timer);
+                        el.__timer = setTimeout(() => { el.style.opacity = "0"; }, 2000);
+                    }
 
                     function copyText(val) {
-                        navigator.clipboard.writeText(val);
-                        alert("复制成功！");
+                        if (!val) return;
+                        if (navigator.clipboard && window.isSecureContext) {
+                            navigator.clipboard.writeText(val).then(() => {
+                                showToast("已复制到剪贴板！");
+                            }).catch(() => {
+                                fallbackCopy(val);
+                            });
+                        } else {
+                            fallbackCopy(val);
+                        }
+                    }
+
+                    function fallbackCopy(val) {
+                        const ta = document.createElement("textarea");
+                        ta.value = val;
+                        ta.style.position = "fixed";
+                        ta.style.left = "-9999px";
+                        ta.style.top = "-9999px";
+                        ta.style.opacity = "0";
+                        document.body.appendChild(ta);
+                        ta.focus();
+                        ta.select();
+                        let ok = false;
+                        try {
+                            ok = document.execCommand("copy");
+                        } catch (e) {}
+                        document.body.removeChild(ta);
+                        if (ok) {
+                            showToast("已复制到剪贴板！");
+                        } else {
+                            prompt("自动复制失败，请手动按 Ctrl+C 复制：", val);
+                        }
                     }
 
                     function openAddModal() {
@@ -951,16 +1587,16 @@ function handleHttpRequest(req, res) {
                             const days = document.getElementById("add_days").value;
                             if (!username) return alert("请填写用户名");
 
-                            const res = await fetch("/admin/api/add?token=" + TOKEN, {
+                            const res = await fetch("/admin/api/add", {
                                 method: "POST",
                                 headers: { "Content-Type": "application/json" },
                                 body: JSON.stringify({ username, password, limitVal, limitUnit, days })
                             });
 
                             if (res.ok) {
-                                alert("用户创建成功！");
+                                showToast("用户创建成功！");
                                 closeAddModal();
-                                location.reload();
+                                setTimeout(() => location.reload(), 600);
                             } else {
                                 const data = await res.json();
                                 alert(data.error || "创建失败");
@@ -979,7 +1615,7 @@ function handleHttpRequest(req, res) {
                         document.getElementById("edit_pwd").value = "";
                         document.getElementById("edit_val").value = val;
                         document.getElementById("edit_unit").value = unit;
-                        document.getElementById("edit_expire").value = dateStr;
+                        document.getElementById("edit_expire").value = (dateStr === "永久有效" ? "" : dateStr);
                         document.getElementById("edit_enabled").value = String(enabled);
                         document.getElementById("editModal").style.display = "flex";
                     }
@@ -1001,7 +1637,7 @@ function handleHttpRequest(req, res) {
                             const expireDate = document.getElementById("edit_expire").value;
                             const enabled = document.getElementById("edit_enabled").value === "true";
 
-                            const res = await fetch("/admin/api/update?token=" + TOKEN, {
+                            const res = await fetch("/admin/api/update", {
                                 method: "POST",
                                 headers: { "Content-Type": "application/json" },
                                 body: JSON.stringify({ uuid, newPassword, trafficLimitVal, trafficLimitUnit, expireDate, enabled })
@@ -1025,8 +1661,9 @@ function handleHttpRequest(req, res) {
 
                     async function resetTraffic(uuid) {
                         if (!confirm("确定清空该用户的用量？")) return;
-                        await fetch("/admin/api/reset?token=" + TOKEN, {
+                        await fetch("/admin/api/reset", {
                             method: "POST",
+                            headers: { "Content-Type": "application/json" },
                             body: JSON.stringify({ uuid })
                         });
                         location.reload();
@@ -1034,8 +1671,9 @@ function handleHttpRequest(req, res) {
 
                     async function deleteUser(uuid) {
                         if (!confirm("确定注销此账号？其节点连接将即刻失效！")) return;
-                        await fetch("/admin/api/delete?token=" + TOKEN, {
+                        await fetch("/admin/api/delete", {
                             method: "POST",
+                            headers: { "Content-Type": "application/json" },
                             body: JSON.stringify({ uuid })
                         });
                         location.reload();
@@ -1046,7 +1684,7 @@ function handleHttpRequest(req, res) {
         `);
     }
 
-    // 7. 前台用户仪表盘 (/)
+    // 8. 前台用户仪表盘 (/)
     if (pathname === "/") {
         const currentUser = getSessionUser(req);
 
@@ -1215,11 +1853,12 @@ function handleHttpRequest(req, res) {
             `);
         }
 
-        const subUrl = isTunnelAvailable
+        const baseSubUrl = isTunnelAvailable
             ? `https://${ARGO_DOMAIN}/sub?token=${currentUser.uuid}`
             : `http://${DIRECT_IP}:${SERVER_PORT}/sub?token=${currentUser.uuid}`;
+        const clashSubUrl = `${baseSubUrl}&type=clash`;
 
-        const percentage = currentUser.trafficLimit > 0 
+        const percentage = currentUser.trafficLimit > 0
             ? Math.min(100, (currentUser.trafficUsed / currentUser.trafficLimit * 100)).toFixed(1)
             : 0;
 
@@ -1279,7 +1918,8 @@ function handleHttpRequest(req, res) {
                     }
                     .stat-subcard .title { font-size: 12px; color: #94a3b8; margin-bottom: 6px; }
                     .stat-subcard .value { font-size: 22px; font-weight: 700; color: #fff; }
-                    .sub-input-box { display: flex; gap: 10px; margin-top: 14px; }
+                    .sub-tabs { display: flex; gap: 10px; margin-top: 14px; }
+                    .sub-input-box { display: flex; gap: 10px; margin-top: 10px; }
                     .sub-input-box input {
                         flex: 1;
                         padding: 13px 16px;
@@ -1292,7 +1932,7 @@ function handleHttpRequest(req, res) {
                         outline: none;
                     }
                     .btn-copy {
-                        padding: 0 22px;
+                        padding: 0 20px;
                         background: #2563eb;
                         border: none;
                         border-radius: 12px;
@@ -1301,8 +1941,11 @@ function handleHttpRequest(req, res) {
                         font-size: 13px;
                         cursor: pointer;
                         transition: 0.2s;
+                        white-space: nowrap;
                     }
                     .btn-copy:hover { background: #1d4ed8; }
+                    .btn-copy-clash-sub { background: #7c3aed; }
+                    .btn-copy-clash-sub:hover { background: #6d28d9; }
                 </style>
             </head>
             <body>
@@ -1338,20 +1981,90 @@ function handleHttpRequest(req, res) {
                     </div>
 
                     <div class="dashboard-card">
-                        <h4 style="font-size: 16px; margin-bottom: 6px;">通用客户端订阅</h4>
-                        <p style="font-size: 13px; color: #94a3b8;">复制下方专属订阅链接，导入 Clash、Shadowrocket、Sing-box 等客户端：</p>
-                        <div class="sub-input-box">
-                            <input type="text" id="subUrl" readonly value="${subUrl}" />
-                            <button class="btn-copy" onclick="copySub()">一键复制</button>
+                        <h4 style="font-size: 16px; margin-bottom: 6px;">通用客户端与 Clash 规则订阅</h4>
+                        <p style="font-size: 13px; color: #94a3b8;">复制对应订阅链接直接导入客户端使用（支持多协议直连与异地集群节点）：</p>
+                        
+                        <div style="margin-top:16px;">
+                            <div style="font-size:12px; color:#cbd5e1; margin-bottom:4px;">1. 通用 Base64 订阅 (v2rayN / Shadowrocket / Sing-box)</div>
+                            <div class="sub-input-box">
+                                <input type="text" id="subUrl" readonly value="${baseSubUrl}" />
+                                <button class="btn-copy" onclick="copyValue('subUrl')">复制常规</button>
+                            </div>
+                        </div>
+
+                        <div style="margin-top:16px;">
+                            <div style="font-size:12px; color:#cbd5e1; margin-bottom:4px;">2. Clash Meta (Mihomo) 规则配置订阅</div>
+                            <div class="sub-input-box">
+                                <input type="text" id="clashSubUrl" readonly value="${clashSubUrl}" style="color:#c084fc;" />
+                                <button class="btn-copy btn-copy-clash-sub" onclick="copyValue('clashSubUrl')">复制 Clash</button>
+                            </div>
                         </div>
                     </div>
                 </div>
 
                 <script>
-                    function copySub() {
-                        const input = document.getElementById("subUrl");
-                        navigator.clipboard.writeText(input.value);
-                        alert("订阅链接已拷贝至剪切板！");
+                    function showToast(msg) {
+                        let el = document.getElementById("__toast_msg__");
+                        if (!el) {
+                            el = document.createElement("div");
+                            el.id = "__toast_msg__";
+                            el.style.position = "fixed";
+                            el.style.bottom = "40px";
+                            el.style.left = "50%";
+                            el.style.transform = "translateX(-50%)";
+                            el.style.background = "rgba(15, 23, 42, 0.95)";
+                            el.style.color = "#38bdf8";
+                            el.style.border = "1px solid rgba(56, 189, 248, 0.4)";
+                            el.style.boxShadow = "0 10px 30px rgba(0,0,0,0.6)";
+                            el.style.padding = "10px 24px";
+                            el.style.borderRadius = "30px";
+                            el.style.fontSize = "13px";
+                            el.style.fontWeight = "600";
+                            el.style.zIndex = "99999";
+                            el.style.transition = "opacity 0.3s ease";
+                            document.body.appendChild(el);
+                        }
+                        el.innerText = msg;
+                        el.style.opacity = "1";
+                        clearTimeout(el.__timer);
+                        el.__timer = setTimeout(() => { el.style.opacity = "0"; }, 2000);
+                    }
+
+                    function copyValue(id) {
+                        const input = document.getElementById(id);
+                        if (!input || !input.value) return;
+                        const val = input.value;
+                        if (navigator.clipboard && window.isSecureContext) {
+                            navigator.clipboard.writeText(val).then(() => {
+                                showToast("订阅链接已复制到剪切板！");
+                            }).catch(() => {
+                                fallbackCopy(val);
+                            });
+                        } else {
+                            fallbackCopy(val);
+                        }
+                    }
+
+                    function fallbackCopy(val) {
+                        const ta = document.createElement("textarea");
+                        ta.value = val;
+                        ta.style.position = "fixed";
+                        ta.style.left = "-9999px";
+                        ta.style.top = "-9999px";
+                        ta.style.opacity = "0";
+                        document.body.appendChild(ta);
+                        ta.focus();
+                        ta.select();
+                        let ok = false;
+                        try {
+                            ok = document.execCommand("copy");
+                        } catch (e) {}
+                        document.body.removeChild(ta);
+                        if (ok) {
+                            showToast("订阅链接已复制到剪切板！");
+                        } else {
+                            prompt("自动复制受限，请长按或按 Ctrl+C 复制：", val);
+                        }
                     }
 
                     setInterval(async () => {
@@ -1418,6 +2131,13 @@ function handleUpgradeRequest(req, clientSocket, head) {
         return;
     }
 
+    // 活跃在线感知：增加活跃连接并刷新活跃时间
+    const userAct = matchedUser ? getUserActivity(matchedUser.uuid) : null;
+    if (userAct) {
+        userAct.activeConnections++;
+        userAct.lastSeenAt = Date.now();
+    }
+
     const backendSocket = net.connect(targetPort, "127.0.0.1", () => {
         let requestRaw = `${req.method} ${targetCorePath} HTTP/1.1\r\n`;
         let hasUpgrade = false;
@@ -1447,6 +2167,7 @@ function handleUpgradeRequest(req, clientSocket, head) {
         const flushRealtimeTraffic = (bytes) => {
             if (!matchedUser) return;
             uncommittedBytes += bytes;
+            if (userAct) userAct.lastSeenAt = Date.now();
 
             if (uncommittedBytes >= FLUSH_THRESHOLD) {
                 matchedUser.trafficUsed += uncommittedBytes;
@@ -1464,7 +2185,16 @@ function handleUpgradeRequest(req, clientSocket, head) {
         clientSocket.on("data", (chunk) => flushRealtimeTraffic(chunk.length));
         backendSocket.on("data", (chunk) => flushRealtimeTraffic(chunk.length));
 
+        let isClosed = false;
         const handleClose = () => {
+            if (isClosed) return;
+            isClosed = true;
+
+            if (userAct) {
+                userAct.activeConnections = Math.max(0, userAct.activeConnections - 1);
+                userAct.lastSeenAt = Date.now();
+            }
+
             if (matchedUser && uncommittedBytes > 0) {
                 matchedUser.trafficUsed += uncommittedBytes;
                 uncommittedBytes = 0;
@@ -1499,7 +2229,7 @@ const serverExternal = http.createServer(handleHttpRequest);
 serverExternal.on("upgrade", handleUpgradeRequest);
 serverExternal.listen(SERVER_PORT, "0.0.0.0", () => {
     console.log(`[Pterodactyl] 翼龙外网服务就绪: ${SERVER_PORT}`);
-    console.log(`[Admin] 后台管理入口: http://${DIRECT_IP}:${SERVER_PORT}/admin?token=${ADMIN_TOKEN}`);
+    console.log(`[Admin] 后台管理独立入口: http://${DIRECT_IP}:${SERVER_PORT}/admin/login`);
     initSingboxCore();
     initAndStartCloudflared();
 });
