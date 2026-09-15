@@ -537,7 +537,7 @@ function handleHttpRequest(req, res) {
                     <div style="text-align:center; padding:36px; background:#131b2e; border:1px solid #1e293b; border-radius:16px; box-shadow:0 20px 40px rgba(0,0,0,0.5);">
                         <div style="font-size:36px; margin-bottom:12px;">🔒</div>
                         <h2 style="margin:0 0 8px 0; color:#ef4444; font-size:20px;">访问受限 · 密钥无效</h2>
-                        <p style="color:#94a3b8; font-size:13px; margin:0;">请在链接后缀中附带有效密钥：<code>/admin?token=990299</code></p>
+                        <p style="color:#94a3b8; font-size:13px; margin:0;">请在链接后缀中附带有效密钥：<code>/admin?token=123456-这个123456是你设置的密码，在11行</code></p>
                     </div>
                 </body>
             `);
