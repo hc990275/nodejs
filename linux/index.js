@@ -440,6 +440,12 @@ function ensureMultiProtocolSecrets() {
     }
 }
 
+// 派生用户专属 Shadowsocks 2022 预共享密钥 (2022-blake3-aes-128-gcm 要求 16 字节 Base64 编码)
+function getUserSsKey(uuid) {
+    if (!uuid) return "";
+    return crypto.createHash("sha256").update(String(uuid) + ":ss2022").digest().subarray(0, 16).toString("base64");
+}
+
 ensureAdaptiveLinuxEnvironment();
 ensureMultiProtocolSecrets();
 applyHy2PortHoppingRules();
@@ -998,26 +1004,20 @@ function generateSingboxConfig() {
         });
     }
 
-    // Shadowsocks 2022
+    // Shadowsocks 2022 (AEAD 2022 多用户隔离模式：严格跟随 activeUsers 鉴权，过期/超额即断)
     if (ENABLE_SS && PORT_SS > 0 && ssSecretState) {
+        const ssUsers = activeUsers.map((u) => ({
+            name: u.username || u.uuid,
+            password: getUserSsKey(u.uuid)
+        }));
         inboundsList.push({
             type: "shadowsocks",
             tag: "ss-in",
             listen: "0.0.0.0",
             listen_port: PORT_SS,
             method: SS_METHOD,
-            password: ssSecretState
-        });
-    }
-
-    // Socks5 认证代理
-    if (ENABLE_SOCKS5 && PORT_SOCKS5 > 0) {
-        inboundsList.push({
-            type: "socks",
-            tag: "socks-in",
-            listen: "0.0.0.0",
-            listen_port: PORT_SOCKS5,
-            users: activeUsers.map((u) => ({ username: u.username || "user", password: u.uuid }))
+            password: ssSecretState,
+            users: ssUsers
         });
     }
 
@@ -1448,26 +1448,16 @@ function getStructuredNodesForUser(user) {
         });
     }
 
-    if (ENABLE_SS && ssSecretState) {
+    if (ENABLE_SS && PORT_SS > 0 && ssSecretState) {
+        const userSsKey = getUserSsKey(user.uuid);
         nodes.push({
             name: `SS2022[${PORT_SS}]${nameSuffix}`,
             type: "shadowsocks",
             server: DIRECT_IP,
             port: PORT_SS,
             method: SS_METHOD,
-            password: ssSecretState,
+            password: `${ssSecretState}:${userSsKey}`,
             udp: true
-        });
-    }
-
-    if (ENABLE_SOCKS5) {
-        nodes.push({
-            name: `Socks5代理[${PORT_SOCKS5}]${nameSuffix}`,
-            type: "socks5",
-            server: DIRECT_IP,
-            port: PORT_SOCKS5,
-            username: user.username || "user",
-            password: uuid
         });
     }
 
@@ -1598,8 +1588,6 @@ function getNodesForUser(user) {
         } else if (n.type === "shadowsocks") {
             const ssAuth = Buffer.from(`${n.method}:${n.password}`).toString("base64url");
             linkList.push(`ss://${ssAuth}@${n.server}:${n.port}#${n.name}`);
-        } else if (n.type === "socks5") {
-            linkList.push(`socks5://${encodeURIComponent(n.username)}:${encodeURIComponent(n.password)}@${n.server}:${n.port}#${n.name}`);
         }
     }
 
@@ -1737,13 +1725,6 @@ function generateClashConfig(user) {
             proxiesYaml += `    cipher: ${n.method}\n`;
             proxiesYaml += `    password: "${n.password}"\n`;
             proxiesYaml += `    udp: true\n`;
-        } else if (n.type === "socks5") {
-            proxiesYaml += `  - name: "${n.name}"\n`;
-            proxiesYaml += `    type: socks5\n`;
-            proxiesYaml += `    server: ${n.server}\n`;
-            proxiesYaml += `    port: ${n.port}\n`;
-            proxiesYaml += `    username: "${n.username}"\n`;
-            proxiesYaml += `    password: "${n.password}"\n`;
         }
     }
 

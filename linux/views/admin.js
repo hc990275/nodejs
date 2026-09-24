@@ -1339,21 +1339,20 @@ return sendHtmlResponse(res, 200, `
                                     </div>
                                 </div>
 
-                                <!-- SS 与 Socks5 -->
-                                <div style="display:flex; gap:10px;">
-                                    <div style="flex:1; background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px; padding:10px 12px;">
-                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-                                            <span style="font-weight:600; font-size:12px;">Shadowsocks 2022</span>
-                                            <input type="checkbox" id="env_ENABLE_SS" />
+                                <!-- Shadowsocks 2022 (AEAD 多用户独立密钥) -->
+                                <div style="background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px; padding:10px 12px;">
+                                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                                        <div>
+                                            <span style="font-weight:600; font-size:12px; color:#2c3e50;">🔒 Shadowsocks 2022 (AEAD 多用户专属密钥模式)</span>
+                                            <span style="font-size:11px; color:var(--el-success); margin-left:6px;">• 严格跟随用户到期断流</span>
                                         </div>
-                                        <input type="number" id="env_PORT_SS" placeholder="端口如: 10805" />
+                                        <label style="display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer;">
+                                            <input type="checkbox" id="env_ENABLE_SS" /> 启用该协议
+                                        </label>
                                     </div>
-                                    <div style="flex:1; background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px; padding:10px 12px;">
-                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-                                            <span style="font-weight:600; font-size:12px;">Socks5 独立代理</span>
-                                            <input type="checkbox" id="env_ENABLE_SOCKS5" />
-                                        </div>
-                                        <input type="number" id="env_PORT_SOCKS5" placeholder="端口如: 10806" />
+                                    <div class="field-box" style="margin-bottom:0;">
+                                        <label style="font-size:11px;">监听端口 (PORT_SS)</label>
+                                        <input type="number" id="env_PORT_SS" placeholder="端口如: 10805" />
                                     </div>
                                 </div>
                             </div>
@@ -1723,9 +1722,6 @@ return sendHtmlResponse(res, 200, `
                         setCheck("env_ENABLE_SS", env.ENABLE_SS !== false);
                         setVal("env_PORT_SS", env.PORT_SS || "");
 
-                        setCheck("env_ENABLE_SOCKS5", env.ENABLE_SOCKS5 !== false);
-                        setVal("env_PORT_SOCKS5", env.PORT_SOCKS5 || "");
-
                         setVal("env_DIRECT_IP", env.DIRECT_IP || "");
                         setVal("env_ARGO_DOMAIN", env.ARGO_DOMAIN || "");
                         setVal("env_ARGO_TOKEN", env.ARGO_TOKEN || "");
@@ -1799,8 +1795,6 @@ return sendHtmlResponse(res, 200, `
                             PORT_TROJAN_TCP: getInt("env_PORT_TROJAN_TCP"),
                             ENABLE_SS: getCheck("env_ENABLE_SS"),
                             PORT_SS: getInt("env_PORT_SS"),
-                            ENABLE_SOCKS5: getCheck("env_ENABLE_SOCKS5"),
-                            PORT_SOCKS5: getInt("env_PORT_SOCKS5"),
                             DIRECT_IP: getStr("env_DIRECT_IP"),
                             ARGO_DOMAIN: getStr("env_ARGO_DOMAIN"),
                             ARGO_TOKEN: getStr("env_ARGO_TOKEN"),

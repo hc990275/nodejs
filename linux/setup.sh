@@ -114,10 +114,9 @@ else
     ask CFG_PORT_TROJAN_TCP "Trojan TCP 端口 (例: 10804，留空=禁用)" optional ""
     echo ""
 
-    # ── 第 7 组：SS2022 / Socks5 ─────────────────────────────────────────────────
-    echo "${BOLD}=== 第 7 组：Shadowsocks 2022 / Socks5 ===${NC}"
+    # ── 第 7 组：SS2022 ──────────────────────────────────────────────────────────
+    echo "${BOLD}=== 第 7 组：Shadowsocks 2022 (AEAD 多用户专属密钥模式) ===${NC}"
     ask CFG_PORT_SS     "SS2022 端口 (例: 10805，留空=禁用)" optional ""
-    ask CFG_PORT_SOCKS5 "Socks5 端口 (例: 10806，留空=禁用)" optional ""
     echo ""
 
     # ── 第 8 组：Argo 隧道 ───────────────────────────────────────────────────────
@@ -148,8 +147,6 @@ _TROJAN_ENABLE="false"
 [ -n "$CFG_PORT_TROJAN_TCP" ] && _TROJAN_ENABLE="true"
 _SS_ENABLE="false"
 [ -n "$CFG_PORT_SS" ] && _SS_ENABLE="true"
-_SOCKS5_ENABLE="false"
-[ -n "$CFG_PORT_SOCKS5" ] && _SOCKS5_ENABLE="true"
 
 cat > "$ENV_FILE" << __ENVEOF__
 # 由交互向导自动生成 - $(date)
@@ -186,12 +183,10 @@ ENABLE_VLESS_TCP=${_VLESS_TCP_ENABLE}
 PORT_TROJAN_TCP=${CFG_PORT_TROJAN_TCP}
 ENABLE_TROJAN_TCP=${_TROJAN_ENABLE}
 
-# ── 第 7 组：SS2022 / Socks5 ──
+# ── 第 7 组：SS2022 (AEAD 多用户专属模式) ──
 PORT_SS=${CFG_PORT_SS}
 ENABLE_SS=${_SS_ENABLE}
 SS_METHOD=2022-blake3-aes-128-gcm
-PORT_SOCKS5=${CFG_PORT_SOCKS5}
-ENABLE_SOCKS5=${_SOCKS5_ENABLE}
 
 # ── 第 8 组：Argo 隧道 ──
 ARGO_TOKEN=${CFG_ARGO_TOKEN}
@@ -219,7 +214,6 @@ echo "  VLESS Reality: ${BOLD}${CFG_PORT_REALITY:-（禁用）}${NC}"
 echo "  VLESS TCP:     ${BOLD}${CFG_PORT_VLESS_TCP:-（禁用）}${NC}"
 echo "  Trojan TCP:    ${BOLD}${CFG_PORT_TROJAN_TCP:-（禁用）}${NC}"
 echo "  SS2022:        ${BOLD}${CFG_PORT_SS:-（禁用）}${NC}"
-echo "  Socks5:        ${BOLD}${CFG_PORT_SOCKS5:-（禁用）}${NC}"
 echo "  Argo:          ${BOLD}${CFG_ARGO_TOKEN:+已配置（$CFG_ARGO_DOMAIN）}${CFG_ARGO_TOKEN:-（未启用）}${NC}"
 echo ""
 printf "${BOLD}${YELLOW}确认配置并安装启动服务？[Y/n]: ${NC}"
