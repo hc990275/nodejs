@@ -2511,11 +2511,24 @@ function handleHttpRequest(req, res) {
             let body = "";
             req.on("data", (c) => { body += c; });
             req.on("end", () => {
-                const { uuid, newPassword, trafficLimitVal, trafficLimitUnit, expireDate, enabled } = JSON.parse(body || "{}");
+                const { uuid, newUuid, newPassword, trafficLimitVal, trafficLimitUnit, expireDate, enabled } = JSON.parse(body || "{}");
                 const user = usersDatabase.find((u) => u.uuid === uuid);
                 if (!user) {
                     res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
                     return res.end(JSON.stringify({ error: "未找到目标用户" }));
+                }
+
+                // 支持管理员修改/一键轮换 UUID
+                let effectiveUuid = user.uuid;
+                if (newUuid && String(newUuid).trim() && String(newUuid).trim() !== user.uuid) {
+                    const cleanNewUuid = String(newUuid).trim();
+                    const oldAct = userActivityMap.get(user.uuid);
+                    if (oldAct) {
+                        userActivityMap.delete(user.uuid);
+                        userActivityMap.set(cleanNewUuid, oldAct);
+                    }
+                    user.uuid = cleanNewUuid;
+                    effectiveUuid = cleanNewUuid;
                 }
 
                 if (typeof newPassword === "string" && newPassword.trim().length > 0) {
@@ -2563,7 +2576,36 @@ function handleHttpRequest(req, res) {
                 safeReloadSingbox();
 
                 res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-                res.end(JSON.stringify({ success: true }));
+                res.end(JSON.stringify({ success: true, uuid: effectiveUuid }));
+            });
+            return;
+        }
+
+        // 一键随机生成 / 轮换特定用户的 UUID
+        if (pathname === "/admin/api/rotate-uuid" && req.method === "POST") {
+            let body = "";
+            req.on("data", (c) => { body += c; });
+            req.on("end", () => {
+                const { uuid, newUuid } = JSON.parse(body || "{}");
+                const target = usersDatabase.find((u) => u.uuid === uuid);
+                if (!target) {
+                    res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
+                    return res.end(JSON.stringify({ error: "未找到目标用户" }));
+                }
+
+                const assignedUuid = (newUuid && String(newUuid).trim()) ? String(newUuid).trim() : crypto.randomUUID();
+                const oldAct = userActivityMap.get(uuid);
+                if (oldAct) {
+                    userActivityMap.delete(uuid);
+                    userActivityMap.set(assignedUuid, oldAct);
+                }
+                target.uuid = assignedUuid;
+                saveUsers();
+                safeReloadSingbox();
+
+                console.log(`[Security] 用户 [${target.username}] 已由管理员一键更换凭据 UUID: ${assignedUuid}`);
+                res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+                res.end(JSON.stringify({ success: true, newUuid: assignedUuid }));
             });
             return;
         }
@@ -2604,7 +2646,7 @@ function handleHttpRequest(req, res) {
             let body = "";
             req.on("data", (c) => { body += c; });
             req.on("end", () => {
-                const { username, password, limitVal, limitUnit, days } = JSON.parse(body || "{}");
+                const { username, password, limitVal, limitUnit, days, customUuid } = JSON.parse(body || "{}");
                 const cleanUser = String(username || "").trim();
                 const cleanPwd = String(password || "123456").trim();
 
@@ -2618,8 +2660,10 @@ function handleHttpRequest(req, res) {
                     return res.end(JSON.stringify({ error: "该用户名已被占用" }));
                 }
 
+                const assignedUuid = (customUuid && String(customUuid).trim()) ? String(customUuid).trim() : crypto.randomUUID();
+
                 const newUser = {
-                    uuid: crypto.randomUUID(),
+                    uuid: assignedUuid,
                     username: cleanUser,
                     passwordHash: hashPassword(cleanPwd),
                     trafficLimit: convertToBytes(limitVal || 50, limitUnit || "GB"),
@@ -2636,7 +2680,7 @@ function handleHttpRequest(req, res) {
                 saveUsers();
                 safeReloadSingbox();
                 res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-                res.end(JSON.stringify({ success: true }));
+                res.end(JSON.stringify({ success: true, uuid: assignedUuid }));
             });
             return;
         }

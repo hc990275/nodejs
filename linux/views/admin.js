@@ -214,7 +214,7 @@ return sendHtmlResponse(res, 200, `
                     }
                     .logout-btn:hover { background: #fde2e2; }
                     
-                    /* 数据统计网格 */
+                    /* 数据统计网格 - 现代 Element UI 明亮微质感看板 */
                     .stats-grid {
                         display: grid;
                         grid-template-columns: repeat(4, 1fr);
@@ -224,25 +224,93 @@ return sendHtmlResponse(res, 200, `
                     .stat-card {
                         background: var(--el-card);
                         border: 1px solid var(--el-border);
-                        border-radius: 6px;
+                        border-radius: 8px;
                         padding: 16px 18px;
-                        box-shadow: var(--el-shadow);
+                        box-shadow: 0 1px 4px 0 rgba(0, 0, 0, 0.05);
                         position: relative;
-                        overflow: hidden;
+                        display: flex;
+                        align-items: center;
+                        justify-content: space-between;
+                        transition: transform 0.2s ease, box-shadow 0.2s ease;
                     }
-                    .stat-card::before {
-                        content: '';
-                        position: absolute;
-                        left: 0; top: 0; bottom: 0;
-                        width: 4px;
+                    .stat-card:hover {
+                        transform: translateY(-2px);
+                        box-shadow: 0 4px 14px 0 rgba(0, 0, 0, 0.08);
                     }
-                    .stat-card.c1::before { background: var(--el-primary); }
-                    .stat-card.c2::before { background: var(--el-success); }
-                    .stat-card.c3::before { background: #8e44ad; }
-                    .stat-card.c4::before { background: #0284c7; }
-                    .stat-title { font-size: 12px; color: var(--el-text-secondary); margin-bottom: 6px; font-weight: 500; }
+                    .stat-info { display: flex; flex-direction: column; }
+                    .stat-title { font-size: 13px; color: var(--el-text-secondary); margin-bottom: 4px; font-weight: 500; }
                     .stat-value { font-size: 22px; font-weight: 700; color: var(--el-text-main); display: flex; align-items: baseline; gap: 4px; }
                     .stat-unit { font-size: 12px; color: var(--el-text-secondary); font-weight: normal; }
+                    .stat-icon-wrap {
+                        width: 44px;
+                        height: 44px;
+                        border-radius: 8px;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        flex-shrink: 0;
+                    }
+                    .stat-icon-wrap.c1 { background: #ecf5ff; color: var(--el-primary); }
+                    .stat-icon-wrap.c2 { background: #f0f9eb; color: var(--el-success); }
+                    .stat-icon-wrap.c3 { background: #fdf6ec; color: var(--el-warning); }
+                    .stat-icon-wrap.c4 { background: #f4f4f5; color: #909399; }
+
+                    /* 胶囊流量进度条 */
+                    .traffic-progress-wrap {
+                        display: flex;
+                        flex-direction: column;
+                        gap: 4px;
+                        min-width: 140px;
+                    }
+                    .traffic-progress-bar {
+                        width: 100%;
+                        height: 6px;
+                        background: #ebeef5;
+                        border-radius: 3px;
+                        overflow: hidden;
+                    }
+                    .traffic-progress-inner {
+                        height: 100%;
+                        border-radius: 3px;
+                        transition: width 0.3s ease;
+                    }
+                    .traffic-progress-text {
+                        display: flex;
+                        justify-content: space-between;
+                        align-items: center;
+                        font-size: 11px;
+                        color: var(--el-text-secondary);
+                    }
+
+                    /* UUID 微徽章与一键生成/轮换 */
+                    .uuid-pill {
+                        display: inline-flex;
+                        align-items: center;
+                        gap: 4px;
+                        background: #f4f4f5;
+                        border: 1px solid #e9e9eb;
+                        padding: 2px 6px;
+                        border-radius: 4px;
+                        margin-top: 3px;
+                    }
+                    .uuid-text {
+                        font-family: Consolas, monospace;
+                        font-size: 11px;
+                        color: var(--el-text-regular);
+                        cursor: pointer;
+                    }
+                    .uuid-text:hover { color: var(--el-primary); }
+                    .btn-mini-icon {
+                        border: none;
+                        background: transparent;
+                        cursor: pointer;
+                        padding: 1px 3px;
+                        border-radius: 3px;
+                        font-size: 11px;
+                        line-height: 1;
+                        transition: background 0.15s;
+                    }
+                    .btn-mini-icon:hover { background: #e4e7ed; }
 
                     /* 主内容面板 */
                     .panel {
@@ -364,6 +432,11 @@ return sendHtmlResponse(res, 200, `
                         color: var(--el-text-regular); padding: 4px 8px; font-size: 12px; border-radius: 4px;
                     }
                     .btn-action-edit:hover { color: var(--el-primary); border-color: var(--el-primary-border); background: var(--el-primary-light); }
+                    .btn-action-rotate {
+                        background: #fdf6ec; border: 1px solid #faecd8;
+                        color: #e6a23c; padding: 4px 8px; font-size: 12px; border-radius: 4px; cursor: pointer; transition: all 0.2s;
+                    }
+                    .btn-action-rotate:hover { background: #e6a23c; color: #fff; }
                     .btn-action-reset {
                         background: var(--el-warning-light); border: 1px solid var(--el-warning-border);
                         color: var(--el-warning); padding: 4px 8px; font-size: 12px; border-radius: 4px;
@@ -1009,21 +1082,41 @@ return sendHtmlResponse(res, 200, `
                     </div>
 
                     <div class="stats-grid">
-                        <div class="stat-card c1">
-                            <div class="stat-title">全站注册用户</div>
-                            <div class="stat-value">${totalUsers} <span class="stat-unit">人</span></div>
+                        <div class="stat-card">
+                            <div class="stat-info">
+                                <div class="stat-title">全站注册用户</div>
+                                <div class="stat-value">${totalUsers} <span class="stat-unit">人</span></div>
+                            </div>
+                            <div class="stat-icon-wrap c1">
+                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+                            </div>
                         </div>
-                        <div class="stat-card c2">
-                            <div class="stat-title">有效通行凭证</div>
-                            <div class="stat-value" style="color:var(--el-success);">${activeUsersCount} <span class="stat-unit">活跃</span></div>
+                        <div class="stat-card">
+                            <div class="stat-info">
+                                <div class="stat-title">有效通行凭证</div>
+                                <div class="stat-value" style="color:var(--el-success);">${activeUsersCount} <span class="stat-unit">活跃</span></div>
+                            </div>
+                            <div class="stat-icon-wrap c2">
+                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path><polyline points="9 12 11 14 15 10"></polyline></svg>
+                            </div>
                         </div>
-                        <div class="stat-card c3" onclick="openAllVisitorsModal()" style="cursor:pointer;" title="点击查看全站当前实时在线访客与IP归属地">
-                            <div class="stat-title">实时活跃连线 (点击监控)</div>
-                            <div class="stat-value" style="color:#8e44ad;">${totalLiveConnections} <span class="stat-unit">连接</span></div>
+                        <div class="stat-card" onclick="openAllVisitorsModal()" style="cursor:pointer;" title="点击查看全站当前实时在线访客与IP归属地">
+                            <div class="stat-info">
+                                <div class="stat-title">实时活跃连线 (点击监控)</div>
+                                <div class="stat-value" style="color:var(--el-warning);">${totalLiveConnections} <span class="stat-unit">连接</span></div>
+                            </div>
+                            <div class="stat-icon-wrap c3">
+                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"></circle><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"></path></svg>
+                            </div>
                         </div>
-                        <div class="stat-card c4">
-                            <div class="stat-title">全站已用总流量</div>
-                            <div class="stat-value" style="color:#0284c7;">${formatBytes(totalTrafficSum)}</div>
+                        <div class="stat-card">
+                            <div class="stat-info">
+                                <div class="stat-title">全站已用总流量</div>
+                                <div class="stat-value" style="color:var(--el-primary);">${formatBytes(totalTrafficSum)}</div>
+                            </div>
+                            <div class="stat-icon-wrap c4">
+                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+                            </div>
                         </div>
                     </div>
 
@@ -1301,6 +1394,13 @@ return sendHtmlResponse(res, 200, `
                                 <input type="text" id="add_user" placeholder="请输入用户名" />
                             </div>
                             <div class="field-box">
+                                <label style="display:flex; justify-content:space-between; align-items:center;">
+                                    <span>节点通行凭证 (UUID)</span>
+                                    <button type="button" class="btn" style="padding:2px 8px; font-size:11px; background:var(--el-primary-light); color:var(--el-primary); border:1px solid var(--el-primary-border);" onclick="generateNewAddUuid()">🎲 随机生成</button>
+                                </label>
+                                <input type="text" id="add_uuid" placeholder="留空则自动随机生成" style="font-family:Consolas, monospace; font-size:12px;" />
+                            </div>
+                            <div class="field-box">
                                 <label>初始登录密码</label>
                                 <input type="password" id="add_pwd" placeholder="设置登录密码" value="123456" />
                             </div>
@@ -1353,7 +1453,16 @@ return sendHtmlResponse(res, 200, `
                     <div class="modal-mask" id="editModal">
                         <div class="modal">
                             <h4 id="editModalTitle">编辑用户资料</h4>
-                            <input type="hidden" id="edit_uuid" />
+                            <div class="field-box">
+                                <label style="display:flex; justify-content:space-between; align-items:center;">
+                                    <span>节点通行凭证 (UUID)</span>
+                                    <button type="button" class="btn" style="padding:2px 8px; font-size:11px; background:var(--el-warning-light); color:var(--el-warning); border:1px solid var(--el-warning-border);" onclick="generateNewEditUuid()">🎲 随机换新UUID</button>
+                                </label>
+                                <div style="display:flex; gap:6px;">
+                                    <input type="text" id="edit_uuid" readonly style="font-family:Consolas, monospace; font-size:12px; background:#f5f7fa; color:var(--el-text-main); flex:1;" />
+                                </div>
+                                <span style="font-size:11px; color:var(--el-text-secondary); margin-top:3px; display:block;">更换后旧订阅立即作废，该用户当前已建立的所有长连接将被瞬间切断</span>
+                            </div>
                             <div class="field-box">
                                 <label>重置密码 (留空则保持原密码不变)</label>
                                 <input type="text" id="edit_pwd" placeholder="输入新密码" />
@@ -1943,19 +2052,34 @@ return sendHtmlResponse(res, 200, `
                                 var avatarChar = (u.username || "?").substring(0, 1).toUpperCase();
                                 var uuidSub = (u.uuid || "").substring(0, 8) + '...';
 
+                                // 计算流量百分比与胶囊进度条颜色
+                                var pct = 0;
+                                if (u.trafficLimit > 0) {
+                                    pct = Math.min(100, Math.round((u.trafficUsed / u.trafficLimit) * 1000) / 10);
+                                }
+                                var barColor = 'var(--el-primary)';
+                                if (pct >= 100) barColor = 'var(--el-danger)';
+                                else if (pct >= 85) barColor = 'var(--el-warning)';
+
                                 var row = '<tr>';
                                 row += '<td data-label="用户主体">';
                                 row +=   '<div class="user-cell">';
                                 row +=     '<span class="avatar">' + avatarChar + '</span>';
                                 row +=     '<div class="user-info">';
-                                row +=       '<span class="uname">' + u.username + '</span>';
-                                row +=       '<span class="uuid-sub" data-copy="' + u.uuid + '" onclick="copyText(this.dataset.copy)" title="点击复制完整UUID">' + uuidSub + '</span>';
+                                row +=       '<span class="uname">' + escapeHtml(u.username) + '</span>';
+                                row +=       '<div class="uuid-pill" title="完整UUID: ' + u.uuid + ' (点击复制)">';
+                                row +=         '<span class="uuid-text" data-copy="' + u.uuid + '" onclick="copyText(this.dataset.copy)">' + uuidSub + '</span>';
+                                row +=         '<button type="button" class="btn-mini-icon" data-copy="' + u.uuid + '" onclick="copyText(this.dataset.copy)" title="复制完整UUID">📋</button>';
+                                row +=         '<button type="button" class="btn-mini-icon" data-uuid="' + u.uuid + '" data-uname="' + safeUname + '" onclick="quickRotateUuid(this.dataset.uuid, this.dataset.uname)" title="一键随机换新UUID">🎲</button>';
+                                row +=       '</div>';
                                 row +=     '</div>';
                                 row +=   '</div>';
                                 row += '</td>';
                                 row += '<td data-label="用量/限额">';
-                                row +=   '<div class="metric-val">' + u.trafficUsedStr + '</div>';
-                                row +=   '<div class="metric-sub">限额 ' + u.trafficLimitStr + '</div>';
+                                row +=   '<div class="traffic-progress-wrap">';
+                                row +=     '<div class="traffic-progress-bar"><div class="traffic-progress-inner" style="width:' + pct + '%; background:' + barColor + ';"></div></div>';
+                                row +=     '<div class="traffic-progress-text"><span>' + u.trafficUsedStr + ' / ' + u.trafficLimitStr + '</span><span style="font-weight:600; color:' + barColor + ';">' + pct + '%</span></div>';
+                                row +=   '</div>';
                                 row += '</td>';
                                 row += '<td data-label="到期时间" class="date-cell">' + u.expireDateStr + '</td>';
                                 row += '<td data-label="账号状态">' + statusBadge + '</td>';
@@ -1963,15 +2087,16 @@ return sendHtmlResponse(res, 200, `
                                 row += '<td data-label="使用者IP信息">' + userIpHtml + '</td>';
                                 row += '<td data-label="专属订阅">';
                                 row +=   '<div class="sub-btn-group">';
-                                row +=     '<button class="btn btn-copy-sub" data-copy="' + u.baseSubUrl + '" onclick="copyText(this.dataset.copy)">复制通用订阅</button>';
-                                row +=     '<button class="btn btn-copy-clash" data-copy="' + u.clashSubUrl + '" onclick="copyText(this.dataset.copy)">Clash配置</button>';
+                                row +=     '<button class="btn btn-copy-sub" data-copy="' + u.baseSubUrl + '" onclick="copyText(this.dataset.copy)">通用订阅</button>';
+                                row +=     '<button class="btn btn-copy-clash" data-copy="' + u.clashSubUrl + '" onclick="copyText(this.dataset.copy)">Clash</button>';
                                 row +=   '</div>';
                                 row += '</td>';
                                 row += '<td data-label="运维操作">';
                                 row +=   '<div class="actions-group">';
-                                row +=     '<button class="btn-action-edit" data-uuid="' + u.uuid + '" onclick="openEditModal(this.dataset.uuid)">调整配额</button>';
-                                row +=     '<button class="btn-action-reset" data-uuid="' + u.uuid + '" onclick="resetTraffic(this.dataset.uuid)">重置用量</button>';
-                                row +=     '<button class="btn-action-del" data-uuid="' + u.uuid + '" onclick="deleteUser(this.dataset.uuid)">注销账号</button>';
+                                row +=     '<button class="btn-action-edit" data-uuid="' + u.uuid + '" onclick="openEditModal(this.dataset.uuid)">编辑</button>';
+                                row +=     '<button class="btn-action-rotate" data-uuid="' + u.uuid + '" data-uname="' + safeUname + '" onclick="quickRotateUuid(this.dataset.uuid, this.dataset.uname)" title="随机换新UUID并热重载">🎲 换UUID</button>';
+                                row +=     '<button class="btn-action-reset" data-uuid="' + u.uuid + '" onclick="resetTraffic(this.dataset.uuid)">重置</button>';
+                                row +=     '<button class="btn-action-del" data-uuid="' + u.uuid + '" onclick="deleteUser(this.dataset.uuid)">注销</button>';
                                 row +=   '</div>';
                                 row += '</td>';
                                 row += '</tr>';
@@ -2178,9 +2303,59 @@ return sendHtmlResponse(res, 200, `
                         }
                     }
 
+                    function generateUuidV4() {
+                        if (window.crypto && window.crypto.randomUUID) {
+                            return window.crypto.randomUUID();
+                        }
+                        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                            var r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+                            return v.toString(16);
+                        });
+                    }
+
+                    function generateNewAddUuid() {
+                        const el = document.getElementById("add_uuid");
+                        if (el) {
+                            el.value = generateUuidV4();
+                            showToast("已自动随机生成新 UUID！");
+                        }
+                    }
+
+                    function generateNewEditUuid() {
+                        const el = document.getElementById("edit_uuid");
+                        if (el) {
+                            el.value = generateUuidV4();
+                            showToast("已生成新 UUID，点击【保存更新】后立即生效！");
+                        }
+                    }
+
+                    async function quickRotateUuid(uuid, uname) {
+                        const displayName = uname || uuid.substring(0, 8);
+                        if (!confirm("⚠️ 确定要为用户「" + displayName + "」一键随机轮换新 UUID 吗？\n\n• 当前已建立的所有长连接将被瞬间切断！\n• 旧订阅链接将即刻作废，用户需刷新配置重新连接。\n• 系统将自动平滑热重载 Sing-box 核心。")) {
+                            return;
+                        }
+                        try {
+                            const res = await fetch("/v3/admin/api/rotate-uuid", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ uuid: uuid })
+                            });
+                            const data = await res.json();
+                            if (res.ok && data.success) {
+                                showToast("UUID 轮换成功！新凭据已生效");
+                                setTimeout(() => location.reload(), 600);
+                            } else {
+                                alert(data.error || "轮换 UUID 失败");
+                            }
+                        } catch (err) {
+                            alert("网络请求异常: " + err.message);
+                        }
+                    }
+
                     function openAddModal() {
                         document.getElementById("add_user").value = "";
                         document.getElementById("add_pwd").value = "123456";
+                        document.getElementById("add_uuid").value = generateUuidV4();
                         document.getElementById("add_val").value = "50";
                         document.getElementById("add_unit").value = "GB";
                         document.getElementById("add_days").value = "30";
@@ -2199,6 +2374,7 @@ return sendHtmlResponse(res, 200, `
                         try {
                             const username = document.getElementById("add_user").value.trim();
                             const password = document.getElementById("add_pwd").value.trim();
+                            const customUuid = (document.getElementById("add_uuid").value || "").trim();
                             const limitVal = document.getElementById("add_val").value;
                             const limitUnit = document.getElementById("add_unit").value;
                             const days = document.getElementById("add_days").value;
@@ -2213,7 +2389,7 @@ return sendHtmlResponse(res, 200, `
                                 method: "POST",
                                 headers: { "Content-Type": "application/json" },
                                 body: JSON.stringify({ 
-                                    username, password, limitVal, limitUnit, days,
+                                    username, password, customUuid, limitVal, limitUnit, days,
                                     maxOnlineIps, ipLimitPolicy, idleDisconnectEnabled, idleTimeoutSeconds
                                 })
                             });
@@ -2267,6 +2443,7 @@ return sendHtmlResponse(res, 200, `
 
                         try {
                             const uuid = document.getElementById("edit_uuid").value;
+                            const newUuid = document.getElementById("edit_uuid").value.trim();
                             const newPassword = document.getElementById("edit_pwd").value;
                             const trafficLimitVal = document.getElementById("edit_val").value;
                             const trafficLimitUnit = document.getElementById("edit_unit").value;
@@ -2281,7 +2458,7 @@ return sendHtmlResponse(res, 200, `
                                 method: "POST",
                                 headers: { "Content-Type": "application/json" },
                                 body: JSON.stringify({ 
-                                    uuid, newPassword, trafficLimitVal, trafficLimitUnit, expireDate, enabled,
+                                    uuid, newUuid, newPassword, trafficLimitVal, trafficLimitUnit, expireDate, enabled,
                                     maxOnlineIps, ipLimitPolicy, idleDisconnectEnabled, idleTimeoutSeconds
                                 })
                             });
