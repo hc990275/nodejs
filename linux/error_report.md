@@ -192,4 +192,41 @@
 ### 问题十七：客户端模板字符串换行符转义缺失导致 SyntaxError 阻断弹窗与全局交互
 - **现象**：在后台页面中，点击【实时访客IP监控】、【站点与注册配置】、【+ 新增用户授权】等任何操作按钮均无任何响应，弹窗无法弹出。
 - **原因**：在 `views/admin.js` 的 `quickRotateUuid` 函数中，`confirm("...\\n• ...")` 提示文本中使用了单斜杠 `\n`。由于整个 HTML 页面是通过 ES6 模板字符串（反引号 ``）由 Node.js 渲染的，模板解析时将 `\n` 直接解释为物理换行符嵌入到了前端生成的 `<script>` 双引号字符串中，导致浏览器 V8 解析 JavaScript 遇到非法换行 token，抛出 `SyntaxError: Invalid or unexpected token`。这直接阻断了整个客户端脚本的执行，导致所有绑定在 window 上的模态框函数未挂载。
-- **方案**：将模板字符串内部用于前端展示的换行转义符号修正为 `\\n`，确保输出给客户端浏览器的是合法的字面量 `\n`。通过 Node.js 自动化静态 AST/`new Function()` 语法沙箱执行严格验证，确认客户端脚本通过率为 100%。
+
+---
+
+### 问题十八：后台配置 Cloudflare Argo 隧道后订阅无优选节点且进程未热启动
+- **现象**：在管理后台【站点与网络配置】->【网络与穿透】中填入了 `ARGO_DOMAIN`（隧道域名）和 `ARGO_TOKEN`（隧道凭证）并保存成功后，重新获取或刷新客户端订阅链接，节点列表中依然只有直连节点，没有生成任何 Argo 优选穿透节点（如 `优选-VLESS`、`优选-VMess`、`优选-Trojan`）。
+- **原因**：
+  1. **全局可用性标记被硬编码定格**：在 `index.js` 启动加载阶段，`let isTunnelAvailable` 被硬编码设置为了 `false`，未跟随 `ARGO_TOKEN` 和 `ARGO_DOMAIN` 进行动态求值；
+  2. **后台保存 API 遗漏变量刷新**：管理员在后台调用 `POST /admin/api/settings` 保存时，后端仅更新了 `ARGO_DOMAIN` 和 `ARGO_TOKEN` 字符串并写入 `.env`，**完全没有重新计算 `isTunnelAvailable`**。导致正在运行的服务内存中 `isTunnelAvailable` 始终定格为 `false`；
+  3. **订阅构建拦截阻断**：在订阅节点生成函数 `getNodesForUser()` 中，优选穿透节点的生成受 `if (isTunnelAvailable)` 条件保护。因为该值为 `false`，直接跳过了穿透节点的组装，导致客户端订阅中始终无法呈现；
+  4. **进程与监听服务未热拉起**：原代码中的 `initAndStartCloudflared()` 头部存在早期调试遗留的硬编码 `return;`，且配置保存后未联动热拉起 `cloudflared` 二进制守护进程与本地 `PORT_TUNNEL (8001)` Ingress 端口服务。
+- **方案**：
+  1. **内存动态响应重算**：在 `index.js` 初始化时将 `isTunnelAvailable` 恢复为标准动态布尔值 `Boolean(ARGO_TOKEN && ... && ARGO_DOMAIN && ...)`；
+  2. **设置保存热触发联动**：在 `/admin/api/settings` 保存逻辑中增加动态重算判断。一旦检测到隧道配置填入或修改，立即自动重置 `isTunnelAvailable` 状态；
+  3. **全链路进程与端口热生命周期管控**：
+     - 若配置有效：自动调用 `initAndStartCloudflared()` 热拉起 `cloudflared` 守护进程并启动本地 8001 端口流量接收器；
+     - 若配置清空：自动调用 `stopCloudflared()` 和 `stopTunnelServer()` 平滑释放子进程与端口；
+
+---
+
+### 问题十九：Argo 隧道实时在线状态看板与多优选 CDN 域名/IP 矩阵订阅分发集成
+- **现象**：
+  1. 管理员在后台配置 Argo 隧道后，无法直观确认 cloudflared 核心守护进程是否启动、PID 为多少、是否已成功向 Cloudflare 边缘注册心跳，缺乏可视化排障抓手；
+  2. 既有优选域名（`OPTIMIZED_DOMAIN`）仅支持单个域名，无法同时配置多个优选域名或优选 IP，导致客户端无法按不同地区/运营商线路测速挑选最佳接入点。
+- **原因**：
+  1. `cloudflared` 进程采用 `inherit` 模式运行，Node.js 内存中未捕获其控制台日志输出流，且后台缺乏轮询隧道运行状态的专用数据接口与前端展示看板；
+  2. `getNodesForUser` 仅对单个 `OPTIMIZED_DOMAIN || ARGO_DOMAIN` 进行了节点装配，未支持多行/多地址列表解析。
+- **方案**：
+  1. **守护进程输出流解析与状态状态机**：
+     - 将 `cloudflared` 子进程输入输出改为 `pipe` 模式，实时逐行捕获 stdout/stderr 输出流；
+     - 维护全局 `tunnelStatusState` 对象，记录 PID、运行状态（`stopped` / `starting` / `connected` / `error`）、Connector ID、心跳时间戳及最近 30 条核心日志；
+     - 智能正则匹配 `Registered tunnel connection` / `connected to` 等边缘注册成功标志，将状态机置为绿色 `connected`；
+  2. **状态接口与看板控件**：
+     - 提供 `GET /admin/api/tunnel-status` 及在 `/admin/api/settings` 中集成状态数据；
+     - 在管理后台【网络与穿透】Tab 顶部构建精美 Element UI 风格看板，包含动态状态徽章（绿/橙/红/灰）、核心 PID、实例 ID、绑定域名及暗色高反差 Consolas 终端日志框；
+     - 切换至该 Tab 时自动开启 3 秒轻量轮询，离开时立即停止定时器，降低服务端负载；
+  3. **多优选 CDN 域名与 IP 矩阵订阅生成**：
+     - 将后台输入控件升级为多行文本框 `textarea`，支持配置多个优选域名或 IP（支持换行、空格、逗号或分号分隔）；
+     - 订阅生成引擎在生成优选节点时，自动遍历所有优选地址，按 `优选1-VLESS [地址]`、`优选2-VLESS [地址]` 矩阵化展开，方便客户端本地并发测速与择优连接。
