@@ -228,7 +228,26 @@ const GLOBAL_SALT = process.env.GLOBAL_SALT || "_system_unified_salt_2026_pro";
 let globalTunnelServer = null;
 let singboxProcess = null;
 let isReloading = false;
-let isTunnelAvailable = false; // 用户已指定不开启隧道，彻底禁用
+let isTunnelAvailable = Boolean(ARGO_TOKEN && ARGO_TOKEN.trim() !== "" && ARGO_DOMAIN && ARGO_DOMAIN.trim() !== "");
+let tunnelStatusState = {
+    connected: false,
+    status: "stopped", // "stopped" | "starting" | "connected" | "error"
+    pid: null,
+    connectorId: "",
+    lastSeen: 0,
+    recentLogs: []
+};
+
+function appendTunnelLog(msg) {
+    if (!msg) return;
+    const timeStr = new Date().toLocaleTimeString();
+    const cleanMsg = String(msg).replace(/[\r\n]+/g, " ").trim();
+    if (!cleanMsg) return;
+    tunnelStatusState.recentLogs.push(`[${timeStr}] ${cleanMsg}`);
+    if (tunnelStatusState.recentLogs.length > 30) {
+        tunnelStatusState.recentLogs.shift();
+    }
+}
 
 const activeSessions = new Map();       // user session: token -> username
 const adminSessions = new Map();        // admin session: token -> expireTime
@@ -1198,14 +1217,63 @@ function initSingboxCore() {
     }
 }
 
-function initAndStartCloudflared() {
-    // 用户已明确指定不开启隧道，直接跳过
-    console.log("[Cloudflared] 已配置为不开启 Argo 隧道，直连模式运行。");
-    return;
+function stopCloudflared() {
+    if (global.__v3_cloudflared_process) {
+        try {
+            console.log("[Cloudflared] 正在终止现有的 Argo 隧道进程...");
+            global.__v3_cloudflared_process.kill("SIGTERM");
+        } catch (_) {}
+        global.__v3_cloudflared_process = null;
+    }
+    tunnelStatusState.connected = false;
+    tunnelStatusState.status = "stopped";
+    tunnelStatusState.pid = null;
+    appendTunnelLog("Argo 隧道守护进程已停止");
+}
 
+function startTunnelServer() {
     if (!isTunnelAvailable) return;
+    if (globalTunnelServer) return;
+    try {
+        const serverTunnel = http.createServer(handleHttpRequest);
+        serverTunnel.on("upgrade", handleUpgradeRequest);
+        serverTunnel.on("error", (err) => {
+            console.warn(`[Tunnel] Argo 隧道本地服务端口 (${PORT_TUNNEL}) 警告: ${err.message}`);
+            appendTunnelLog(`[Local-8001-Error] ${err.message}`);
+        });
+        serverTunnel.listen(PORT_TUNNEL, () => {
+            console.log(`[Tunnel] Argo 隧道本地服务已就绪 (监听端口: ${PORT_TUNNEL})`);
+            appendTunnelLog(`Argo 隧道本地接收端口已监听: ${PORT_TUNNEL}`);
+        });
+        globalTunnelServer = serverTunnel;
+    } catch (err) {
+        console.error("[Tunnel] Argo 隧道本地端口监听异常:", err.message);
+        appendTunnelLog(`[Local-8001-Listen-Fail] ${err.message}`);
+    }
+}
+
+function stopTunnelServer() {
+    if (globalTunnelServer) {
+        try {
+            globalTunnelServer.close();
+        } catch (_) {}
+        globalTunnelServer = null;
+    }
+}
+
+function initAndStartCloudflared() {
+    if (!isTunnelAvailable) {
+        console.log("[Cloudflared] 未配置 Argo 隧道或配置不完整，直连模式运行。");
+        stopCloudflared();
+        stopTunnelServer();
+        return;
+    }
+
+    startTunnelServer();
+
     if (global.__v3_cloudflared_process && !global.__v3_cloudflared_process.killed) {
         console.log("[Cloudflared] 现有 Argo 隧道进程健康运行中，保持复用无需重启。");
+        tunnelStatusState.pid = global.__v3_cloudflared_process.pid;
         return;
     }
     let retryCount = 0;
@@ -1213,18 +1281,51 @@ function initAndStartCloudflared() {
     const start = () => {
         if (retryCount >= maxRetries) {
             console.warn("[Cloudflared] 隧道连接多次失败，已自动停止重试。若不需要 Argo 穿透请保持 ARGO_TOKEN 留空。");
+            tunnelStatusState.status = "error";
+            tunnelStatusState.connected = false;
+            appendTunnelLog("隧道重试达最大限制(3次)，已挂起重试");
             return;
         }
+        tunnelStatusState.status = "starting";
+        appendTunnelLog(`正在启动 Cloudflared 守护进程 (尝试 ${retryCount + 1}/${maxRetries})...`);
+
         const tunnel = spawn(CLOUDFLARED_BIN, ["tunnel", "--no-autoupdate", "run", "--token", ARGO_TOKEN], {
             cwd: WORK_DIR,
-            stdio: "inherit"
+            stdio: ["ignore", "pipe", "pipe"]
         });
         global.__v3_cloudflared_process = tunnel;
+        tunnelStatusState.pid = tunnel.pid;
+
+        const handleLogData = (chunk) => {
+            const lines = chunk.toString("utf8").split(/\r?\n/);
+            lines.forEach((line) => {
+                const trimmed = line.trim();
+                if (!trimmed) return;
+                appendTunnelLog(trimmed);
+                tunnelStatusState.lastSeen = Date.now();
+                // 捕获 Cloudflare 注册成功标识: Registered tunnel connection / Connection ... registered
+                if (/registered\s+tunnel\s+connection|connection.*registered|connected\s+to/i.test(trimmed)) {
+                    tunnelStatusState.connected = true;
+                    tunnelStatusState.status = "connected";
+                }
+                const matchId = trimmed.match(/Connector ID:\s*([a-f0-9-]+)/i);
+                if (matchId) {
+                    tunnelStatusState.connectorId = matchId[1];
+                }
+            });
+        };
+
+        if (tunnel.stdout) tunnel.stdout.on("data", handleLogData);
+        if (tunnel.stderr) tunnel.stderr.on("data", handleLogData);
 
         tunnel.on("exit", (code) => {
             global.__v3_cloudflared_process = null;
+            tunnelStatusState.connected = false;
+            tunnelStatusState.pid = null;
+            tunnelStatusState.status = "stopped";
+            appendTunnelLog(`Cloudflared 进程退出 (退出码: ${code})`);
             retryCount++;
-            if (retryCount < maxRetries) {
+            if (retryCount < maxRetries && isTunnelAvailable) {
                 setTimeout(start, 10000);
             } else {
                 console.warn(`[Cloudflared] 隧道已退出 (代码 ${code})，停止继续重启。`);
@@ -1233,10 +1334,18 @@ function initAndStartCloudflared() {
     };
 
     if (!fs.existsSync(CLOUDFLARED_BIN)) {
+        appendTunnelLog("未检测到 cloudflared 二进制文件，正在自动获取...");
         const archMap = { x64: "cloudflared-linux-amd64", arm64: "cloudflared-linux-arm64", arm: "cloudflared-linux-arm" };
         const binName = archMap[process.arch] || "cloudflared-linux-amd64";
         const downloadCmd = `curl -sSL -o "${CLOUDFLARED_BIN}" "https://github.com/cloudflare/cloudflared/releases/latest/download/${binName}" && chmod +x "${CLOUDFLARED_BIN}"`;
-        exec(downloadCmd, start);
+        exec(downloadCmd, (err) => {
+            if (err) {
+                appendTunnelLog(`下载 cloudflared 失败: ${err.message}`);
+                tunnelStatusState.status = "error";
+                return;
+            }
+            start();
+        });
     } else {
         try { fs.chmodSync(CLOUDFLARED_BIN, "755"); } catch (e) { }
         start();
@@ -1462,48 +1571,60 @@ function getStructuredNodesForUser(user) {
     }
 
 
-    // 2. Argo 优选穿透节点
+    // 2. Argo 优选穿透节点 (支持多优选 CDN 域名/IP 列表展开)
     if (isTunnelAvailable) {
-        const optAddress = OPTIMIZED_DOMAIN || ARGO_DOMAIN;
-        nodes.push({
-            name: `优选-VLESS${nameSuffix}`,
-            type: "vless",
-            server: optAddress,
-            port: 443,
-            uuid: uuid,
-            tls: true,
-            sni: ARGO_DOMAIN,
-            network: "ws",
-            wsPath: vlessPath,
-            wsHeaders: { Host: ARGO_DOMAIN }
-        });
+        let optList = [];
+        if (OPTIMIZED_DOMAIN && OPTIMIZED_DOMAIN.trim() !== "") {
+            optList = OPTIMIZED_DOMAIN.split(/[\r\n,; ]+/)
+                .map((s) => s.trim())
+                .filter((s) => s.length > 0);
+        }
+        if (optList.length === 0) {
+            optList = [ARGO_DOMAIN];
+        }
 
-        nodes.push({
-            name: `优选-VMess${nameSuffix}`,
-            type: "vmess",
-            server: optAddress,
-            port: 443,
-            uuid: uuid,
-            alterId: 0,
-            cipher: "auto",
-            tls: true,
-            sni: ARGO_DOMAIN,
-            network: "ws",
-            wsPath: vmessPath,
-            wsHeaders: { Host: ARGO_DOMAIN }
-        });
+        optList.forEach((optAddress, optIdx) => {
+            const optLabel = optList.length > 1 ? `优选${optIdx + 1}` : "优选";
+            nodes.push({
+                name: `${optLabel}-VLESS${nameSuffix} [${optAddress}]`,
+                type: "vless",
+                server: optAddress,
+                port: 443,
+                uuid: uuid,
+                tls: true,
+                sni: ARGO_DOMAIN,
+                network: "ws",
+                wsPath: vlessPath,
+                wsHeaders: { Host: ARGO_DOMAIN }
+            });
 
-        nodes.push({
-            name: `优选-Trojan${nameSuffix}`,
-            type: "trojan",
-            server: optAddress,
-            port: 443,
-            password: uuid,
-            tls: true,
-            sni: ARGO_DOMAIN,
-            network: "ws",
-            wsPath: trojanPath,
-            wsHeaders: { Host: ARGO_DOMAIN }
+            nodes.push({
+                name: `${optLabel}-VMess${nameSuffix} [${optAddress}]`,
+                type: "vmess",
+                server: optAddress,
+                port: 443,
+                uuid: uuid,
+                alterId: 0,
+                cipher: "auto",
+                tls: true,
+                sni: ARGO_DOMAIN,
+                network: "ws",
+                wsPath: vmessPath,
+                wsHeaders: { Host: ARGO_DOMAIN }
+            });
+
+            nodes.push({
+                name: `${optLabel}-Trojan${nameSuffix} [${optAddress}]`,
+                type: "trojan",
+                server: optAddress,
+                port: 443,
+                password: uuid,
+                tls: true,
+                sni: ARGO_DOMAIN,
+                network: "ws",
+                wsPath: trojanPath,
+                wsHeaders: { Host: ARGO_DOMAIN }
+            });
         });
     }
 
@@ -2299,7 +2420,21 @@ function handleHttpRequest(req, res) {
                     ARGO_TOKEN,
                     ARGO_DOMAIN,
                     OPTIMIZED_DOMAIN
+                },
+                tunnelStatus: {
+                    ...tunnelStatusState,
+                    isAvailable: isTunnelAvailable,
+                    domain: ARGO_DOMAIN
                 }
+            });
+        }
+
+        // 独立拉取 Argo 隧道实时状态与心跳日志
+        if (pathname === "/admin/api/tunnel-status" && req.method === "GET") {
+            return sendJsonResponse(res, 200, {
+                ...tunnelStatusState,
+                isAvailable: isTunnelAvailable,
+                domain: ARGO_DOMAIN
             });
         }
 
@@ -2457,6 +2592,21 @@ function handleHttpRequest(req, res) {
 
                         if (Object.keys(envUpdates).length > 0) {
                             updateEnvFile(envUpdates);
+                        }
+
+                        // 动态重算 Argo 隧道可用性状态并热拉起/关闭隧道进程与本地端口
+                        const prevTunnelState = isTunnelAvailable;
+                        isTunnelAvailable = Boolean(ARGO_TOKEN && ARGO_TOKEN.trim() !== "" && ARGO_DOMAIN && ARGO_DOMAIN.trim() !== "");
+                        if (isTunnelAvailable !== prevTunnelState || envUpdates.ARGO_TOKEN !== undefined || envUpdates.ARGO_DOMAIN !== undefined) {
+                            if (isTunnelAvailable) {
+                                console.log("[Settings] 检测到 Argo 隧道配置已就绪，正在热拉起 Cloudflared 隧道与本地接收端口...");
+                                stopCloudflared();
+                                initAndStartCloudflared();
+                            } else {
+                                console.log("[Settings] 检测到 Argo 隧道已清空或禁用，正在释放隧道进程与本地端口...");
+                                stopCloudflared();
+                                stopTunnelServer();
+                            }
                         }
                     }
 
@@ -3211,23 +3361,7 @@ loadClientDownloads();
 
     // 关键：启动 Argo Tunnel 本地 Ingress 接收服务 (监听 8001 端口，接收 cloudflared 流量)
     if (isTunnelAvailable) {
-        try {
-            if (globalTunnelServer) {
-                try { globalTunnelServer.close(); } catch (_) {}
-                globalTunnelServer = null;
-            }
-            const serverTunnel = http.createServer(handleHttpRequest);
-            serverTunnel.on("upgrade", handleUpgradeRequest);
-            serverTunnel.on("error", (err) => {
-                console.warn(`[Tunnel] Argo 隧道本地服务端口 (${PORT_TUNNEL}) 警告: ${err.message}`);
-            });
-            serverTunnel.listen(PORT_TUNNEL, () => {
-                console.log(`[Tunnel] Argo 隧道本地服务已就绪 (监听端口: ${PORT_TUNNEL})`);
-            });
-            globalTunnelServer = serverTunnel;
-        } catch (err) {
-            console.error('[Tunnel] Argo 隧道本地端口监听异常:', err.message);
-        }
+        startTunnelServer();
     }
 
     // 优雅包装 close 方法，确保热重载或停服时同步干净释放 8001 隧道端口
