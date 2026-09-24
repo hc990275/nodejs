@@ -146,6 +146,7 @@ const PORT_TUNNEL = parseInt(process.env.PORT_TUNNEL || "8001", 10);
 const INTERNAL_VMESS_PORT = parseInt(process.env.INTERNAL_VMESS_PORT || "10011", 10);
 const INTERNAL_VLESS_PORT = parseInt(process.env.INTERNAL_VLESS_PORT || "10012", 10);
 const INTERNAL_TROJAN_PORT = parseInt(process.env.INTERNAL_TROJAN_PORT || "10013", 10);
+const PORT_CLASH_API = parseInt(process.env.PORT_CLASH_API || "19090", 10);
 
 const WORK_DIR = process.env.WORK_DIR || __dirname;
 
@@ -499,6 +500,54 @@ function saveSettings() {
         return true;
     } catch (err) {
         console.error(`[Settings] 同步落盘写入配置失败 (${SETTINGS_FILE}):`, err.message);
+        return false;
+    }
+}
+
+// 优雅同步原子更新 .env 文件中的键值对
+function updateEnvFile(updates) {
+    const candidates = [
+        path.join(__dirname, ".env"),
+        path.join(__dirname, "../.env"),
+        path.join(process.cwd(), ".env"),
+    ];
+    let targetPath = candidates.find((p) => fs.existsSync(p)) || path.join(__dirname, ".env");
+
+    let content = "";
+    if (fs.existsSync(targetPath)) {
+        try {
+            content = fs.readFileSync(targetPath, "utf8");
+        } catch (_) {}
+    }
+
+    const lines = content ? content.split(/\r?\n/) : [];
+    const keysHandled = new Set();
+
+    const newLines = lines.map((line) => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) return line;
+        const eq = trimmed.indexOf("=");
+        if (eq <= 0) return line;
+        const key = trimmed.slice(0, eq).trim();
+        if (updates.hasOwnProperty(key)) {
+            keysHandled.add(key);
+            return `${key}=${updates[key]}`;
+        }
+        return line;
+    });
+
+    for (const [k, v] of Object.entries(updates)) {
+        if (!keysHandled.has(k)) {
+            newLines.push(`${k}=${v}`);
+        }
+    }
+
+    try {
+        fs.writeFileSync(targetPath, newLines.join("\n"), "utf8");
+        console.log(`[Env-Update] 已成功持久化同步更新 .env: ${targetPath}`);
+        return true;
+    } catch (err) {
+        console.error(`[Env-Update] 写入 .env 失败:`, err.message);
         return false;
     }
 }
@@ -983,7 +1032,12 @@ function generateSingboxConfig() {
                 type: "direct",
                 tag: "direct"
             }
-        ]
+        ],
+        experimental: {
+            clash_api: {
+                external_controller: `127.0.0.1:${PORT_CLASH_API}`
+            }
+        }
     };
 
     const configStr = JSON.stringify(config, null, 2);
@@ -2234,12 +2288,41 @@ function handleHttpRequest(req, res) {
             return res.end(JSON.stringify({ error: "管理凭据未授权或会话已过期" }));
         }
 
-        // 读取全局站点配置
+        // 读取全局站点配置与全量协议/网络变量
         if (pathname === "/admin/api/settings" && req.method === "GET") {
-            return sendJsonResponse(res, 200, siteSettings);
+            return sendJsonResponse(res, 200, {
+                ...siteSettings,
+                envSettings: {
+                    SERVER_PORT,
+                    DIRECT_IP,
+                    ENABLE_HY2,
+                    PORT_HY2,
+                    ENABLE_HY2_HOP,
+                    HY2_HOP_PORTS,
+                    HY2_HOP_INTERVAL,
+                    ENABLE_TUIC,
+                    PORT_TUIC,
+                    ENABLE_REALITY,
+                    PORT_REALITY,
+                    REALITY_DEST,
+                    REALITY_PORT,
+                    ENABLE_VLESS_TCP,
+                    PORT_VLESS_TCP,
+                    ENABLE_TROJAN_TCP,
+                    PORT_TROJAN_TCP,
+                    ENABLE_SS,
+                    PORT_SS,
+                    SS_METHOD,
+                    ENABLE_SOCKS5,
+                    PORT_SOCKS5,
+                    ARGO_TOKEN,
+                    ARGO_DOMAIN,
+                    OPTIMIZED_DOMAIN
+                }
+            });
         }
 
-        // 保存全局站点配置
+        // 保存全局站点配置与全量协议/网络变量
         if (pathname === "/admin/api/settings" && req.method === "POST") {
             let body = "";
             req.on("data", (c) => { body += c; });
@@ -2281,8 +2364,133 @@ function handleHttpRequest(req, res) {
                         siteSettings.contactUrl = String(data.contactUrl || "").trim();
                     }
                     saveSettings();
-                    console.log("[Settings] 站点运营与注册配置已由管理员成功更新并生效");
-                    return sendJsonResponse(res, 200, { success: true, settings: siteSettings });
+
+                    // 2. 如果携带了协议与网络变量，同步写入 .env 并热重载 Sing-box
+                    let needCoreReload = false;
+                    const envUpdates = {};
+
+                    if (data.envSettings && typeof data.envSettings === "object") {
+                        const env = data.envSettings;
+
+                        if (env.PORT_HY2 !== undefined) {
+                            PORT_HY2 = parseInt(env.PORT_HY2, 10) || 0;
+                            envUpdates.PORT_HY2 = PORT_HY2;
+                            needCoreReload = true;
+                        }
+                        if (env.ENABLE_HY2 !== undefined) {
+                            ENABLE_HY2 = Boolean(env.ENABLE_HY2);
+                            envUpdates.ENABLE_HY2 = ENABLE_HY2;
+                            needCoreReload = true;
+                        }
+                        if (env.ENABLE_HY2_HOP !== undefined) {
+                            ENABLE_HY2_HOP = Boolean(env.ENABLE_HY2_HOP);
+                            envUpdates.ENABLE_HY2_HOP = ENABLE_HY2_HOP;
+                            needCoreReload = true;
+                        }
+                        if (env.HY2_HOP_PORTS !== undefined) {
+                            HY2_HOP_PORTS = String(env.HY2_HOP_PORTS || "").trim();
+                            envUpdates.HY2_HOP_PORTS = HY2_HOP_PORTS;
+                            needCoreReload = true;
+                        }
+                        if (env.PORT_TUIC !== undefined) {
+                            PORT_TUIC = parseInt(env.PORT_TUIC, 10) || 0;
+                            envUpdates.PORT_TUIC = PORT_TUIC;
+                            needCoreReload = true;
+                        }
+                        if (env.ENABLE_TUIC !== undefined) {
+                            ENABLE_TUIC = Boolean(env.ENABLE_TUIC);
+                            envUpdates.ENABLE_TUIC = ENABLE_TUIC;
+                            needCoreReload = true;
+                        }
+                        if (env.PORT_REALITY !== undefined) {
+                            PORT_REALITY = parseInt(env.PORT_REALITY, 10) || 0;
+                            envUpdates.PORT_REALITY = PORT_REALITY;
+                            needCoreReload = true;
+                        }
+                        if (env.ENABLE_REALITY !== undefined) {
+                            ENABLE_REALITY = Boolean(env.ENABLE_REALITY);
+                            envUpdates.ENABLE_REALITY = ENABLE_REALITY;
+                            needCoreReload = true;
+                        }
+                        if (env.REALITY_DEST !== undefined) {
+                            REALITY_DEST = String(env.REALITY_DEST || "addons.mozilla.org").trim();
+                            envUpdates.REALITY_DEST = REALITY_DEST;
+                            needCoreReload = true;
+                        }
+                        if (env.PORT_VLESS_TCP !== undefined) {
+                            PORT_VLESS_TCP = parseInt(env.PORT_VLESS_TCP, 10) || 0;
+                            envUpdates.PORT_VLESS_TCP = PORT_VLESS_TCP;
+                            needCoreReload = true;
+                        }
+                        if (env.ENABLE_VLESS_TCP !== undefined) {
+                            ENABLE_VLESS_TCP = Boolean(env.ENABLE_VLESS_TCP);
+                            envUpdates.ENABLE_VLESS_TCP = ENABLE_VLESS_TCP;
+                            needCoreReload = true;
+                        }
+                        if (env.PORT_TROJAN_TCP !== undefined) {
+                            PORT_TROJAN_TCP = parseInt(env.PORT_TROJAN_TCP, 10) || 0;
+                            envUpdates.PORT_TROJAN_TCP = PORT_TROJAN_TCP;
+                            needCoreReload = true;
+                        }
+                        if (env.ENABLE_TROJAN_TCP !== undefined) {
+                            ENABLE_TROJAN_TCP = Boolean(env.ENABLE_TROJAN_TCP);
+                            envUpdates.ENABLE_TROJAN_TCP = ENABLE_TROJAN_TCP;
+                            needCoreReload = true;
+                        }
+                        if (env.PORT_SS !== undefined) {
+                            PORT_SS = parseInt(env.PORT_SS, 10) || 0;
+                            envUpdates.PORT_SS = PORT_SS;
+                            needCoreReload = true;
+                        }
+                        if (env.ENABLE_SS !== undefined) {
+                            ENABLE_SS = Boolean(env.ENABLE_SS);
+                            envUpdates.ENABLE_SS = ENABLE_SS;
+                            needCoreReload = true;
+                        }
+                        if (env.PORT_SOCKS5 !== undefined) {
+                            PORT_SOCKS5 = parseInt(env.PORT_SOCKS5, 10) || 0;
+                            envUpdates.PORT_SOCKS5 = PORT_SOCKS5;
+                            needCoreReload = true;
+                        }
+                        if (env.ENABLE_SOCKS5 !== undefined) {
+                            ENABLE_SOCKS5 = Boolean(env.ENABLE_SOCKS5);
+                            envUpdates.ENABLE_SOCKS5 = ENABLE_SOCKS5;
+                            needCoreReload = true;
+                        }
+                        if (env.DIRECT_IP !== undefined && String(env.DIRECT_IP).trim()) {
+                            DIRECT_IP = String(env.DIRECT_IP).trim();
+                            envUpdates.SERVER_IP = DIRECT_IP;
+                        }
+                        if (env.ARGO_DOMAIN !== undefined) {
+                            ARGO_DOMAIN = String(env.ARGO_DOMAIN || "").trim();
+                            envUpdates.ARGO_DOMAIN = ARGO_DOMAIN;
+                        }
+                        if (env.ARGO_TOKEN !== undefined) {
+                            ARGO_TOKEN = String(env.ARGO_TOKEN || "").trim();
+                            envUpdates.ARGO_TOKEN = ARGO_TOKEN;
+                        }
+                        if (env.OPTIMIZED_DOMAIN !== undefined) {
+                            OPTIMIZED_DOMAIN = String(env.OPTIMIZED_DOMAIN || "").trim();
+                            envUpdates.OPTIMIZED_DOMAIN = OPTIMIZED_DOMAIN;
+                        }
+
+                        if (Object.keys(envUpdates).length > 0) {
+                            updateEnvFile(envUpdates);
+                        }
+                    }
+
+                    if (needCoreReload) {
+                        ensureMultiProtocolSecrets();
+                        generateSingboxConfig();
+                        safeReloadSingbox();
+                    }
+
+                    console.log("[Settings] 站点运营与全部协议环境变量已由管理员成功更新并生效");
+                    return sendJsonResponse(res, 200, {
+                        success: true,
+                        settings: siteSettings,
+                        message: "站点运营与全部协议变量已成功持久化并热重载生效！"
+                    });
                 } catch (e) {
                     return sendJsonResponse(res, 500, { error: "更新站点配置失败: " + e.message });
                 }
@@ -2817,14 +3025,101 @@ setInterval(() => {
     });
 }, 10000);
 
-setInterval(() => {
-    const beforeCount = getActiveUsers().length;
-    saveUsers();
-    const afterCount = getActiveUsers().length;
-    if (beforeCount !== afterCount) {
-        safeReloadSingbox();
-    }
-}, 60000);
+// 【方案一核心引擎】：Sing-box 原生 Clash API 流量统计与在线感知轮询 (每 5 秒一次)
+const activeConnTrafficMap = new Map(); // id -> { lastBytes, lastSeen }
+
+function pollSingboxClashApiTraffic() {
+    const req = http.get(`http://127.0.0.1:${PORT_CLASH_API}/connections`, { timeout: 3500 }, (res) => {
+        if (res.statusCode !== 200) {
+            res.resume();
+            return;
+        }
+        let data = "";
+        res.on("data", (chunk) => { data += chunk; });
+        res.on("end", () => {
+            try {
+                const json = JSON.parse(data);
+                const conns = json.connections || [];
+                let hasTrafficChanges = false;
+                const currentConnIds = new Set();
+                const now = Date.now();
+
+                for (const c of conns) {
+                    if (!c || !c.id) continue;
+                    currentConnIds.add(c.id);
+
+                    // 1. 过滤由 Node.js 本身转入的 WebSocket 内部流量，避免双重计费
+                    const inboundTag = c.metadata?.inboundTag || "";
+                    if (inboundTag === "vless-in" || inboundTag === "vmess-in" || inboundTag === "trojan-in") {
+                        continue;
+                    }
+
+                    // 2. 精确匹配目标用户 (支持 uuid、用户名及包含判定)
+                    const inboundUser = String(c.metadata?.inboundUser || "").trim();
+                    let matchedUser = null;
+                    if (inboundUser) {
+                        matchedUser = usersDatabase.find((u) =>
+                            u.uuid === inboundUser ||
+                            u.username === inboundUser ||
+                            (u.uuid && inboundUser.includes(u.uuid))
+                        );
+                    }
+                    if (!matchedUser && usersDatabase.length === 1) {
+                        matchedUser = usersDatabase[0];
+                    }
+                    if (!matchedUser) continue;
+
+                    const totalBytes = (c.upload || 0) + (c.download || 0);
+                    const prev = activeConnTrafficMap.get(c.id);
+                    const prevBytes = prev ? prev.lastBytes : 0;
+                    const delta = totalBytes - prevBytes;
+
+                    if (delta > 0) {
+                        matchedUser.trafficUsed = (matchedUser.trafficUsed || 0) + delta;
+                        hasTrafficChanges = true;
+
+                        // 3. 实时刷新用户在线感知与使用者真实 IP
+                        const userAct = getUserActivity(matchedUser.uuid);
+                        if (userAct) {
+                            userAct.lastSeenAt = now;
+                            if (c.metadata?.sourceIP) {
+                                userAct.lastIp = c.metadata.sourceIP;
+                                if (!ipGeoCache.has(c.metadata.sourceIP)) {
+                                    lookupIpLocation(c.metadata.sourceIP).then((loc) => {
+                                        userAct.lastLocation = loc;
+                                    }).catch(() => {});
+                                }
+                            }
+                        }
+
+                        // 4. 超额熔断保护
+                        if (matchedUser.trafficLimit > 0 && matchedUser.trafficUsed >= matchedUser.trafficLimit) {
+                            console.warn(`[Quota-ClashApi] 用户 [${matchedUser.username}] 流量超额，触发核心断流`);
+                            safeReloadSingbox();
+                        }
+                    }
+
+                    activeConnTrafficMap.set(c.id, { lastBytes: totalBytes, lastSeen: now });
+                }
+
+                // 5. 垃圾回收：清理已经关闭或超时的断开连接
+                for (const [id, rec] of activeConnTrafficMap.entries()) {
+                    if (!currentConnIds.has(id) || (now - rec.lastSeen > 30000)) {
+                        activeConnTrafficMap.delete(id);
+                    }
+                }
+
+                if (hasTrafficChanges) {
+                    triggerDebouncedSave();
+                }
+            } catch (_) {}
+        });
+    });
+    req.on("error", () => {});
+    req.setTimeout(3500, () => { req.destroy(); });
+}
+
+setInterval(pollSingboxClashApiTraffic, 5000);
 
 // ==================== 7. 系统启动 ====================
 loadUsers();

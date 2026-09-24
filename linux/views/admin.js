@@ -1096,69 +1096,199 @@ return sendHtmlResponse(res, 200, `
                     </div>
 
                     <!-- 新建用户弹窗 -->
-                                        <!-- 站点与注册运营配置模态框 -->
+                                        <!-- 站点与集群全量协议配置控制中心模态框 -->
                     <div class="modal-mask" id="settingsModal">
-                        <div class="modal" style="max-width: 480px;">
-                            <h4>⚙️ 站点运营与注册配置</h4>
-                            <div class="field-box">
-                                <label>推荐客户端下载 (FlClash 各平台全适配)</label>
-                                <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; padding:8px 12px; background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px;">
-                                    <div style="display:flex; gap:16px;">
-                                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
-                                            <input type="radio" name="set_enableClientDownload" value="1" id="set_enableClientDownload_1" />
-                                            <span style="color:var(--el-success); font-weight:600;">开启推荐客户端</span>
-                                        </label>
-                                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
-                                            <input type="radio" name="set_enableClientDownload" value="0" id="set_enableClientDownload_0" />
-                                            <span style="color:var(--el-danger); font-weight:600;">关闭显示</span>
-                                        </label>
-                                    </div>
-                                    <button type="button" class="btn" style="padding:4px 10px; font-size:12px; background:#ffffff; border:1px solid var(--el-border); color:var(--el-primary);" onclick="manualSyncClientDownloads(this)">
-                                        🔄 立即爬取同步
-                                    </button>
-                                </div>
+                        <div class="modal" style="max-width: 640px; max-height: 90vh; overflow-y: auto;">
+                            <h4>⚙️ 节点集群与参数控制中心</h4>
+                            
+                            <!-- 选项卡切换器 -->
+                            <div style="display:flex; border-bottom:2px solid #ebeef5; margin-bottom:16px; gap:6px;">
+                                <button type="button" class="tab-btn active" id="tab_btn_ops" onclick="switchSettingsTab('ops')" style="padding:8px 14px; background:none; border:none; border-bottom:2px solid var(--el-primary); font-weight:600; color:var(--el-primary); cursor:pointer; font-size:13px;">🏢 运营与注册</button>
+                                <button type="button" class="tab-btn" id="tab_btn_proto" onclick="switchSettingsTab('proto')" style="padding:8px 14px; background:none; border:none; border-bottom:2px solid transparent; font-weight:500; color:var(--el-text-regular); cursor:pointer; font-size:13px;">⚡ 节点协议与端口</button>
+                                <button type="button" class="tab-btn" id="tab_btn_net" onclick="switchSettingsTab('net')" style="padding:8px 14px; background:none; border:none; border-bottom:2px solid transparent; font-weight:500; color:var(--el-text-regular); cursor:pointer; font-size:13px;">🌐 网络与域名穿透</button>
                             </div>
-                            <div class="field-box">
-                                <label>开放游客自主注册</label>
-                                <div style="display:flex; gap:16px; margin-top:8px; padding:8px 12px; background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px;">
-                                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
-                                        <input type="radio" name="set_allowRegister" value="1" id="set_allowRegister_1" />
-                                        <span style="color:var(--el-success); font-weight:600;">允许自主注册</span>
-                                    </label>
-                                    <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
-                                        <input type="radio" name="set_allowRegister" value="0" id="set_allowRegister_0" />
-                                        <span style="color:var(--el-danger); font-weight:600;">关闭注册 (仅站长添加)</span>
-                                    </label>
-                                </div>
-                            </div>
-                            <div style="display:flex; gap:12px;">
-                                <div class="field-box" style="flex:1;">
-                                    <label>注册试用天数 (天)</label>
-                                    <input type="number" id="set_defaultDays" placeholder="例如: 3" value="3" min="0" />
-                                </div>
-                                <div class="field-box" style="flex:1.2;">
-                                    <label>注册初始流量配额</label>
-                                    <div class="input-unit-group" style="display:flex; gap:6px;">
-                                        <input type="number" id="set_defaultTrafficVal" step="0.1" placeholder="例如: 10" value="10" min="0" style="flex:2;" />
-                                        <select id="set_defaultTrafficUnit" style="flex:1; border:1px solid var(--el-border); border-radius:6px; padding:0 8px; background:#ffffff; font-size:13px; color:var(--el-text-main);">
-                                            <option value="MB">MB</option>
-                                            <option value="GB" selected>GB</option>
-                                            <option value="TB">TB</option>
-                                        </select>
+
+                            <!-- TAB 1: 运营与注册 -->
+                            <div id="tab_content_ops">
+                                <div class="field-box">
+                                    <label>推荐客户端下载 (FlClash 各平台全适配)</label>
+                                    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; padding:8px 12px; background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px;">
+                                        <div style="display:flex; gap:16px;">
+                                            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
+                                                <input type="radio" name="set_enableClientDownload" value="1" id="set_enableClientDownload_1" />
+                                                <span style="color:var(--el-success); font-weight:600;">开启推荐客户端</span>
+                                            </label>
+                                            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
+                                                <input type="radio" name="set_enableClientDownload" value="0" id="set_enableClientDownload_0" />
+                                                <span style="color:var(--el-danger); font-weight:600;">关闭显示</span>
+                                            </label>
+                                        </div>
+                                        <button type="button" class="btn" style="padding:4px 10px; font-size:12px; background:#ffffff; border:1px solid var(--el-border); color:var(--el-primary);" onclick="manualSyncClientDownloads(this)">
+                                            🔄 立即爬取同步
+                                        </button>
                                     </div>
                                 </div>
+                                <div class="field-box">
+                                    <label>开放游客自主注册</label>
+                                    <div style="display:flex; gap:16px; margin-top:8px; padding:8px 12px; background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px;">
+                                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
+                                            <input type="radio" name="set_allowRegister" value="1" id="set_allowRegister_1" />
+                                            <span style="color:var(--el-success); font-weight:600;">允许自主注册</span>
+                                        </label>
+                                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
+                                            <input type="radio" name="set_allowRegister" value="0" id="set_allowRegister_0" />
+                                            <span style="color:var(--el-danger); font-weight:600;">关闭注册 (仅站长添加)</span>
+                                        </label>
+                                    </div>
+                                </div>
+                                <div style="display:flex; gap:12px;">
+                                    <div class="field-box" style="flex:1;">
+                                        <label>注册试用天数 (天)</label>
+                                        <input type="number" id="set_defaultDays" placeholder="例如: 3" value="3" min="0" />
+                                    </div>
+                                    <div class="field-box" style="flex:1.2;">
+                                        <label>注册初始流量配额</label>
+                                        <div class="input-unit-group" style="display:flex; gap:6px;">
+                                            <input type="number" id="set_defaultTrafficVal" step="0.1" placeholder="例如: 10" value="10" min="0" style="flex:2;" />
+                                            <select id="set_defaultTrafficUnit" style="flex:1; border:1px solid var(--el-border); border-radius:6px; padding:0 8px; background:#ffffff; font-size:13px; color:var(--el-text-main);">
+                                                <option value="MB">MB</option>
+                                                <option value="GB" selected>GB</option>
+                                                <option value="TB">TB</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="field-box">
+                                    <label>站长联系方式展示文案</label>
+                                    <input type="text" id="set_contactText" placeholder="例如: Telegram: @mybot 或 微信: abc" />
+                                </div>
+                                <div class="field-box">
+                                    <label>站长联系直达链接 (URL)</label>
+                                    <input type="text" id="set_contactUrl" placeholder="例如: https://t.me/mybot (无跳转可留空)" />
+                                </div>
                             </div>
-                            <div class="field-box">
-                                <label>站长联系方式展示文案</label>
-                                <input type="text" id="set_contactText" placeholder="例如: Telegram: @mybot 或 微信: abc" />
+
+                            <!-- TAB 2: 节点协议与端口 -->
+                            <div id="tab_content_proto" style="display:none;">
+                                <div style="font-size:12px; color:var(--el-text-secondary); margin-bottom:12px; background:#f0f2f5; padding:8px 12px; border-radius:6px;">
+                                    💡 提示：端口填写为 0 或留空即代表禁用对应协议；保存后系统将自动更新 .env 并平滑热重载 Sing-box 核心。
+                                </div>
+
+                                <!-- Hysteria 2 -->
+                                <div style="background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px; padding:10px 12px; margin-bottom:12px;">
+                                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                                        <div style="font-weight:600; font-size:13px; color:#2c3e50;">🚀 Hysteria 2 协议 (UDP/QUIC 抗丢包)</div>
+                                        <label style="display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer;">
+                                            <input type="checkbox" id="env_ENABLE_HY2" /> 启用该协议
+                                        </label>
+                                    </div>
+                                    <div style="display:flex; gap:10px;">
+                                        <div class="field-box" style="flex:1; margin-bottom:0;">
+                                            <label style="font-size:11px;">监听端口 (PORT_HY2)</label>
+                                            <input type="number" id="env_PORT_HY2" placeholder="如: 10800" />
+                                        </div>
+                                        <div class="field-box" style="flex:1.5; margin-bottom:0;">
+                                            <label style="font-size:11px;">端口跳跃范围 (例: 10900-10909)</label>
+                                            <input type="text" id="env_HY2_HOP_PORTS" placeholder="留空则不开启跳跃" />
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- TUIC v5 -->
+                                <div style="background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px; padding:10px 12px; margin-bottom:12px;">
+                                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                                        <div style="font-weight:600; font-size:13px; color:#2c3e50;">⚡ TUIC v5 协议 (0-RTT 极低延迟)</div>
+                                        <label style="display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer;">
+                                            <input type="checkbox" id="env_ENABLE_TUIC" /> 启用该协议
+                                        </label>
+                                    </div>
+                                    <div class="field-box" style="margin-bottom:0;">
+                                        <label style="font-size:11px;">监听端口 (PORT_TUIC)</label>
+                                        <input type="number" id="env_PORT_TUIC" placeholder="如: 10801" />
+                                    </div>
+                                </div>
+
+                                <!-- VLESS-Reality -->
+                                <div style="background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px; padding:10px 12px; margin-bottom:12px;">
+                                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                                        <div style="font-weight:600; font-size:13px; color:#2c3e50;">🛡️ VLESS Reality (0 特征/偷跑证书)</div>
+                                        <label style="display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer;">
+                                            <input type="checkbox" id="env_ENABLE_REALITY" /> 启用该协议
+                                        </label>
+                                    </div>
+                                    <div style="display:flex; gap:10px;">
+                                        <div class="field-box" style="flex:1; margin-bottom:0;">
+                                            <label style="font-size:11px;">监听端口 (PORT_REALITY)</label>
+                                            <input type="number" id="env_PORT_REALITY" placeholder="如: 10802" />
+                                        </div>
+                                        <div class="field-box" style="flex:1.5; margin-bottom:0;">
+                                            <label style="font-size:11px;">伪装偷跑域名 (REALITY_DEST)</label>
+                                            <input type="text" id="env_REALITY_DEST" placeholder="addons.mozilla.org" />
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- 直连 TCP 协议 -->
+                                <div style="display:flex; gap:10px; margin-bottom:12px;">
+                                    <div style="flex:1; background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px; padding:10px 12px;">
+                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                                            <span style="font-weight:600; font-size:12px;">VLESS-TCP 直连</span>
+                                            <input type="checkbox" id="env_ENABLE_VLESS_TCP" />
+                                        </div>
+                                        <input type="number" id="env_PORT_VLESS_TCP" placeholder="端口如: 10803" />
+                                    </div>
+                                    <div style="flex:1; background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px; padding:10px 12px;">
+                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                                            <span style="font-weight:600; font-size:12px;">Trojan-TCP 直连</span>
+                                            <input type="checkbox" id="env_ENABLE_TROJAN_TCP" />
+                                        </div>
+                                        <input type="number" id="env_PORT_TROJAN_TCP" placeholder="端口如: 10804" />
+                                    </div>
+                                </div>
+
+                                <!-- SS 与 Socks5 -->
+                                <div style="display:flex; gap:10px;">
+                                    <div style="flex:1; background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px; padding:10px 12px;">
+                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                                            <span style="font-weight:600; font-size:12px;">Shadowsocks 2022</span>
+                                            <input type="checkbox" id="env_ENABLE_SS" />
+                                        </div>
+                                        <input type="number" id="env_PORT_SS" placeholder="端口如: 10805" />
+                                    </div>
+                                    <div style="flex:1; background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px; padding:10px 12px;">
+                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                                            <span style="font-weight:600; font-size:12px;">Socks5 独立代理</span>
+                                            <input type="checkbox" id="env_ENABLE_SOCKS5" />
+                                        </div>
+                                        <input type="number" id="env_PORT_SOCKS5" placeholder="端口如: 10806" />
+                                    </div>
+                                </div>
                             </div>
-                            <div class="field-box">
-                                <label>站长联系直达链接 (URL)</label>
-                                <input type="text" id="set_contactUrl" placeholder="例如: https://t.me/mybot (无跳转可留空)" />
+
+                            <!-- TAB 3: 网络与穿透 -->
+                            <div id="tab_content_net" style="display:none;">
+                                <div class="field-box">
+                                    <label>宿主机外网公网 IPv4 (SERVER_IP)</label>
+                                    <input type="text" id="env_DIRECT_IP" placeholder="留空则由系统权威接口自动探测真实公网 IP" />
+                                    <span style="font-size:11px; color:var(--el-text-secondary); margin-top:4px; display:block;">换 VPS 机房或云服务器迁移时通常保持留空即可。</span>
+                                </div>
+                                <div class="field-box">
+                                    <label>Cloudflare Argo 隧道域名 (ARGO_DOMAIN)</label>
+                                    <input type="text" id="env_ARGO_DOMAIN" placeholder="如: tunnel.mydomain.com (无公网IP时使用)" />
+                                </div>
+                                <div class="field-box">
+                                    <label>Cloudflare Argo 凭证 Token (ARGO_TOKEN)</label>
+                                    <input type="password" id="env_ARGO_TOKEN" placeholder="留空则禁用 Argo 隧道，使用直连" />
+                                </div>
+                                <div class="field-box">
+                                    <label>CDN 优选加速域名 (OPTIMIZED_DOMAIN)</label>
+                                    <input type="text" id="env_OPTIMIZED_DOMAIN" placeholder="如: cdn.cloudflare.com (留空默认使用隧道域名)" />
+                                </div>
                             </div>
-                            <div class="modal-footer">
+
+                            <div class="modal-footer" style="margin-top:16px;">
                                 <button class="btn" style="background:#ffffff; border:1px solid var(--el-border); color:var(--el-text-regular);" onclick="closeSettingsModal()">取消</button>
-                                <button class="btn btn-primary" id="saveSettingsBtn" onclick="saveSiteSettings()">保存配置</button>
+                                <button class="btn btn-primary" id="saveSettingsBtn" onclick="saveSiteSettings()">保存所有配置</button>
                             </div>
                         </div>
                     </div>
@@ -1393,10 +1523,30 @@ return sendHtmlResponse(res, 200, `
                         return "";
                     }
 
+                    function switchSettingsTab(tabKey) {
+                        const tabs = ["ops", "proto", "net"];
+                        tabs.forEach((k) => {
+                            const btn = document.getElementById("tab_btn_" + k);
+                            const content = document.getElementById("tab_content_" + k);
+                            if (btn && content) {
+                                if (k === tabKey) {
+                                    btn.style.borderBottom = "2px solid var(--el-primary)";
+                                    btn.style.color = "var(--el-primary)";
+                                    btn.style.fontWeight = "600";
+                                    content.style.display = "block";
+                                } else {
+                                    btn.style.borderBottom = "2px solid transparent";
+                                    btn.style.color = "var(--el-text-regular)";
+                                    btn.style.fontWeight = "500";
+                                    content.style.display = "none";
+                                }
+                            }
+                        });
+                    }
+
                     async function openSettingsModal() {
                         const token = getAdminToken();
                         const basePrefix = location.pathname.startsWith("/v3") ? "/v3" : "";
-                        // 始终优先从后端 API 拉取服务器磁盘最新真实落盘数据，防止客户端状态陈旧
                         try {
                             const res = await fetch(basePrefix + "/admin/api/settings" + (token ? "?token=" + encodeURIComponent(token) : ""), {
                                 headers: token ? { "x-admin-token": token } : {}
@@ -1408,14 +1558,14 @@ return sendHtmlResponse(res, 200, `
                         } catch (_) {}
 
                         const s = window.__SITE_SETTINGS__ || {};
+                        const env = s.envSettings || {};
+
+                        // 填充运营配置
                         const reg1 = document.getElementById("set_allowRegister_1");
                         const reg0 = document.getElementById("set_allowRegister_0");
                         if (reg1 && reg0) {
-                            if (s.allowRegister !== false) {
-                                reg1.checked = true;
-                            } else {
-                                reg0.checked = true;
-                            }
+                            if (s.allowRegister !== false) reg1.checked = true;
+                            else reg0.checked = true;
                         }
                         const dInput = document.getElementById("set_defaultDays");
                         if (dInput) dInput.value = s.defaultDays !== undefined ? s.defaultDays : 3;
@@ -1436,13 +1586,43 @@ return sendHtmlResponse(res, 200, `
                         const cd1 = document.getElementById("set_enableClientDownload_1");
                         const cd0 = document.getElementById("set_enableClientDownload_0");
                         if (cd1 && cd0) {
-                            if (s.enableClientDownload !== false) {
-                                cd1.checked = true;
-                            } else {
-                                cd0.checked = true;
-                            }
+                            if (s.enableClientDownload !== false) cd1.checked = true;
+                            else cd0.checked = true;
                         }
 
+                        // 填充协议与端口配置
+                        const setCheck = (id, val) => { const el = document.getElementById(id); if (el) el.checked = Boolean(val); };
+                        const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val !== undefined && val !== null ? val : ""; };
+
+                        setCheck("env_ENABLE_HY2", env.ENABLE_HY2 !== false);
+                        setVal("env_PORT_HY2", env.PORT_HY2 || "");
+                        setVal("env_HY2_HOP_PORTS", env.HY2_HOP_PORTS || "");
+
+                        setCheck("env_ENABLE_TUIC", env.ENABLE_TUIC !== false);
+                        setVal("env_PORT_TUIC", env.PORT_TUIC || "");
+
+                        setCheck("env_ENABLE_REALITY", env.ENABLE_REALITY !== false);
+                        setVal("env_PORT_REALITY", env.PORT_REALITY || "");
+                        setVal("env_REALITY_DEST", env.REALITY_DEST || "addons.mozilla.org");
+
+                        setCheck("env_ENABLE_VLESS_TCP", env.ENABLE_VLESS_TCP !== false);
+                        setVal("env_PORT_VLESS_TCP", env.PORT_VLESS_TCP || "");
+
+                        setCheck("env_ENABLE_TROJAN_TCP", env.ENABLE_TROJAN_TCP !== false);
+                        setVal("env_PORT_TROJAN_TCP", env.PORT_TROJAN_TCP || "");
+
+                        setCheck("env_ENABLE_SS", env.ENABLE_SS !== false);
+                        setVal("env_PORT_SS", env.PORT_SS || "");
+
+                        setCheck("env_ENABLE_SOCKS5", env.ENABLE_SOCKS5 !== false);
+                        setVal("env_PORT_SOCKS5", env.PORT_SOCKS5 || "");
+
+                        setVal("env_DIRECT_IP", env.DIRECT_IP || "");
+                        setVal("env_ARGO_DOMAIN", env.ARGO_DOMAIN || "");
+                        setVal("env_ARGO_TOKEN", env.ARGO_TOKEN || "");
+                        setVal("env_OPTIMIZED_DOMAIN", env.OPTIMIZED_DOMAIN || "");
+
+                        switchSettingsTab("ops");
                         const modal = document.getElementById("settingsModal");
                         if (modal) modal.style.display = "flex";
                     }
@@ -1489,10 +1669,39 @@ return sendHtmlResponse(res, 200, `
                         const cd1 = document.getElementById("set_enableClientDownload_1");
                         const enableClientDownload = cd1 ? cd1.checked : true;
 
+                        // 读取全量协议与网络变量
+                        const getCheck = (id) => { const el = document.getElementById(id); return el ? el.checked : false; };
+                        const getInt = (id) => { const el = document.getElementById(id); return el && el.value ? parseInt(el.value, 10) || 0 : 0; };
+                        const getStr = (id) => { const el = document.getElementById(id); return el ? el.value.trim() : ""; };
+
+                        const envSettings = {
+                            ENABLE_HY2: getCheck("env_ENABLE_HY2"),
+                            PORT_HY2: getInt("env_PORT_HY2"),
+                            ENABLE_HY2_HOP: Boolean(getStr("env_HY2_HOP_PORTS")),
+                            HY2_HOP_PORTS: getStr("env_HY2_HOP_PORTS"),
+                            ENABLE_TUIC: getCheck("env_ENABLE_TUIC"),
+                            PORT_TUIC: getInt("env_PORT_TUIC"),
+                            ENABLE_REALITY: getCheck("env_ENABLE_REALITY"),
+                            PORT_REALITY: getInt("env_PORT_REALITY"),
+                            REALITY_DEST: getStr("env_REALITY_DEST") || "addons.mozilla.org",
+                            ENABLE_VLESS_TCP: getCheck("env_ENABLE_VLESS_TCP"),
+                            PORT_VLESS_TCP: getInt("env_PORT_VLESS_TCP"),
+                            ENABLE_TROJAN_TCP: getCheck("env_ENABLE_TROJAN_TCP"),
+                            PORT_TROJAN_TCP: getInt("env_PORT_TROJAN_TCP"),
+                            ENABLE_SS: getCheck("env_ENABLE_SS"),
+                            PORT_SS: getInt("env_PORT_SS"),
+                            ENABLE_SOCKS5: getCheck("env_ENABLE_SOCKS5"),
+                            PORT_SOCKS5: getInt("env_PORT_SOCKS5"),
+                            DIRECT_IP: getStr("env_DIRECT_IP"),
+                            ARGO_DOMAIN: getStr("env_ARGO_DOMAIN"),
+                            ARGO_TOKEN: getStr("env_ARGO_TOKEN"),
+                            OPTIMIZED_DOMAIN: getStr("env_OPTIMIZED_DOMAIN")
+                        };
+
                         const btn = document.getElementById("saveSettingsBtn");
-                        const originText = btn ? btn.innerText : "保存配置";
+                        const originText = btn ? btn.innerText : "保存所有配置";
                         if (btn) {
-                            btn.innerText = "正在落盘保存...";
+                            btn.innerText = "正在落盘并热重载...";
                             btn.disabled = true;
                         }
 
@@ -1513,15 +1722,15 @@ return sendHtmlResponse(res, 200, `
                                     defaultTrafficVal,
                                     defaultTrafficUnit,
                                     contactText,
-                                    contactUrl
+                                    contactUrl,
+                                    envSettings
                                 })
                             });
                             const data = await res.json();
                             if (res.ok) {
-                                window.__SITE_SETTINGS__ = data.settings || { allowRegister, defaultDays, defaultTrafficVal, defaultTrafficUnit, contactText, contactUrl };
-                                alert("✅ 站点运营与注册配置已成功保存并立即落盘生效！");
+                                window.__SITE_SETTINGS__ = Object.assign({}, data.settings || {}, { envSettings });
+                                alert("✅ 站点运营与全部协议变量已成功保存并立即落盘热生效！");
                                 closeSettingsModal();
-                                // 如果页面有展示联系方式，实时更新
                                 const contactDisplay = document.querySelector(".contact-display-val");
                                 if (contactDisplay) contactDisplay.innerText = contactText || "未设置";
                             } else {

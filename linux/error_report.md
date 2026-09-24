@@ -138,6 +138,17 @@
   3. **双轨开机自启守护**：配套编写针对 Ubuntu/Debian/CentOS 的 `v3.service` (systemd) 与针对 Alpine 的 `v3.openrc` (OpenRC)，并封装 `install_service.sh` 实现一键智能探知并注册为系统服务；
   4. **容器与文档双写交付**：提供基于 Ubuntu 24.04 LTS 的标准 Dockerfile，并同步交付自用版 `README.md` 与开源分享版 `README_SHARE.md`。
 
+---
 
-
-
+### 问题十四：直连协议流量穿透盲区与 Sing-box Clash API 轮询集成 & 后台变量可视化改造
+- **现象**：用户在客户端（如 Clash）跑了 1GB 以上大流量，后台“全站已用总流量”和“用户流量消耗”一直定格在 `12.93 KB` 不动，且“实时在线感知”显示“离线 (1小时前)”。同时在初次安装部署时，脚本需手动敲大量协议端口，交互过于繁琐。
+- **原因**：
+  1. **流量链路盲区**：系统原先只有 WebSocket 协议（`直连-VLESS/VMess/Trojan`）走 Node.js 的主服务端口（19900），由 Node.js 套接字直接统计流量；而高性能直连协议（`Hysteria 2`、`TUIC v5`、`VLESS-Reality`、`SS` 等）全部由底层的 Sing-box 核心在独立端口直接监听并响应，完全绕过了 Node.js，且 Sing-box 未开启统计接口；
+  2. **客户端策略跳跃**：Clash 的 `🚀 节点选择` 策略组默认启用了 `url-test (自动优选)`，因 Hysteria 2 / TUIC / Reality 延迟极低，客户端瞬间切到了直连协议，导致后续流量全部走 Sing-box 独立端口跑掉，Node.js 毫无感知；
+  3. **安装交互冗余**：命令行安装脚本逐项询问 8 组协议端口，缺少一键跳过并在后台可视化配置的通道。
+- **方案**：
+  1. **Sing-box Clash API 深度集成**：在 Sing-box 核心配置中注入 `experimental.clash_api`，监听本地内部端口 `127.0.0.1:19090`；
+  2. **毫秒级增量差值流量轮询引擎**：Node.js 开启每 5 秒的异步轮询，通过 `GET /connections` 读取所有活跃连接的累计上传与下载，通过连接 ID 差值算法精准计算增量流量（delta），过滤内部 WS tag 避免双重计费，精准匹配用户并累加至 `trafficUsed`，同步刷新用户在线状态感知与使用者真实 IP；
+  3. **超额断流联动**：当通过直连协议跑超限额时，立即触发 `safeReloadSingbox()` 重新生成配置并安全断流；
+  4. **安装脚本极速模式**：在 `setup.sh` 增加极速秒装模式（默认），仅需指定主端口即可极速拉起，跳过所有协议端口；
+  5. **管理后台全量参数控制中心**：在 `views/admin.js` 升级设置弹窗为三大 Tab（运营与注册、节点协议与端口、网络与域名穿透），支持在 Web 界面自由开启/禁用协议、修改端口、配置 Reality 伪装域名与 Argo 参数，保存后自动原子落盘至 `.env` 并触发 Sing-box 平滑热重载。

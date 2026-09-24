@@ -49,59 +49,87 @@ ask() {
     eval "${_VAR}=\"\$_INPUT\""
 }
 
-# ── 第 1 组：基础网络 ──────────────────────────────────────────────────────────
-echo "${BOLD}=== 第 1 组：服务器基础配置 ===${NC}"
-ask CFG_SERVER_PORT "主监听端口 (翼龙面板填分配端口，普通VPS可填 8080)" required ""
-ask CFG_SERVER_IP   "服务器公网 IPv4 (留空=系统自动探测)" optional ""
-echo ""
+# ── 模式选择 ──────────────────────────────────────────────────────────────────
+echo "${BOLD}请选择安装配置模式：${NC}"
+echo "  ${GREEN}1) 极速秒装模式 (推荐: 仅确认主端口，全部协议端口一键跳过并在后台可视化修改)${NC} [默认]"
+echo "  ${BLUE}2) 完整专家模式 (手动逐项输入 Hysteria 2 / TUIC / Reality 等每个独立端口)${NC}"
+printf "${BOLD}${BLUE}> 请输入选项 [1/2, 默认回车进入 1]: ${NC}"
+read -r CFG_MODE
 
-# ── 第 2 组：管理员认证 ────────────────────────────────────────────────────────
-echo "${BOLD}=== 第 2 组：管理员密码 ===${NC}"
-echo "${YELLOW}  用于登录 /admin 后台，建议 8 位以上${NC}"
-ask CFG_ADMIN_TOKEN "管理员密码 ADMIN_TOKEN (留空=系统随机生成)" optional ""
-echo ""
-
-# ── 第 3 组：Hysteria 2 ────────────────────────────────────────────────────────
-echo "${BOLD}=== 第 3 组：Hysteria 2 协议 (UDP/QUIC 极速抗丢包) ===${NC}"
-ask CFG_PORT_HY2  "Hysteria 2 端口 (例: 10800，留空=禁用)" optional ""
-if [ -n "$CFG_PORT_HY2" ]; then
-    ask CFG_HY2_HOP "端口跳跃范围 (例: 10900-10909，留空=不启用)" optional ""
-else
+if [ "$CFG_MODE" != "2" ] && [ "$1" != "--full" ]; then
+    echo ""
+    echo "${GREEN}⚡ 已激活【极速秒装模式】！${NC}"
+    echo "${YELLOW}💡 提示：所有协议端口已跳过，后续可在 Web 管理后台 [/admin] 可视化修改与热重载。${NC}"
+    echo ""
+    ask CFG_SERVER_PORT "主监听端口 SERVER_PORT (翼龙面板填分配端口，普通VPS填 19900 或 8080)" optional "19900"
+    ask CFG_ADMIN_TOKEN "管理员密码 ADMIN_TOKEN (留空=系统自动生成随机高强度密码)" optional ""
+    CFG_SERVER_IP=""
+    CFG_PORT_HY2=""
     CFG_HY2_HOP=""
-fi
-echo ""
-
-# ── 第 4 组：TUIC v5 ──────────────────────────────────────────────────────────
-echo "${BOLD}=== 第 4 组：TUIC v5 协议 (0-RTT 极低延迟) ===${NC}"
-ask CFG_PORT_TUIC "TUIC v5 端口 (例: 10801，留空=禁用)" optional ""
-echo ""
-
-# ── 第 5 组：VLESS Reality ────────────────────────────────────────────────────
-echo "${BOLD}=== 第 5 组：VLESS Reality 协议 (0 特征 TLS) ===${NC}"
-ask CFG_PORT_REALITY "VLESS Reality 端口 (例: 10802，留空=禁用)" optional ""
-echo ""
-
-# ── 第 6 组：TCP 直连 ─────────────────────────────────────────────────────────
-echo "${BOLD}=== 第 6 组：TCP 原生直连协议 ===${NC}"
-ask CFG_PORT_VLESS_TCP  "VLESS TCP 端口 (例: 10803，留空=禁用)" optional ""
-ask CFG_PORT_TROJAN_TCP "Trojan TCP 端口 (例: 10804，留空=禁用)" optional ""
-echo ""
-
-# ── 第 7 组：SS2022 / Socks5 ─────────────────────────────────────────────────
-echo "${BOLD}=== 第 7 组：Shadowsocks 2022 / Socks5 ===${NC}"
-ask CFG_PORT_SS     "SS2022 端口 (例: 10805，留空=禁用)" optional ""
-ask CFG_PORT_SOCKS5 "Socks5 端口 (例: 10806，留空=禁用)" optional ""
-echo ""
-
-# ── 第 8 组：Argo 隧道 ───────────────────────────────────────────────────────
-echo "${BOLD}=== 第 8 组：Cloudflare Argo 隧道 (无公网IP可用此项) ===${NC}"
-ask CFG_ARGO_TOKEN "Argo Token (留空=不使用)" optional ""
-if [ -n "$CFG_ARGO_TOKEN" ]; then
-    ask CFG_ARGO_DOMAIN "Argo 绑定域名 (例: tunnel.example.com)" required ""
-else
+    CFG_PORT_TUIC=""
+    CFG_PORT_REALITY=""
+    CFG_PORT_VLESS_TCP=""
+    CFG_PORT_TROJAN_TCP=""
+    CFG_PORT_SS=""
+    CFG_PORT_SOCKS5=""
+    CFG_ARGO_TOKEN=""
     CFG_ARGO_DOMAIN=""
+    echo ""
+else
+    # ── 第 1 组：基础网络 ──────────────────────────────────────────────────────────
+    echo "${BOLD}=== 第 1 组：服务器基础配置 ===${NC}"
+    ask CFG_SERVER_PORT "主监听端口 (翼龙面板填分配端口，普通VPS可填 8080)" required ""
+    ask CFG_SERVER_IP   "服务器公网 IPv4 (留空=系统自动探测)" optional ""
+    echo ""
+
+    # ── 第 2 组：管理员认证 ────────────────────────────────────────────────────────
+    echo "${BOLD}=== 第 2 组：管理员密码 ===${NC}"
+    echo "${YELLOW}  用于登录 /admin 后台，建议 8 位以上${NC}"
+    ask CFG_ADMIN_TOKEN "管理员密码 ADMIN_TOKEN (留空=系统随机生成)" optional ""
+    echo ""
+
+    # ── 第 3 组：Hysteria 2 ────────────────────────────────────────────────────────
+    echo "${BOLD}=== 第 3 组：Hysteria 2 协议 (UDP/QUIC 极速抗丢包) ===${NC}"
+    ask CFG_PORT_HY2  "Hysteria 2 端口 (例: 10800，留空=禁用)" optional ""
+    if [ -n "$CFG_PORT_HY2" ]; then
+        ask CFG_HY2_HOP "端口跳跃范围 (例: 10900-10909，留空=不启用)" optional ""
+    else
+        CFG_HY2_HOP=""
+    fi
+    echo ""
+
+    # ── 第 4 组：TUIC v5 ──────────────────────────────────────────────────────────
+    echo "${BOLD}=== 第 4 组：TUIC v5 协议 (0-RTT 极低延迟) ===${NC}"
+    ask CFG_PORT_TUIC "TUIC v5 端口 (例: 10801，留空=禁用)" optional ""
+    echo ""
+
+    # ── 第 5 组：VLESS Reality ────────────────────────────────────────────────────
+    echo "${BOLD}=== 第 5 组：VLESS Reality 协议 (0 特征 TLS) ===${NC}"
+    ask CFG_PORT_REALITY "VLESS Reality 端口 (例: 10802，留空=禁用)" optional ""
+    echo ""
+
+    # ── 第 6 组：TCP 直连 ─────────────────────────────────────────────────────────
+    echo "${BOLD}=== 第 6 组：TCP 原生直连协议 ===${NC}"
+    ask CFG_PORT_VLESS_TCP  "VLESS TCP 端口 (例: 10803，留空=禁用)" optional ""
+    ask CFG_PORT_TROJAN_TCP "Trojan TCP 端口 (例: 10804，留空=禁用)" optional ""
+    echo ""
+
+    # ── 第 7 组：SS2022 / Socks5 ─────────────────────────────────────────────────
+    echo "${BOLD}=== 第 7 组：Shadowsocks 2022 / Socks5 ===${NC}"
+    ask CFG_PORT_SS     "SS2022 端口 (例: 10805，留空=禁用)" optional ""
+    ask CFG_PORT_SOCKS5 "Socks5 端口 (例: 10806，留空=禁用)" optional ""
+    echo ""
+
+    # ── 第 8 组：Argo 隧道 ───────────────────────────────────────────────────────
+    echo "${BOLD}=== 第 8 组：Cloudflare Argo 隧道 (无公网IP可用此项) ===${NC}"
+    ask CFG_ARGO_TOKEN "Argo Token (留空=不使用)" optional ""
+    if [ -n "$CFG_ARGO_TOKEN" ]; then
+        ask CFG_ARGO_DOMAIN "Argo 绑定域名 (例: tunnel.example.com)" required ""
+    else
+        CFG_ARGO_DOMAIN=""
+    fi
+    echo ""
 fi
-echo ""
 
 # ── 生成 .env ─────────────────────────────────────────────────────────────────
 echo "${GREEN}=== 正在生成 .env 配置文件... ===${NC}"
