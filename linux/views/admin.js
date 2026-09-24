@@ -1359,6 +1359,34 @@ return sendHtmlResponse(res, 200, `
 
                             <!-- TAB 3: 网络与穿透 -->
                             <div id="tab_content_net" style="display:none;">
+                                <!-- Argo 隧道实时在线状态看板 -->
+                                <div style="background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px; padding:12px 14px; margin-bottom:14px;">
+                                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                                        <div style="display:flex; align-items:center; gap:8px;">
+                                            <span style="font-size:13px; font-weight:600; color:var(--el-text-main);">📡 Argo 隧道运行监控看板</span>
+                                            <span id="tunnelStatusBadge" style="display:inline-flex; align-items:center; gap:4px; font-size:12px; padding:2px 8px; border-radius:12px; background:#f4f4f5; color:#909399; font-weight:500;">
+                                                <span class="badge-dot" style="width:7px; height:7px; border-radius:50%; background:#909399; display:inline-block;"></span>
+                                                <span id="tunnelStatusText">未启用</span>
+                                            </span>
+                                        </div>
+                                        <button type="button" class="btn" style="padding:2px 8px; font-size:11px; background:#ffffff; border:1px solid var(--el-border); color:var(--el-primary);" onclick="refreshTunnelStatusManual()">🔄 刷新状态</button>
+                                    </div>
+                                    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:8px; font-size:12px; color:var(--el-text-secondary); margin-bottom:8px;">
+                                        <div>核心进程 PID: <strong id="tunnelPidText" style="font-family:Consolas, monospace; color:var(--el-text-main);">-</strong></div>
+                                        <div>连接实例 ID: <strong id="tunnelConnIdText" style="font-family:Consolas, monospace; color:var(--el-text-main);">-</strong></div>
+                                        <div>穿透公网域名: <strong id="tunnelDomainText" style="font-family:Consolas, monospace; color:var(--el-primary);">-</strong></div>
+                                    </div>
+                                    <div style="margin-top:6px;">
+                                        <div style="font-size:11px; color:var(--el-text-secondary); margin-bottom:4px; display:flex; justify-content:space-between;">
+                                            <span>心跳与边缘回源日志 (最新30条):</span>
+                                            <span id="tunnelLogTime" style="font-size:10px;">-</span>
+                                        </div>
+                                        <div id="tunnelLogConsole" style="background:#1e1e1e; color:#a6e22e; font-family:Consolas, monospace; font-size:11px; line-height:1.45; padding:8px 10px; border-radius:4px; height:90px; overflow-y:auto; word-break:break-all; border:1px solid #333;">
+                                            <span style="color:#888;">暂无日志输出</span>
+                                        </div>
+                                    </div>
+                                </div>
+
                                 <div class="field-box">
                                     <label>宿主机外网公网 IPv4 (SERVER_IP)</label>
                                     <input type="text" id="env_DIRECT_IP" placeholder="留空则由系统权威接口自动探测真实公网 IP" />
@@ -1373,8 +1401,9 @@ return sendHtmlResponse(res, 200, `
                                     <input type="password" id="env_ARGO_TOKEN" placeholder="留空则禁用 Argo 隧道，使用直连" />
                                 </div>
                                 <div class="field-box">
-                                    <label>CDN 优选加速域名 (OPTIMIZED_DOMAIN)</label>
-                                    <input type="text" id="env_OPTIMIZED_DOMAIN" placeholder="如: cdn.cloudflare.com (留空默认使用隧道域名)" />
+                                    <label>CDN 优选加速域名与优选 IP 列表 (OPTIMIZED_DOMAIN)</label>
+                                    <textarea id="env_OPTIMIZED_DOMAIN" rows="3" placeholder="支持填写多个优选域名或优选IP，每行一个（或用空格/逗号分隔）&#10;例如:&#10;cdn.cloudflare.com&#10;104.16.88.99&#10;icook.hk" style="width:100%; border:1px solid var(--el-border); border-radius:4px; padding:6px 10px; font-family:Consolas, monospace; font-size:12px; resize:vertical;"></textarea>
+                                    <span style="font-size:11px; color:var(--el-text-secondary); margin-top:4px; display:block;">留空默认直接使用 Argo 隧道域名。配置多个时，客户端订阅将自动展开为对应的测速优选节点组。</span>
                                 </div>
                             </div>
 
@@ -1650,6 +1679,18 @@ return sendHtmlResponse(res, 200, `
                                 }
                             }
                         });
+
+                        if (tabKey === "net") {
+                            fetchTunnelStatus();
+                            if (!tunnelStatusTimer) {
+                                tunnelStatusTimer = setInterval(fetchTunnelStatus, 3000);
+                            }
+                        } else {
+                            if (tunnelStatusTimer) {
+                                clearInterval(tunnelStatusTimer);
+                                tunnelStatusTimer = null;
+                            }
+                        }
                     }
 
                     async function openSettingsModal() {
@@ -1758,9 +1799,90 @@ return sendHtmlResponse(res, 200, `
                         }
                     }
 
+                    let tunnelStatusTimer = null;
+
+                    async function fetchTunnelStatus() {
+                        const token = getAdminToken();
+                        const basePrefix = location.pathname.startsWith("/v3") ? "/v3" : "";
+                        try {
+                            const res = await fetch(basePrefix + "/admin/api/tunnel-status" + (token ? "?token=" + encodeURIComponent(token) : ""), {
+                                headers: token ? { "x-admin-token": token } : {}
+                            });
+                            if (res.ok) {
+                                const data = await res.json();
+                                updateTunnelStatusUI(data);
+                            }
+                        } catch (_) {}
+                    }
+
+                    function updateTunnelStatusUI(statusData) {
+                        if (!statusData) return;
+                        const badge = document.getElementById("tunnelStatusBadge");
+                        const statusText = document.getElementById("tunnelStatusText");
+                        const pidText = document.getElementById("tunnelPidText");
+                        const connIdText = document.getElementById("tunnelConnIdText");
+                        const domainText = document.getElementById("tunnelDomainText");
+                        const logConsole = document.getElementById("tunnelLogConsole");
+                        const logTime = document.getElementById("tunnelLogTime");
+
+                        if (pidText) pidText.innerText = statusData.pid ? String(statusData.pid) : "未运行";
+                        if (connIdText) connIdText.innerText = statusData.connectorId ? statusData.connectorId.slice(0, 16) + "..." : "等待建立";
+                        if (domainText) domainText.innerText = statusData.domain || "未绑定域名";
+
+                        if (statusText && badge) {
+                            const dot = badge.querySelector(".badge-dot");
+                            if (statusData.connected) {
+                                statusText.innerText = "已连通 Cloudflare 边缘";
+                                badge.style.background = "#f0f9eb";
+                                badge.style.color = "#67c23a";
+                                if (dot) dot.style.background = "#67c23a";
+                            } else if (statusData.status === "starting") {
+                                statusText.innerText = "正在握手建联中...";
+                                badge.style.background = "#fdf6ec";
+                                badge.style.color = "#e6a23c";
+                                if (dot) dot.style.background = "#e6a23c";
+                            } else if (statusData.status === "error") {
+                                statusText.innerText = "建联异常/多次失败";
+                                badge.style.background = "#fef0f0";
+                                badge.style.color = "#f56c6c";
+                                if (dot) dot.style.background = "#f56c6c";
+                            } else {
+                                statusText.innerText = statusData.isAvailable ? "已就绪待命" : "未开启隧道";
+                                badge.style.background = "#f4f4f5";
+                                badge.style.color = "#909399";
+                                if (dot) dot.style.background = "#909399";
+                            }
+                        }
+
+                        if (logConsole && Array.isArray(statusData.recentLogs)) {
+                            if (statusData.recentLogs.length > 0) {
+                                logConsole.innerHTML = statusData.recentLogs.map((l) => {
+                                    const isErr = /error|fail|exit|warn/i.test(l);
+                                    const isOk = /registered|connected/i.test(l);
+                                    const color = isErr ? "#f56c6c" : (isOk ? "#67c23a" : "#a6e22e");
+                                    return '<div style="color:' + color + ';">' + l.replace(/</g, "&lt;").replace(/>/g, "&gt;") + '</div>';
+                                }).join("");
+                                logConsole.scrollTop = logConsole.scrollHeight;
+                            } else {
+                                logConsole.innerHTML = '<span style="color:#888;">暂无日志输出</span>';
+                            }
+                        }
+                        if (logTime) {
+                            logTime.innerText = "最后活跃: " + (statusData.lastSeen ? new Date(statusData.lastSeen).toLocaleTimeString() : "暂无心跳");
+                        }
+                    }
+
+                    function refreshTunnelStatusManual() {
+                        fetchTunnelStatus();
+                    }
+
                     function closeSettingsModal() {
                         const modal = document.getElementById("settingsModal");
                         if (modal) modal.style.display = "none";
+                        if (tunnelStatusTimer) {
+                            clearInterval(tunnelStatusTimer);
+                            tunnelStatusTimer = null;
+                        }
                     }
 
                     async function saveSiteSettings() {
