@@ -1,0 +1,29 @@
+# 忽略敏感环境凭据 (强制使用 .env.example 作为安全模板)
+.env
+.env.local
+.env.*.local
+
+# 忽略运行时生成与动态数据
+data/*
+!data/.gitkeep
+
+# 忽略二进制可执行文件与进程 PID
+sing-box
+cloudflared
+*.pid
+
+# 忽略日志文件
+*.log
+logs/
+
+# 忽略自签证书与私钥
+*.pem
+*.key
+reality_keys.json
+
+# 忽略系统临时文件
+.DS_Store
+Thumbs.db
+*.bak
+*.orig
+scratch_*

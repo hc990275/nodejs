@@ -1,0 +1,31 @@
+#!/sbin/openrc-run
+description="V3 Adaptive Airport Service (OpenRC)"
+
+V3_DIR="${V3_DIR:-/root/v3-airport/linux}"
+PIDFILE="/run/v3.pid"
+LOGFILE="/var/log/v3.log"
+
+depend() {
+    need net
+    after firewall
+}
+
+start() {
+    ebegin "Starting v3 adaptive airport service"
+    checkpath -d -m 0755 $(dirname ${PIDFILE})
+    start-stop-daemon --start \
+        --chdir "${V3_DIR}" \
+        --make-pidfile --pidfile "${PIDFILE}" \
+        --background \
+        --stdout "${LOGFILE}" --stderr "${LOGFILE}" \
+        --exec /bin/sh -- "${V3_DIR}/start.sh"
+    eend $?
+}
+
+stop() {
+    ebegin "Stopping v3 adaptive airport service"
+    start-stop-daemon --stop --pidfile "${PIDFILE}"
+    pkill -9 -f "${V3_DIR}/sing-box" 2>/dev/null || true
+    pkill -f "${V3_DIR}/index.js" 2>/dev/null || true
+    eend $?
+}

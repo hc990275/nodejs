@@ -1,0 +1,19 @@
+{
+  "name": "v3-alpine322",
+  "version": "1.0.0",
+  "description": "V3 极轻量多协议节点管理控制中枢 (Alpine 3.22 容器定制与全变量置顶版)",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [
+    "v3",
+    "alpine322",
+    "singbox",
+    "cloudflared",
+    "proxy"
+  ],
+  "author": "",
+  "license": "MIT",
+  "type": "commonjs"
+}

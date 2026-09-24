@@ -1,0 +1,72 @@
+{
+  "log": {
+    "level": "warn",
+    "timestamp": true
+  },
+  "inbounds": [
+    {
+      "type": "vmess",
+      "tag": "vmess-in",
+      "listen": "127.0.0.1",
+      "listen_port": 10011,
+      "users": [
+        {
+          "uuid": "e5de5169-5984-483b-a395-b50e84ec9b5f",
+          "alterId": 0
+        },
+        {
+          "uuid": "66f5e4dc-1018-4b5b-8de1-79f946adb437",
+          "alterId": 0
+        }
+      ],
+      "transport": {
+        "type": "ws",
+        "path": "/vmess"
+      }
+    },
+    {
+      "type": "vless",
+      "tag": "vless-in",
+      "listen": "127.0.0.1",
+      "listen_port": 10012,
+      "users": [
+        {
+          "uuid": "e5de5169-5984-483b-a395-b50e84ec9b5f",
+          "flow": ""
+        },
+        {
+          "uuid": "66f5e4dc-1018-4b5b-8de1-79f946adb437",
+          "flow": ""
+        }
+      ],
+      "transport": {
+        "type": "ws",
+        "path": "/vless"
+      }
+    },
+    {
+      "type": "trojan",
+      "tag": "trojan-in",
+      "listen": "127.0.0.1",
+      "listen_port": 10013,
+      "users": [
+        {
+          "password": "e5de5169-5984-483b-a395-b50e84ec9b5f"
+        },
+        {
+          "password": "66f5e4dc-1018-4b5b-8de1-79f946adb437"
+        }
+      ],
+      "transport": {
+        "type": "ws",
+        "path": "/trojan"
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ]
+}
