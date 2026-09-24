@@ -186,3 +186,10 @@
   2. **Sing-box 动态装载**：在 Sing-box 的 `ss-in` inbound 中注入 `users: activeUsers.map(...)`。当用户到期或被阻断时，该用户的 Key 立即被移出 `users` 列表，热重载后客户端使用该用户的专属凭据将被 Sing-box 立即拒绝握手（Auth Failure），彻底解决过期仍能连通的问题；
   3. **订阅输出格式适配**：客户端配置输出标准 Shadowsocks 2022 多用户凭据 `${ServerKey}:${UserKey}`，完全兼容 Clash Meta / Mihomo、Sing-box、Shadowrocket 等主流客户端；
   4. **彻底移除 Socks5**：下线全链路的 Socks5 监听、Sing-box 入站、订阅分发及管理后台配置控件，保持架构极简与纯粹。
+
+---
+
+### 问题十七：客户端模板字符串换行符转义缺失导致 SyntaxError 阻断弹窗与全局交互
+- **现象**：在后台页面中，点击【实时访客IP监控】、【站点与注册配置】、【+ 新增用户授权】等任何操作按钮均无任何响应，弹窗无法弹出。
+- **原因**：在 `views/admin.js` 的 `quickRotateUuid` 函数中，`confirm("...\\n• ...")` 提示文本中使用了单斜杠 `\n`。由于整个 HTML 页面是通过 ES6 模板字符串（反引号 ``）由 Node.js 渲染的，模板解析时将 `\n` 直接解释为物理换行符嵌入到了前端生成的 `<script>` 双引号字符串中，导致浏览器 V8 解析 JavaScript 遇到非法换行 token，抛出 `SyntaxError: Invalid or unexpected token`。这直接阻断了整个客户端脚本的执行，导致所有绑定在 window 上的模态框函数未挂载。
+- **方案**：将模板字符串内部用于前端展示的换行转义符号修正为 `\\n`，确保输出给客户端浏览器的是合法的字面量 `\n`。通过 Node.js 自动化静态 AST/`new Function()` 语法沙箱执行严格验证，确认客户端脚本通过率为 100%。

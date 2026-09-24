@@ -2324,8 +2324,8 @@ return sendHtmlResponse(res, 200, `
                     }
 
                     async function quickRotateUuid(uuid, uname) {
-                        const displayName = uname || uuid.substring(0, 8);
-                        if (!confirm("⚠️ 确定要为用户「" + displayName + "」一键随机轮换新 UUID 吗？\n\n• 当前已建立的所有长连接将被瞬间切断！\n• 旧订阅链接将即刻作废，用户需刷新配置重新连接。\n• 系统将自动平滑热重载 Sing-box 核心。")) {
+                        const displayName = uname || (uuid ? uuid.substring(0, 8) : "");
+                        if (!confirm("⚠️ 确定要为用户「" + displayName + "」一键随机轮换新 UUID 吗？\\n\\n• 当前已建立的所有长连接将被瞬间切断！\\n• 旧订阅链接将即刻作废，用户需刷新配置重新连接。\\n• 系统将自动平滑热重载 Sing-box 核心。")) {
                             return;
                         }
                         try {
