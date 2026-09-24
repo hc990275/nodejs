@@ -666,7 +666,7 @@ function renderLandingPage(req, res, options, sendHtmlResponseArg) {
                     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 3 21 3 21 8"></polyline><line x1="4" y1="20" x2="21" y2="3"></line><polyline points="21 16 21 21 16 21"></polyline><line x1="15" y1="15" x2="21" y2="21"></line><path d="M4 4l5 5"></path></svg>
                 </div>
                 <div class="feature-title">UDP 智能端口跳跃</div>
-                <div class="feature-desc">针对晚高峰运营商对 UDP 协议的恶意限速与 QoS，系统部署 10900-10909 多端口动态跳跃，连接永不降速、稳定如丝。</div>
+                <div class="feature-desc">针对晚高峰运营商对 UDP 协议的恶意限速与 QoS，系统部署 ${ports.HY2_HOP_PORTS || '多端口'} 动态跳跃，连接永不降速、稳定如丝。</div>
             </div>
 
             <div class="feature-card">
@@ -704,55 +704,62 @@ function renderLandingPage(req, res, options, sendHtmlResponseArg) {
                         </tr>
                     </thead>
                     <tbody>
-                        <tr>
+                        ${ports.PORT_HY2 > 0 ? `<tr>
                             <td>🇺🇸 极速专线-Hysteria2</td>
                             <td><span class="badge-protocol">Hysteria 2</span></td>
                             <td>${ports.PORT_HY2}</td>
                             <td>1.0x</td>
                             <td><span class="node-status-dot"></span>正常在线</td>
-                        </tr>
-                        <tr>
-                            <td>🇺🇸 极速专线-Hy2端口跳跃[10900-10909]</td>
+                        </tr>` : ''}
+                        ${ports.HY2_HOP_PORTS ? `<tr>
+                            <td>🇺🇸 极速专线-Hy2端口跳跃[${ports.HY2_HOP_PORTS}]</td>
                             <td><span class="badge-protocol">Hy2-Hop (抗QoS)</span></td>
-                            <td>10900-10909</td>
+                            <td>${ports.HY2_HOP_PORTS}</td>
                             <td>1.0x</td>
                             <td><span class="node-status-dot"></span>正常在线</td>
-                        </tr>
-                        <tr>
+                        </tr>` : ''}
+                        ${ports.PORT_REALITY > 0 ? `<tr>
                             <td>🇺🇸 极速专线-VLESS Reality</td>
                             <td><span class="badge-protocol">VLESS Reality</span></td>
                             <td>${ports.PORT_REALITY}</td>
                             <td>1.0x</td>
                             <td><span class="node-status-dot"></span>正常在线</td>
-                        </tr>
-                        <tr>
+                        </tr>` : ''}
+                        ${ports.PORT_TUIC > 0 ? `<tr>
                             <td>🇺🇸 极速专线-TUICv5</td>
                             <td><span class="badge-protocol">TUIC v5 (0-RTT)</span></td>
                             <td>${ports.PORT_TUIC}</td>
                             <td>1.0x</td>
                             <td><span class="node-status-dot"></span>正常在线</td>
-                        </tr>
-                        <tr>
+                        </tr>` : ''}
+                        ${ports.PORT_VLESS_TCP > 0 ? `<tr>
                             <td>🇺🇸 极速专线-VLESS-TCP</td>
                             <td><span class="badge-protocol">VLESS TCP</span></td>
                             <td>${ports.PORT_VLESS_TCP}</td>
                             <td>1.0x</td>
                             <td><span class="node-status-dot"></span>正常在线</td>
-                        </tr>
-                        <tr>
+                        </tr>` : ''}
+                        ${ports.PORT_TROJAN_TCP > 0 ? `<tr>
                             <td>🇺🇸 极速专线-Trojan-TCP</td>
                             <td><span class="badge-protocol">Trojan TCP</span></td>
                             <td>${ports.PORT_TROJAN_TCP}</td>
                             <td>1.0x</td>
                             <td><span class="node-status-dot"></span>正常在线</td>
-                        </tr>
-                        <tr>
+                        </tr>` : ''}
+                        ${ports.PORT_SS > 0 ? `<tr>
                             <td>🇺🇸 极速专线-SS2022</td>
                             <td><span class="badge-protocol">SS-2022</span></td>
                             <td>${ports.PORT_SS}</td>
                             <td>1.0x</td>
                             <td><span class="node-status-dot"></span>正常在线</td>
-                        </tr>
+                        </tr>` : ''}
+                        ${ports.PORT_SOCKS5 > 0 ? `<tr>
+                            <td>🇺🇸 极速专线-Socks5</td>
+                            <td><span class="badge-protocol">Socks5</span></td>
+                            <td>${ports.PORT_SOCKS5}</td>
+                            <td>1.0x</td>
+                            <td><span class="node-status-dot"></span>正常在线</td>
+                        </tr>` : ''}
                     </tbody>
                 </table>
             </div>

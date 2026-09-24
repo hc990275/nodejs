@@ -2544,7 +2544,7 @@ function handleHttpRequest(req, res) {
                 PORT_TROJAN_TCP,
                 PORT_SS,
                 PORT_SOCKS5,
-                HY2_HOP_PORTS: process.env.HY2_HOP_PORTS || '',
+                HY2_HOP_PORTS: HY2_HOP_PORTS || process.env.HY2_HOP_PORTS || '',
             },
             currentUser,
             sendHtmlResponse
