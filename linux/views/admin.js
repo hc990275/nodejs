@@ -5,6 +5,7 @@
 
 function renderAdminPage(req, res, ctx) {
     const {
+        ADMIN_TOKEN = "",
         siteSettings,
         usersDatabase,
         clientDownloads,
@@ -1610,14 +1611,16 @@ return sendHtmlResponse(res, 200, `
                 </div>
 
                 <script>
-                    // 注入全量用户数据与全局配置
+                    // 注入全量用户数据、全局配置与管理凭据
                     window.__CLIENT_USERS__ = ${clientUsersJson};
                     window.__SITE_SETTINGS__ = ${clientSettingsJson};
+                    window.__ADMIN_TOKEN__ = ${JSON.stringify(ADMIN_TOKEN)};
 
                     function getAdminToken() {
                         const q = new URLSearchParams(location.search);
                         if (q.get("token")) return q.get("token");
-                        const m = (document.cookie || "").match(/v3_admin_token=([^;]+)/);
+                        if (window.__ADMIN_TOKEN__) return window.__ADMIN_TOKEN__;
+                        const m = (document.cookie || "").match(/(?:admin_session_token|v3_admin_token)=([^;]+)/);
                         if (m) return m[1];
                         return "";
                     }
@@ -1643,12 +1646,38 @@ return sendHtmlResponse(res, 200, `
                         });
                     }
 
+                    // 协议勾选与默认推荐端口联动绑定
+                    function initProtoPortBinds() {
+                        const binds = [
+                            { chk: "env_ENABLE_HY2", port: "env_PORT_HY2", def: 10800 },
+                            { chk: "env_ENABLE_TUIC", port: "env_PORT_TUIC", def: 10801 },
+                            { chk: "env_ENABLE_REALITY", port: "env_PORT_REALITY", def: 10802 },
+                            { chk: "env_ENABLE_VLESS_TCP", port: "env_PORT_VLESS_TCP", def: 10803 },
+                            { chk: "env_ENABLE_TROJAN_TCP", port: "env_PORT_TROJAN_TCP", def: 10804 },
+                            { chk: "env_ENABLE_SS", port: "env_PORT_SS", def: 10805 }
+                        ];
+                        binds.forEach(b => {
+                            const chkEl = document.getElementById(b.chk);
+                            const portEl = document.getElementById(b.port);
+                            if (chkEl && portEl && !chkEl._hasPortBind) {
+                                chkEl._hasPortBind = true;
+                                chkEl.addEventListener("change", () => {
+                                    if (chkEl.checked && (!portEl.value || parseInt(portEl.value, 10) === 0)) {
+                                        portEl.value = b.def;
+                                    }
+                                });
+                            }
+                        });
+                    }
+
                     async function openSettingsModal() {
+                        initProtoPortBinds();
                         const token = getAdminToken();
                         const basePrefix = location.pathname.startsWith("/v3") ? "/v3" : "";
                         try {
                             const res = await fetch(basePrefix + "/admin/api/settings" + (token ? "?token=" + encodeURIComponent(token) : ""), {
-                                headers: token ? { "x-admin-token": token } : {}
+                                headers: token ? { "x-admin-token": token } : {},
+                                credentials: "include"
                             });
                             if (res.ok) {
                                 const realSettings = await res.json();
@@ -1689,29 +1718,35 @@ return sendHtmlResponse(res, 200, `
                             else cd0.checked = true;
                         }
 
-                        // 填充协议与端口配置
+                        // 填充协议与端口配置 (端口有效或显式为 true 时勾选)
                         const setCheck = (id, val) => { const el = document.getElementById(id); if (el) el.checked = Boolean(val); };
-                        const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val !== undefined && val !== null ? val : ""; };
+                        const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = (val !== undefined && val !== null && val !== 0 && val !== "0") ? val : ""; };
 
-                        setCheck("env_ENABLE_HY2", env.ENABLE_HY2 !== false);
-                        setVal("env_PORT_HY2", env.PORT_HY2 || "");
+                        const isHy2On = env.ENABLE_HY2 === true || (env.ENABLE_HY2 !== false && Boolean(env.PORT_HY2 && env.PORT_HY2 > 0));
+                        setCheck("env_ENABLE_HY2", isHy2On);
+                        setVal("env_PORT_HY2", env.PORT_HY2);
                         setVal("env_HY2_HOP_PORTS", env.HY2_HOP_PORTS || "");
 
-                        setCheck("env_ENABLE_TUIC", env.ENABLE_TUIC !== false);
-                        setVal("env_PORT_TUIC", env.PORT_TUIC || "");
+                        const isTuicOn = env.ENABLE_TUIC === true || (env.ENABLE_TUIC !== false && Boolean(env.PORT_TUIC && env.PORT_TUIC > 0));
+                        setCheck("env_ENABLE_TUIC", isTuicOn);
+                        setVal("env_PORT_TUIC", env.PORT_TUIC);
 
-                        setCheck("env_ENABLE_REALITY", env.ENABLE_REALITY !== false);
-                        setVal("env_PORT_REALITY", env.PORT_REALITY || "");
+                        const isRealityOn = env.ENABLE_REALITY === true || (env.ENABLE_REALITY !== false && Boolean(env.PORT_REALITY && env.PORT_REALITY > 0));
+                        setCheck("env_ENABLE_REALITY", isRealityOn);
+                        setVal("env_PORT_REALITY", env.PORT_REALITY);
                         setVal("env_REALITY_DEST", env.REALITY_DEST || "addons.mozilla.org");
 
-                        setCheck("env_ENABLE_VLESS_TCP", env.ENABLE_VLESS_TCP !== false);
-                        setVal("env_PORT_VLESS_TCP", env.PORT_VLESS_TCP || "");
+                        const isVlessTcpOn = env.ENABLE_VLESS_TCP === true || (env.ENABLE_VLESS_TCP !== false && Boolean(env.PORT_VLESS_TCP && env.PORT_VLESS_TCP > 0));
+                        setCheck("env_ENABLE_VLESS_TCP", isVlessTcpOn);
+                        setVal("env_PORT_VLESS_TCP", env.PORT_VLESS_TCP);
 
-                        setCheck("env_ENABLE_TROJAN_TCP", env.ENABLE_TROJAN_TCP !== false);
-                        setVal("env_PORT_TROJAN_TCP", env.PORT_TROJAN_TCP || "");
+                        const isTrojanTcpOn = env.ENABLE_TROJAN_TCP === true || (env.ENABLE_TROJAN_TCP !== false && Boolean(env.PORT_TROJAN_TCP && env.PORT_TROJAN_TCP > 0));
+                        setCheck("env_ENABLE_TROJAN_TCP", isTrojanTcpOn);
+                        setVal("env_PORT_TROJAN_TCP", env.PORT_TROJAN_TCP);
 
-                        setCheck("env_ENABLE_SS", env.ENABLE_SS !== false);
-                        setVal("env_PORT_SS", env.PORT_SS || "");
+                        const isSsOn = env.ENABLE_SS === true || (env.ENABLE_SS !== false && Boolean(env.PORT_SS && env.PORT_SS > 0));
+                        setCheck("env_ENABLE_SS", isSsOn);
+                        setVal("env_PORT_SS", env.PORT_SS);
 
                         setVal("env_DIRECT_IP", env.DIRECT_IP || "");
 
@@ -1730,7 +1765,7 @@ return sendHtmlResponse(res, 200, `
                             const reqUrl = basePrefix + "/admin/api/sync-client-downloads" + (token ? "?token=" + encodeURIComponent(token) : "");
                             const reqHeaders = {};
                             if (token) reqHeaders["x-admin-token"] = token;
-                            const res = await fetch(reqUrl, { method: "POST", headers: reqHeaders });
+                            const res = await fetch(reqUrl, { method: "POST", headers: reqHeaders, credentials: "include" });
                             const data = await res.json();
                             if (res.ok) {
                                 alert("爬取同步成功！已更新 " + data.count + " 个客户端项目。");
@@ -1752,38 +1787,68 @@ return sendHtmlResponse(res, 200, `
                     }
 
                     async function saveSiteSettings() {
+                        // 防御式读取各类输入框数值
+                        const getVal = (id, fallback = "") => { const el = document.getElementById(id); return el ? el.value.trim() : fallback; };
+                        const getCheck = (id) => { const el = document.getElementById(id); return el ? Boolean(el.checked) : false; };
+                        const getInt = (id, fallback = 0) => {
+                            const el = document.getElementById(id);
+                            if (!el || !el.value) return fallback;
+                            const n = parseInt(el.value, 10);
+                            return isNaN(n) ? fallback : n;
+                        };
+
                         const reg1 = document.getElementById("set_allowRegister_1");
                         const allowRegister = reg1 ? reg1.checked : true;
-                        const defaultDays = parseInt(document.getElementById("set_defaultDays").value, 10) || 0;
-                        const defaultTrafficVal = parseFloat(document.getElementById("set_defaultTrafficVal").value) || 0;
-                        const defaultTrafficUnit = document.getElementById("set_defaultTrafficUnit").value || "GB";
-                        const contactText = document.getElementById("set_contactText").value.trim();
-                        const contactUrl = document.getElementById("set_contactUrl").value.trim();
+                        const defaultDays = getInt("set_defaultDays", 3);
+                        const defaultTrafficVal = parseFloat(getVal("set_defaultTrafficVal", "10")) || 10;
+                        const defaultTrafficUnit = getVal("set_defaultTrafficUnit", "GB") || "GB";
+                        const contactText = getVal("set_contactText", "");
+                        const contactUrl = getVal("set_contactUrl", "");
                         const cd1 = document.getElementById("set_enableClientDownload_1");
                         const enableClientDownload = cd1 ? cd1.checked : true;
 
-                        // 读取全量协议与原生网络变量
-                        const getCheck = (id) => { const el = document.getElementById(id); return el ? el.checked : false; };
-                        const getInt = (id) => { const el = document.getElementById(id); return el && el.value ? parseInt(el.value, 10) || 0 : 0; };
-                        const getStr = (id) => { const el = document.getElementById(id); return el ? el.value.trim() : ""; };
+                        // 协议开关与推荐端口智能保活 (用户勾选但未指定端口时自动赋予推荐端口)
+                        const enableHy2 = getCheck("env_ENABLE_HY2");
+                        let portHy2 = getInt("env_PORT_HY2", 0);
+                        if (enableHy2 && portHy2 <= 0) portHy2 = 10800;
+
+                        const enableTuic = getCheck("env_ENABLE_TUIC");
+                        let portTuic = getInt("env_PORT_TUIC", 0);
+                        if (enableTuic && portTuic <= 0) portTuic = 10801;
+
+                        const enableReality = getCheck("env_ENABLE_REALITY");
+                        let portReality = getInt("env_PORT_REALITY", 0);
+                        if (enableReality && portReality <= 0) portReality = 10802;
+
+                        const enableVlessTcp = getCheck("env_ENABLE_VLESS_TCP");
+                        let portVlessTcp = getInt("env_PORT_VLESS_TCP", 0);
+                        if (enableVlessTcp && portVlessTcp <= 0) portVlessTcp = 10803;
+
+                        const enableTrojanTcp = getCheck("env_ENABLE_TROJAN_TCP");
+                        let portTrojanTcp = getInt("env_PORT_TROJAN_TCP", 0);
+                        if (enableTrojanTcp && portTrojanTcp <= 0) portTrojanTcp = 10804;
+
+                        const enableSs = getCheck("env_ENABLE_SS");
+                        let portSs = getInt("env_PORT_SS", 0);
+                        if (enableSs && portSs <= 0) portSs = 10805;
 
                         const envSettings = {
-                            ENABLE_HY2: getCheck("env_ENABLE_HY2"),
-                            PORT_HY2: getInt("env_PORT_HY2"),
-                            ENABLE_HY2_HOP: Boolean(getStr("env_HY2_HOP_PORTS")),
-                            HY2_HOP_PORTS: getStr("env_HY2_HOP_PORTS"),
-                            ENABLE_TUIC: getCheck("env_ENABLE_TUIC"),
-                            PORT_TUIC: getInt("env_PORT_TUIC"),
-                            ENABLE_REALITY: getCheck("env_ENABLE_REALITY"),
-                            PORT_REALITY: getInt("env_PORT_REALITY"),
-                            REALITY_DEST: getStr("env_REALITY_DEST") || "addons.mozilla.org",
-                            ENABLE_VLESS_TCP: getCheck("env_ENABLE_VLESS_TCP"),
-                            PORT_VLESS_TCP: getInt("env_PORT_VLESS_TCP"),
-                            ENABLE_TROJAN_TCP: getCheck("env_ENABLE_TROJAN_TCP"),
-                            PORT_TROJAN_TCP: getInt("env_PORT_TROJAN_TCP"),
-                            ENABLE_SS: getCheck("env_ENABLE_SS"),
-                            PORT_SS: getInt("env_PORT_SS"),
-                            DIRECT_IP: getStr("env_DIRECT_IP")
+                            ENABLE_HY2: enableHy2,
+                            PORT_HY2: enableHy2 ? portHy2 : 0,
+                            ENABLE_HY2_HOP: Boolean(getVal("env_HY2_HOP_PORTS")),
+                            HY2_HOP_PORTS: getVal("env_HY2_HOP_PORTS"),
+                            ENABLE_TUIC: enableTuic,
+                            PORT_TUIC: enableTuic ? portTuic : 0,
+                            ENABLE_REALITY: enableReality,
+                            PORT_REALITY: enableReality ? portReality : 0,
+                            REALITY_DEST: getVal("env_REALITY_DEST", "addons.mozilla.org") || "addons.mozilla.org",
+                            ENABLE_VLESS_TCP: enableVlessTcp,
+                            PORT_VLESS_TCP: enableVlessTcp ? portVlessTcp : 0,
+                            ENABLE_TROJAN_TCP: enableTrojanTcp,
+                            PORT_TROJAN_TCP: enableTrojanTcp ? portTrojanTcp : 0,
+                            ENABLE_SS: enableSs,
+                            PORT_SS: enableSs ? portSs : 0,
+                            DIRECT_IP: getVal("env_DIRECT_IP")
                         };
 
                         const btn = document.getElementById("saveSettingsBtn");
@@ -1803,6 +1868,7 @@ return sendHtmlResponse(res, 200, `
                             const res = await fetch(reqUrl, {
                                 method: "POST",
                                 headers: reqHeaders,
+                                credentials: "include",
                                 body: JSON.stringify({
                                     allowRegister,
                                     enableClientDownload,
@@ -1818,8 +1884,8 @@ return sendHtmlResponse(res, 200, `
                             let data = {};
                             try { data = JSON.parse(text || "{}"); } catch (_) {}
                             if (res.ok) {
-                                window.__SITE_SETTINGS__ = Object.assign({}, data.settings || {}, { envSettings });
-                                alert("✅ 站点运营与全部协议变量已成功保存并立即落盘热生效！");
+                                window.__SITE_SETTINGS__ = Object.assign({}, data.settings || {}, { envSettings: data.envSettings || envSettings });
+                                alert("✅ 站点运营与全部节点协议配置已成功保存并立即落盘热生效！");
                                 closeSettingsModal();
                                 const contactDisplay = document.querySelector(".contact-display-val");
                                 if (contactDisplay) contactDisplay.innerText = contactText || "未设置";

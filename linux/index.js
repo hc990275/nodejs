@@ -1322,7 +1322,7 @@ function getSessionUser(req) {
     return usersDatabase.find((u) => u.username === username) || null;
 }
 
-// 验证管理后台专属认证 (Cookie 隔离优先，兼容 Query Token)
+// 验证管理后台专属认证 (Cookie 隔离优先，兼容请求头与 Query Token)
 function checkAdminAuth(req, query) {
     const cookieHeader = req.headers.cookie || "";
     const match = cookieHeader.match(/admin_session_token=([a-zA-Z0-9]+)/);
@@ -1332,6 +1332,16 @@ function checkAdminAuth(req, query) {
             return true;
         }
         if (expire) adminSessions.delete(match[1]);
+    }
+    // 兼容请求头 x-admin-token 与 x-admin-session
+    const headerToken = req.headers["x-admin-token"];
+    if (headerToken && String(headerToken).trim() === String(ADMIN_TOKEN || "").trim()) {
+        return true;
+    }
+    const headerSession = req.headers["x-admin-session"];
+    if (headerSession) {
+        const expire = adminSessions.get(headerSession);
+        if (expire && expire > Date.now()) return true;
     }
     // 兼容历史 URL ?token=...
     if (query && String(query.get("token") || "").trim() === String(ADMIN_TOKEN || "").trim()) {
@@ -2372,14 +2382,149 @@ function handleHttpRequest(req, res) {
                     if (data.contactUrl !== undefined) {
                         siteSettings.contactUrl = String(data.contactUrl || "").trim();
                     }
+
+                    // 准备 .env 持久化更新字典
+                    const envUpdates = {};
+
                     if (data.envSettings && typeof data.envSettings === "object") {
-                        if (data.envSettings.DIRECT_IP !== undefined) {
-                            DIRECT_IP = String(data.envSettings.DIRECT_IP || "").trim();
+                        const env = data.envSettings;
+
+                        // 宿主机公网 IP (SERVER_IP / DIRECT_IP)
+                        if (env.DIRECT_IP !== undefined) {
+                            DIRECT_IP = String(env.DIRECT_IP || "").trim();
+                            envUpdates.SERVER_IP = DIRECT_IP;
+                        }
+
+                        // 1. Hysteria 2 (UDP/QUIC)
+                        if (env.ENABLE_HY2 !== undefined) {
+                            ENABLE_HY2 = Boolean(env.ENABLE_HY2);
+                            envUpdates.ENABLE_HY2 = String(ENABLE_HY2);
+                        }
+                        if (env.PORT_HY2 !== undefined) {
+                            PORT_HY2 = Math.max(0, parseInt(env.PORT_HY2, 10) || 0);
+                            envUpdates.PORT_HY2 = String(PORT_HY2);
+                        }
+                        if (env.ENABLE_HY2_HOP !== undefined) {
+                            ENABLE_HY2_HOP = Boolean(env.ENABLE_HY2_HOP);
+                            envUpdates.ENABLE_HY2_HOP = String(ENABLE_HY2_HOP);
+                        }
+                        if (env.HY2_HOP_PORTS !== undefined) {
+                            HY2_HOP_PORTS = String(env.HY2_HOP_PORTS || "").trim();
+                            envUpdates.HY2_HOP_PORTS = HY2_HOP_PORTS;
+                        }
+
+                        // 2. TUIC v5 (0-RTT)
+                        if (env.ENABLE_TUIC !== undefined) {
+                            ENABLE_TUIC = Boolean(env.ENABLE_TUIC);
+                            envUpdates.ENABLE_TUIC = String(ENABLE_TUIC);
+                        }
+                        if (env.PORT_TUIC !== undefined) {
+                            PORT_TUIC = Math.max(0, parseInt(env.PORT_TUIC, 10) || 0);
+                            envUpdates.PORT_TUIC = String(PORT_TUIC);
+                        }
+
+                        // 3. VLESS Reality (偷跑证书)
+                        if (env.ENABLE_REALITY !== undefined) {
+                            ENABLE_REALITY = Boolean(env.ENABLE_REALITY);
+                            envUpdates.ENABLE_REALITY = String(ENABLE_REALITY);
+                        }
+                        if (env.PORT_REALITY !== undefined) {
+                            PORT_REALITY = Math.max(0, parseInt(env.PORT_REALITY, 10) || 0);
+                            envUpdates.PORT_REALITY = String(PORT_REALITY);
+                        }
+                        if (env.REALITY_DEST !== undefined) {
+                            REALITY_DEST = String(env.REALITY_DEST || "").trim() || "addons.mozilla.org";
+                            envUpdates.REALITY_DEST = REALITY_DEST;
+                        }
+
+                        // 4. VLESS-TCP 直连
+                        if (env.ENABLE_VLESS_TCP !== undefined) {
+                            ENABLE_VLESS_TCP = Boolean(env.ENABLE_VLESS_TCP);
+                            envUpdates.ENABLE_VLESS_TCP = String(ENABLE_VLESS_TCP);
+                        }
+                        if (env.PORT_VLESS_TCP !== undefined) {
+                            PORT_VLESS_TCP = Math.max(0, parseInt(env.PORT_VLESS_TCP, 10) || 0);
+                            envUpdates.PORT_VLESS_TCP = String(PORT_VLESS_TCP);
+                        }
+
+                        // 5. Trojan-TCP 直连
+                        if (env.ENABLE_TROJAN_TCP !== undefined) {
+                            ENABLE_TROJAN_TCP = Boolean(env.ENABLE_TROJAN_TCP);
+                            envUpdates.ENABLE_TROJAN_TCP = String(ENABLE_TROJAN_TCP);
+                        }
+                        if (env.PORT_TROJAN_TCP !== undefined) {
+                            PORT_TROJAN_TCP = Math.max(0, parseInt(env.PORT_TROJAN_TCP, 10) || 0);
+                            envUpdates.PORT_TROJAN_TCP = String(PORT_TROJAN_TCP);
+                        }
+
+                        // 6. Shadowsocks 2022
+                        if (env.ENABLE_SS !== undefined) {
+                            ENABLE_SS = Boolean(env.ENABLE_SS);
+                            envUpdates.ENABLE_SS = String(ENABLE_SS);
+                        }
+                        if (env.PORT_SS !== undefined) {
+                            PORT_SS = Math.max(0, parseInt(env.PORT_SS, 10) || 0);
+                            envUpdates.PORT_SS = String(PORT_SS);
+                        }
+
+                        // 7. Socks5 独立代理
+                        if (env.ENABLE_SOCKS5 !== undefined) {
+                            ENABLE_SOCKS5 = Boolean(env.ENABLE_SOCKS5);
+                            envUpdates.ENABLE_SOCKS5 = String(ENABLE_SOCKS5);
+                        }
+                        if (env.PORT_SOCKS5 !== undefined) {
+                            PORT_SOCKS5 = Math.max(0, parseInt(env.PORT_SOCKS5, 10) || 0);
+                            envUpdates.PORT_SOCKS5 = String(PORT_SOCKS5);
                         }
                     }
+
+                    // 1. 持久化存入 settings 运营配置文件
                     saveSettings();
-                    console.log("[Settings] 站点运营与全局配置保存成功并已落盘生效");
-                    return sendJsonResponse(res, 200, { success: true, settings: siteSettings });
+
+                    // 2. 如果存在环境变量或协议端口变更，原子写入 .env 文件
+                    if (Object.keys(envUpdates).length > 0) {
+                        updateEnvFile(envUpdates);
+                    }
+
+                    // 3. 触发 Sing-box 核心热重载以应用最新的节点入站端口与配置
+                    try {
+                        safeReloadSingbox(true);
+                    } catch (errReload) {
+                        console.warn("[Settings] 重载 Sing-box 告警:", errReload.message);
+                    }
+
+                    console.log("[Settings] 站点运营与协议变量配置保存成功并已落盘生效");
+
+                    const currentEnvSettings = {
+                        SERVER_PORT,
+                        DIRECT_IP,
+                        ENABLE_HY2,
+                        PORT_HY2,
+                        ENABLE_HY2_HOP,
+                        HY2_HOP_PORTS,
+                        HY2_HOP_INTERVAL,
+                        ENABLE_TUIC,
+                        PORT_TUIC,
+                        ENABLE_REALITY,
+                        PORT_REALITY,
+                        REALITY_DEST,
+                        REALITY_PORT,
+                        ENABLE_VLESS_TCP,
+                        PORT_VLESS_TCP,
+                        ENABLE_TROJAN_TCP,
+                        PORT_TROJAN_TCP,
+                        ENABLE_SS,
+                        PORT_SS,
+                        SS_METHOD,
+                        ENABLE_SOCKS5,
+                        PORT_SOCKS5
+                    };
+
+                    return sendJsonResponse(res, 200, {
+                        success: true,
+                        settings: siteSettings,
+                        envSettings: currentEnvSettings
+                    });
                 } catch (e) {
                     return sendJsonResponse(res, 500, { error: "保存站点配置失败: " + e.message });
                 }
@@ -2619,7 +2764,34 @@ function handleHttpRequest(req, res) {
         }
 
         return renderAdminPage(req, res, {
-            siteSettings,
+            siteSettings: {
+                ...siteSettings,
+                envSettings: {
+                    SERVER_PORT,
+                    DIRECT_IP,
+                    ENABLE_HY2,
+                    PORT_HY2,
+                    ENABLE_HY2_HOP,
+                    HY2_HOP_PORTS,
+                    HY2_HOP_INTERVAL,
+                    ENABLE_TUIC,
+                    PORT_TUIC,
+                    ENABLE_REALITY,
+                    PORT_REALITY,
+                    REALITY_DEST,
+                    REALITY_PORT,
+                    ENABLE_VLESS_TCP,
+                    PORT_VLESS_TCP,
+                    ENABLE_TROJAN_TCP,
+                    PORT_TROJAN_TCP,
+                    ENABLE_SS,
+                    PORT_SS,
+                    SS_METHOD,
+                    ENABLE_SOCKS5,
+                    PORT_SOCKS5
+                }
+            },
+            ADMIN_TOKEN,
             usersDatabase,
             clientDownloads,
             DIRECT_IP,

@@ -272,3 +272,18 @@
   1. 在 `index.js` 补全 `POST /admin/api/settings` 处理逻辑，接收配额与 `DIRECT_IP` 公网配置，调用 `saveSettings()` 实时落盘；
   2. 彻底重构 TAB 3 为“🌐 网络与公网IP”，拔除所有隧道监控看板、Token 输入框与轮询定时器；
   3. 优化前端 `saveSiteSettings` 响应解析为 `await res.text()` + 安全 `JSON.parse`，彻底杜绝空响应报错。
+
+---
+
+### 第三十三号：管理后台“节点协议与端口”配置无法保存与回显失效缺陷修复
+- **问题现象**：在管理后台“节点集群与参数控制中心”的【⚡ 节点协议与端口】Tab 中，勾选协议（Hysteria 2、TUIC、Reality 等）并配置端口后，点击“保存所有配置”无法生效，重新打开弹窗或刷新页面依然处于未勾选、端口为空的初始状态。
+- **原因剖析**：
+  1. 服务端 POST /admin/api/settings 在接收前端 envSettings 时，仅提取了 DIRECT_IP，完全忽略了所有协议变量（ENABLE_HY2, PORT_HY2, ENABLE_TUIC, PORT_TUIC, ENABLE_REALITY, PORT_REALITY, REALITY_DEST, ENABLE_VLESS_TCP, PORT_VLESS_TCP, ENABLE_TROJAN_TCP, PORT_TROJAN_TCP, ENABLE_SS, PORT_SS 等）；
+  2. 服务端未调用 updateEnvFile(envUpdates) 进行 .env 持久化，亦未调用 safeReloadSingbox(true) 热重载 Sing-box，导致参数完全未落盘生效；
+  3. 服务端直出 HTML 时 renderAdminPage 的 siteSettings 缺少 envSettings，且鉴权 checkAdminAuth 未支持 x-admin-token 请求头；
+  4. 前端表单中，若用户勾选了协议但未手动输入端口（误以为灰色的 placeholder 是已输入的值），前端原逻辑提交 port: 0，导致服务端误判为禁用协议。
+- **实施解决对策**：
+  1. **全协议参数接收与落盘闭环**：在 index.js 的 POST /admin/api/settings 完整解构全部协议开关与端口，更新内存变量，调用 updateEnvFile(envUpdates) 原子写盘，并平滑触发 safeReloadSingbox(true) 重载核心；
+  2. **鉴权全面兼容**：checkAdminAuth 增加对 req.headers["x-admin-token"] 与 x-admin-session 的校验；
+  3. **初始渲染注入与 Token 保障**：在 renderAdminPage 直出数据中合并最新 envSettings 与 ADMIN_TOKEN，前端 getAdminToken() 优先读取避免凭据缺失；
+  4. **端口智能自动补全**：在前端为所有协议复选框增加联动事件，用户勾选协议时自动补全默认推荐端口（HY2: 10800, TUIC: 10801, REALITY: 10802, VLESS: 10803, TROJAN: 10804, SS: 10805），保存时增加安全保活，彻底杜绝误设为 0。
