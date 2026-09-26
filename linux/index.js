@@ -1911,6 +1911,19 @@ function sendHtmlResponse(res, statusCode, htmlStr, extraHeaders = {}) {
 
 // ==================== 5. HTTP 业务层与前端 ====================
 function handleHttpRequest(req, res) {
+    // 全局 CORS 与 OPTIONS 预检支持 (解决反向代理/跨端口访问时的预检阻断)
+    const reqOrigin = req.headers.origin;
+    if (reqOrigin) {
+        res.setHeader("Access-Control-Allow-Origin", reqOrigin);
+        res.setHeader("Access-Control-Allow-Credentials", "true");
+        res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+        res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, x-admin-token, x-admin-session");
+    }
+    if (req.method === "OPTIONS") {
+        res.writeHead(204);
+        return res.end();
+    }
+
     let rawPath = req.url.split('?')[0];
     if (rawPath === '/v3') {
         res.writeHead(302, { 'Location': '/v3/' });
@@ -2389,9 +2402,9 @@ function handleHttpRequest(req, res) {
                     if (data.envSettings && typeof data.envSettings === "object") {
                         const env = data.envSettings;
 
-                        // 宿主机公网 IP (SERVER_IP / DIRECT_IP)
-                        if (env.DIRECT_IP !== undefined) {
-                            DIRECT_IP = String(env.DIRECT_IP || "").trim();
+                        // 宿主机公网 IP (SERVER_IP / DIRECT_IP，非空时才覆盖)
+                        if (env.DIRECT_IP !== undefined && String(env.DIRECT_IP).trim() !== "") {
+                            DIRECT_IP = String(env.DIRECT_IP).trim();
                             envUpdates.SERVER_IP = DIRECT_IP;
                         }
 
@@ -2486,13 +2499,6 @@ function handleHttpRequest(req, res) {
                         updateEnvFile(envUpdates);
                     }
 
-                    // 3. 触发 Sing-box 核心热重载以应用最新的节点入站端口与配置
-                    try {
-                        safeReloadSingbox(true);
-                    } catch (errReload) {
-                        console.warn("[Settings] 重载 Sing-box 告警:", errReload.message);
-                    }
-
                     console.log("[Settings] 站点运营与协议变量配置保存成功并已落盘生效");
 
                     const currentEnvSettings = {
@@ -2520,11 +2526,22 @@ function handleHttpRequest(req, res) {
                         PORT_SOCKS5
                     };
 
-                    return sendJsonResponse(res, 200, {
+                    // 先向客户端返回 200 成功响应，确保前端不会因底层进程重启而触发 Failed to fetch
+                    sendJsonResponse(res, 200, {
                         success: true,
                         settings: siteSettings,
                         envSettings: currentEnvSettings
                     });
+
+                    // 异步执行 Sing-box 核心热重载，彻底脱离 HTTP 响应生命周期
+                    setImmediate(() => {
+                        try {
+                            safeReloadSingbox(true);
+                        } catch (errReload) {
+                            console.warn("[Settings] 异步重载 Sing-box 告警:", errReload.message);
+                        }
+                    });
+                    return;
                 } catch (e) {
                     return sendJsonResponse(res, 500, { error: "保存站点配置失败: " + e.message });
                 }

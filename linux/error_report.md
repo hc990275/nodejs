@@ -287,3 +287,16 @@
   2. **鉴权全面兼容**：checkAdminAuth 增加对 req.headers["x-admin-token"] 与 x-admin-session 的校验；
   3. **初始渲染注入与 Token 保障**：在 renderAdminPage 直出数据中合并最新 envSettings 与 ADMIN_TOKEN，前端 getAdminToken() 优先读取避免凭据缺失；
   4. **端口智能自动补全**：在前端为所有协议复选框增加联动事件，用户勾选协议时自动补全默认推荐端口（HY2: 10800, TUIC: 10801, REALITY: 10802, VLESS: 10803, TROJAN: 10804, SS: 10805），保存时增加安全保活，彻底杜绝误设为 0。
+
+---
+
+### 第三十四号：后台保存配置提示网络错误 (Failed to fetch) 缺陷修复
+- **问题现象**：在管理后台点击“保存所有配置”后，数据虽然能够成功写入磁盘保存，但前端界面依然弹出 `❌ 网络请求异常: Failed to fetch`。
+- **原因剖析**：
+  1. 服务端在收到保存请求后，在向 HTTP 客户端返回 200 响应前同步调用了 `safeReloadSingbox(true)`，其内部包含 `killPortOccupants()` 进程查杀与底层系统调用，阻塞了当前连接甚至导致 HTTP socket 被提前重置中断；
+  2. 前端请求中配置了 `credentials: "include"`，当通过特定反向代理或跨端口访问时，浏览器触发严格 CORS 拦截，由于缺少精确匹配的 CORS 头而阻断响应抛出 `Failed to fetch`；
+  3. 服务端路由未显式拦截 `OPTIONS` 跨域预检请求，携带 `x-admin-token` 自定义请求头的复杂请求在预检阶段被 404 中断。
+- **实施解决对策**：
+  1. **响应优先与重载异步化**：在 `index.js` 的 `POST /admin/api/settings` 中，数据校验落盘后先立即发送 200 成功响应，随后在 `setImmediate` 中异步执行 Sing-box 核心热重载，彻底脱离当前 HTTP 请求生命周期；
+  2. **全局 CORS 与 OPTIONS 预检支持**：在 `handleHttpRequest` 顶部增加统一的 OPTIONS 拦截器与动态 CORS 头注入；
+  3. **前端凭据规范化与安全降级通道**：在 `views/admin.js` 中移除 `credentials: "include"`，并在发生网络抖动时提供静默简单请求降级重试机制。
