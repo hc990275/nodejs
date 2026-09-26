@@ -259,3 +259,16 @@
 - **对应分支与目录**：main 分支下的 linux/ 子目录 (https://github.com/hc990275/nodejs/tree/main/linux)
 - **本地开发目录**：d:\DeskTop\GitHub\测\lunes\自适应机场
 - **归档说明**：本地工作目录 自适应机场 即为远程仓库 hc990275/nodejs 中 linux/ 目录的本地完整镜像；未来所有该项目的优化与提交，均精确同步至远程仓库 main 分支的 linux/ 路径下。
+
+---
+
+### 第三十二号：后台保存配置报 Unexpected end of JSON input 缺陷与全量清理 Argo 看板
+- **问题现象**：在管理后台点击“保存所有配置”时弹出报错：`❌ 网络请求异常: Failed to execute 'json' on 'Response': Unexpected end of JSON input`，且 TAB 3 依然展示已停用的 Argo 隧道监控看板与定时器。
+- **原因剖析**：
+  1. 服务端路由解析中仅定义了 `GET /admin/api/settings`，缺失了 `POST /admin/api/settings` 接收分支，导致请求穿透返回 404 及 0 字节空响应体；
+  2. 前端直接对空响应执行 `await res.json()` 触发 V8 原生解析错误；
+  3. 控制中心前端模板遗留了旧版 Argo 隧道看板、Token 输入框及每 3 秒发起一次的隧道状态轮询定时器。
+- **实施解决对策**：
+  1. 在 `index.js` 补全 `POST /admin/api/settings` 处理逻辑，接收配额与 `DIRECT_IP` 公网配置，调用 `saveSettings()` 实时落盘；
+  2. 彻底重构 TAB 3 为“🌐 网络与公网IP”，拔除所有隧道监控看板、Token 输入框与轮询定时器；
+  3. 优化前端 `saveSiteSettings` 响应解析为 `await res.text()` + 安全 `JSON.parse`，彻底杜绝空响应报错。
