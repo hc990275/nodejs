@@ -251,3 +251,11 @@
   4. **彻底剥离所有隧道依赖**：
      - 拔除 `initAndStartCloudflared` 进程与自动下载、移除 8001 端口监听；
      - 移除后台 Argo 隧道监控看板与设置项，订阅全面走高性能原生直连，立省 35MB+ 内存！
+
+---
+
+### 第三十一号：远程代码仓库映射与目录归属归档
+- **对应远程仓库**：https://github.com/hc990275/nodejs
+- **对应分支与目录**：main 分支下的 linux/ 子目录 (https://github.com/hc990275/nodejs/tree/main/linux)
+- **本地开发目录**：d:\DeskTop\GitHub\测\lunes\自适应机场
+- **归档说明**：本地工作目录 自适应机场 即为远程仓库 hc990275/nodejs 中 linux/ 目录的本地完整镜像；未来所有该项目的优化与提交，均精确同步至远程仓库 main 分支的 linux/ 路径下。
