@@ -6,8 +6,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/root/自适应机场
-ExecStart=/usr/bin/node /root/自适应机场/index.js
+WorkingDirectory=/root/v3-airport/linux
+Environment="GOMEMLIMIT=40MiB" "GOGC=20"
+ExecStart=/bin/sh /root/v3-airport/linux/start.sh
 Restart=always
 RestartSec=3
 LimitNOFILE=65535

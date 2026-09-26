@@ -4,7 +4,7 @@
   "description": "V3 极轻量多协议节点管理控制中枢 (Alpine 3.22 容器定制与全变量置顶版)",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node --max-old-space-size=64 index.js"
   },
   "keywords": [
     "v3",

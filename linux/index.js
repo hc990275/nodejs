@@ -228,7 +228,7 @@ const GLOBAL_SALT = process.env.GLOBAL_SALT || "_system_unified_salt_2026_pro";
 let globalTunnelServer = null;
 let singboxProcess = null;
 let isReloading = false;
-let isTunnelAvailable = Boolean(ARGO_TOKEN && ARGO_TOKEN.trim() !== "" && ARGO_DOMAIN && ARGO_DOMAIN.trim() !== "");
+let isTunnelAvailable = false; // 用户已全面停用隧道，纯直连运行
 let tunnelStatusState = {
     connected: false,
     status: "stopped", // "stopped" | "starting" | "connected" | "error"
@@ -1167,7 +1167,11 @@ function safeReloadSingbox(force = false) {
         console.log("[Core] 正在拉起 Sing-box 核心代理引擎...");
         singboxProcess = spawn(SINGBOX_BIN, ["run", "-c", CONFIG_FILE], {
             cwd: WORK_DIR,
-            stdio: "inherit"
+            stdio: "inherit",
+            env: Object.assign({}, process.env, {
+                GOMEMLIMIT: "40MiB",
+                GOGC: "20"
+            })
         });
         global.__v3_singbox_process = singboxProcess;
 
@@ -1262,94 +1266,9 @@ function stopTunnelServer() {
 }
 
 function initAndStartCloudflared() {
-    if (!isTunnelAvailable) {
-        console.log("[Cloudflared] 未配置 Argo 隧道或配置不完整，直连模式运行。");
-        stopCloudflared();
-        stopTunnelServer();
-        return;
-    }
-
-    startTunnelServer();
-
-    if (global.__v3_cloudflared_process && !global.__v3_cloudflared_process.killed) {
-        console.log("[Cloudflared] 现有 Argo 隧道进程健康运行中，保持复用无需重启。");
-        tunnelStatusState.pid = global.__v3_cloudflared_process.pid;
-        return;
-    }
-    let retryCount = 0;
-    const maxRetries = 3;
-    const start = () => {
-        if (retryCount >= maxRetries) {
-            console.warn("[Cloudflared] 隧道连接多次失败，已自动停止重试。若不需要 Argo 穿透请保持 ARGO_TOKEN 留空。");
-            tunnelStatusState.status = "error";
-            tunnelStatusState.connected = false;
-            appendTunnelLog("隧道重试达最大限制(3次)，已挂起重试");
-            return;
-        }
-        tunnelStatusState.status = "starting";
-        appendTunnelLog(`正在启动 Cloudflared 守护进程 (尝试 ${retryCount + 1}/${maxRetries})...`);
-
-        const tunnel = spawn(CLOUDFLARED_BIN, ["tunnel", "--no-autoupdate", "run", "--token", ARGO_TOKEN], {
-            cwd: WORK_DIR,
-            stdio: ["ignore", "pipe", "pipe"]
-        });
-        global.__v3_cloudflared_process = tunnel;
-        tunnelStatusState.pid = tunnel.pid;
-
-        const handleLogData = (chunk) => {
-            const lines = chunk.toString("utf8").split(/\r?\n/);
-            lines.forEach((line) => {
-                const trimmed = line.trim();
-                if (!trimmed) return;
-                appendTunnelLog(trimmed);
-                tunnelStatusState.lastSeen = Date.now();
-                // 捕获 Cloudflare 注册成功标识: Registered tunnel connection / Connection ... registered
-                if (/registered\s+tunnel\s+connection|connection.*registered|connected\s+to/i.test(trimmed)) {
-                    tunnelStatusState.connected = true;
-                    tunnelStatusState.status = "connected";
-                }
-                const matchId = trimmed.match(/Connector ID:\s*([a-f0-9-]+)/i);
-                if (matchId) {
-                    tunnelStatusState.connectorId = matchId[1];
-                }
-            });
-        };
-
-        if (tunnel.stdout) tunnel.stdout.on("data", handleLogData);
-        if (tunnel.stderr) tunnel.stderr.on("data", handleLogData);
-
-        tunnel.on("exit", (code) => {
-            global.__v3_cloudflared_process = null;
-            tunnelStatusState.connected = false;
-            tunnelStatusState.pid = null;
-            tunnelStatusState.status = "stopped";
-            appendTunnelLog(`Cloudflared 进程退出 (退出码: ${code})`);
-            retryCount++;
-            if (retryCount < maxRetries && isTunnelAvailable) {
-                setTimeout(start, 10000);
-            } else {
-                console.warn(`[Cloudflared] 隧道已退出 (代码 ${code})，停止继续重启。`);
-            }
-        });
-    };
-
-    if (!fs.existsSync(CLOUDFLARED_BIN)) {
-        appendTunnelLog("未检测到 cloudflared 二进制文件，正在自动获取...");
-        const archMap = { x64: "cloudflared-linux-amd64", arm64: "cloudflared-linux-arm64", arm: "cloudflared-linux-arm" };
-        const binName = archMap[process.arch] || "cloudflared-linux-amd64";
-        const downloadCmd = `curl -sSL -o "${CLOUDFLARED_BIN}" "https://github.com/cloudflare/cloudflared/releases/latest/download/${binName}" && chmod +x "${CLOUDFLARED_BIN}"`;
-        exec(downloadCmd, (err) => {
-            if (err) {
-                appendTunnelLog(`下载 cloudflared 失败: ${err.message}`);
-                tunnelStatusState.status = "error";
-                return;
-            }
-            start();
-        });
-    } else {
-        try { fs.chmodSync(CLOUDFLARED_BIN, "755"); } catch (e) { }
-        start();
-    }
+    // 隧道已全面停用，纯直连极速运行，彻底释放内存与CPU
+    stopCloudflared();
+    stopTunnelServer();
 }
 
 // ==================== 4. 辅助函数、多节点与订阅构建 ====================
@@ -2430,203 +2349,14 @@ function handleHttpRequest(req, res) {
         }
 
         // 独立拉取 Argo 隧道实时状态与心跳日志
-        if (pathname === "/admin/api/tunnel-status" && req.method === "GET") {
+        if (pathname === "/admin/api/tunnel-status") {
             return sendJsonResponse(res, 200, {
-                ...tunnelStatusState,
-                isAvailable: isTunnelAvailable,
-                domain: ARGO_DOMAIN
+                success: true,
+                status: "disabled",
+                connected: false,
+                isAvailable: false,
+                message: "隧道功能已由用户停用，当前处于纯直连高性能运行状态。"
             });
-        }
-
-        // 保存全局站点配置与全量协议/网络变量
-        if (pathname === "/admin/api/settings" && req.method === "POST") {
-            let body = "";
-            req.on("data", (c) => { body += c; });
-            req.on("end", () => {
-                try {
-                    const data = JSON.parse(body || "{}");
-                    if (data.allowRegister !== undefined) {
-                        siteSettings.allowRegister = Boolean(data.allowRegister);
-                    }
-                    if (data.enableClientDownload !== undefined) {
-                        siteSettings.enableClientDownload = Boolean(data.enableClientDownload);
-                    }
-                    if (data.defaultDays !== undefined) {
-                        siteSettings.defaultDays = Math.max(0, parseInt(data.defaultDays, 10) || 0);
-                    }
-                    if (data.defaultTrafficVal !== undefined) {
-                        siteSettings.defaultTrafficVal = Math.max(0, parseFloat(data.defaultTrafficVal) || 0);
-                    }
-                    if (data.defaultTrafficUnit !== undefined) {
-                        const u = String(data.defaultTrafficUnit).toUpperCase();
-                        siteSettings.defaultTrafficUnit = ["MB", "GB", "TB"].includes(u) ? u : "GB";
-                    }
-                    const curVal = siteSettings.defaultTrafficVal !== undefined ? siteSettings.defaultTrafficVal : (data.defaultTrafficGB || 10);
-                    const curUnit = siteSettings.defaultTrafficUnit || "GB";
-                    siteSettings.defaultTrafficGB = curUnit === "TB" ? curVal * 1024 : (curUnit === "MB" ? curVal / 1024 : curVal);
-                    if (data.defaultMaxOnlineIps !== undefined) {
-                        siteSettings.defaultMaxOnlineIps = Math.max(0, parseInt(data.defaultMaxOnlineIps, 10) || 0);
-                    }
-                    if (data.defaultIdleDisconnectEnabled !== undefined) {
-                        siteSettings.defaultIdleDisconnectEnabled = Boolean(data.defaultIdleDisconnectEnabled);
-                    }
-                    if (data.defaultIdleTimeoutSeconds !== undefined) {
-                        siteSettings.defaultIdleTimeoutSeconds = Math.max(10, parseInt(data.defaultIdleTimeoutSeconds, 10) || 60);
-                    }
-                    if (data.contactText !== undefined) {
-                        siteSettings.contactText = String(data.contactText || "").trim();
-                    }
-                    if (data.contactUrl !== undefined) {
-                        siteSettings.contactUrl = String(data.contactUrl || "").trim();
-                    }
-                    saveSettings();
-
-                    // 2. 如果携带了协议与网络变量，同步写入 .env 并热重载 Sing-box
-                    let needCoreReload = false;
-                    const envUpdates = {};
-
-                    if (data.envSettings && typeof data.envSettings === "object") {
-                        const env = data.envSettings;
-
-                        if (env.PORT_HY2 !== undefined) {
-                            PORT_HY2 = parseInt(env.PORT_HY2, 10) || 0;
-                            envUpdates.PORT_HY2 = PORT_HY2;
-                            needCoreReload = true;
-                        }
-                        if (env.ENABLE_HY2 !== undefined) {
-                            ENABLE_HY2 = Boolean(env.ENABLE_HY2);
-                            envUpdates.ENABLE_HY2 = ENABLE_HY2;
-                            needCoreReload = true;
-                        }
-                        if (env.ENABLE_HY2_HOP !== undefined) {
-                            ENABLE_HY2_HOP = Boolean(env.ENABLE_HY2_HOP);
-                            envUpdates.ENABLE_HY2_HOP = ENABLE_HY2_HOP;
-                            needCoreReload = true;
-                        }
-                        if (env.HY2_HOP_PORTS !== undefined) {
-                            HY2_HOP_PORTS = String(env.HY2_HOP_PORTS || "").trim();
-                            envUpdates.HY2_HOP_PORTS = HY2_HOP_PORTS;
-                            needCoreReload = true;
-                        }
-                        if (env.PORT_TUIC !== undefined) {
-                            PORT_TUIC = parseInt(env.PORT_TUIC, 10) || 0;
-                            envUpdates.PORT_TUIC = PORT_TUIC;
-                            needCoreReload = true;
-                        }
-                        if (env.ENABLE_TUIC !== undefined) {
-                            ENABLE_TUIC = Boolean(env.ENABLE_TUIC);
-                            envUpdates.ENABLE_TUIC = ENABLE_TUIC;
-                            needCoreReload = true;
-                        }
-                        if (env.PORT_REALITY !== undefined) {
-                            PORT_REALITY = parseInt(env.PORT_REALITY, 10) || 0;
-                            envUpdates.PORT_REALITY = PORT_REALITY;
-                            needCoreReload = true;
-                        }
-                        if (env.ENABLE_REALITY !== undefined) {
-                            ENABLE_REALITY = Boolean(env.ENABLE_REALITY);
-                            envUpdates.ENABLE_REALITY = ENABLE_REALITY;
-                            needCoreReload = true;
-                        }
-                        if (env.REALITY_DEST !== undefined) {
-                            REALITY_DEST = String(env.REALITY_DEST || "addons.mozilla.org").trim();
-                            envUpdates.REALITY_DEST = REALITY_DEST;
-                            needCoreReload = true;
-                        }
-                        if (env.PORT_VLESS_TCP !== undefined) {
-                            PORT_VLESS_TCP = parseInt(env.PORT_VLESS_TCP, 10) || 0;
-                            envUpdates.PORT_VLESS_TCP = PORT_VLESS_TCP;
-                            needCoreReload = true;
-                        }
-                        if (env.ENABLE_VLESS_TCP !== undefined) {
-                            ENABLE_VLESS_TCP = Boolean(env.ENABLE_VLESS_TCP);
-                            envUpdates.ENABLE_VLESS_TCP = ENABLE_VLESS_TCP;
-                            needCoreReload = true;
-                        }
-                        if (env.PORT_TROJAN_TCP !== undefined) {
-                            PORT_TROJAN_TCP = parseInt(env.PORT_TROJAN_TCP, 10) || 0;
-                            envUpdates.PORT_TROJAN_TCP = PORT_TROJAN_TCP;
-                            needCoreReload = true;
-                        }
-                        if (env.ENABLE_TROJAN_TCP !== undefined) {
-                            ENABLE_TROJAN_TCP = Boolean(env.ENABLE_TROJAN_TCP);
-                            envUpdates.ENABLE_TROJAN_TCP = ENABLE_TROJAN_TCP;
-                            needCoreReload = true;
-                        }
-                        if (env.PORT_SS !== undefined) {
-                            PORT_SS = parseInt(env.PORT_SS, 10) || 0;
-                            envUpdates.PORT_SS = PORT_SS;
-                            needCoreReload = true;
-                        }
-                        if (env.ENABLE_SS !== undefined) {
-                            ENABLE_SS = Boolean(env.ENABLE_SS);
-                            envUpdates.ENABLE_SS = ENABLE_SS;
-                            needCoreReload = true;
-                        }
-                        if (env.PORT_SOCKS5 !== undefined) {
-                            PORT_SOCKS5 = parseInt(env.PORT_SOCKS5, 10) || 0;
-                            envUpdates.PORT_SOCKS5 = PORT_SOCKS5;
-                            needCoreReload = true;
-                        }
-                        if (env.ENABLE_SOCKS5 !== undefined) {
-                            ENABLE_SOCKS5 = Boolean(env.ENABLE_SOCKS5);
-                            envUpdates.ENABLE_SOCKS5 = ENABLE_SOCKS5;
-                            needCoreReload = true;
-                        }
-                        if (env.DIRECT_IP !== undefined && String(env.DIRECT_IP).trim()) {
-                            DIRECT_IP = String(env.DIRECT_IP).trim();
-                            envUpdates.SERVER_IP = DIRECT_IP;
-                        }
-                        if (env.ARGO_DOMAIN !== undefined) {
-                            ARGO_DOMAIN = String(env.ARGO_DOMAIN || "").trim();
-                            envUpdates.ARGO_DOMAIN = ARGO_DOMAIN;
-                        }
-                        if (env.ARGO_TOKEN !== undefined) {
-                            ARGO_TOKEN = String(env.ARGO_TOKEN || "").trim();
-                            envUpdates.ARGO_TOKEN = ARGO_TOKEN;
-                        }
-                        if (env.OPTIMIZED_DOMAIN !== undefined) {
-                            OPTIMIZED_DOMAIN = String(env.OPTIMIZED_DOMAIN || "").trim();
-                            envUpdates.OPTIMIZED_DOMAIN = OPTIMIZED_DOMAIN;
-                        }
-
-                        if (Object.keys(envUpdates).length > 0) {
-                            updateEnvFile(envUpdates);
-                        }
-
-                        // 动态重算 Argo 隧道可用性状态并热拉起/关闭隧道进程与本地端口
-                        const prevTunnelState = isTunnelAvailable;
-                        isTunnelAvailable = Boolean(ARGO_TOKEN && ARGO_TOKEN.trim() !== "" && ARGO_DOMAIN && ARGO_DOMAIN.trim() !== "");
-                        if (isTunnelAvailable !== prevTunnelState || envUpdates.ARGO_TOKEN !== undefined || envUpdates.ARGO_DOMAIN !== undefined) {
-                            if (isTunnelAvailable) {
-                                console.log("[Settings] 检测到 Argo 隧道配置已就绪，正在热拉起 Cloudflared 隧道与本地接收端口...");
-                                stopCloudflared();
-                                initAndStartCloudflared();
-                            } else {
-                                console.log("[Settings] 检测到 Argo 隧道已清空或禁用，正在释放隧道进程与本地端口...");
-                                stopCloudflared();
-                                stopTunnelServer();
-                            }
-                        }
-                    }
-
-                    if (needCoreReload) {
-                        ensureMultiProtocolSecrets();
-                        generateSingboxConfig();
-                        safeReloadSingbox();
-                    }
-
-                    console.log("[Settings] 站点运营与全部协议环境变量已由管理员成功更新并生效");
-                    return sendJsonResponse(res, 200, {
-                        success: true,
-                        settings: siteSettings,
-                        message: "站点运营与全部协议变量已成功持久化并热重载生效！"
-                    });
-                } catch (e) {
-                    return sendJsonResponse(res, 500, { error: "更新站点配置失败: " + e.message });
-                }
-            });
-            return;
         }
 
         if (pathname === "/admin/api/sync-client-downloads" && req.method === "POST") {
@@ -3294,7 +3024,8 @@ function pollSingboxClashApiTraffic() {
     req.setTimeout(3500, () => { req.destroy(); });
 }
 
-setInterval(pollSingboxClashApiTraffic, 5000);
+// 256MB 极小内存与单核 CPU 深度调优：从 5s 放宽至 20s，削减 75% 轮询与 JSON 解析压力
+setInterval(pollSingboxClashApiTraffic, 20000);
 
 // ==================== 7. 系统启动 ====================
 loadUsers();

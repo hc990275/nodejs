@@ -230,3 +230,24 @@
   3. **多优选 CDN 域名与 IP 矩阵订阅生成**：
      - 将后台输入控件升级为多行文本框 `textarea`，支持配置多个优选域名或 IP（支持换行、空格、逗号或分号分隔）；
      - 订阅生成引擎在生成优选节点时，自动遍历所有优选地址，按 `优选1-VLESS [地址]`、`优选2-VLESS [地址]` 矩阵化展开，方便客户端本地并发测速与择优连接。
+
+---
+
+### 第三十号：256MB 极小 VPS / 容器 CPU 85% 与内存 209MB 深度调优及全面剥离隧道
+- **问题现象**：
+  在 1 核 CPU / 256 MB 内存的 VPS 或翼龙面板容器中运行时，CPU 经常飙升到 85%，内存常年居于 209 MB / 256 MB（占用率 81.7%），濒临 OOM 崩溃边缘。
+- **原因剖析**：
+  1. **多重后台进程并发吃光内存**：未加限制的 Node.js V8 堆内存默认占用 60~90MB，Go 编写的 Sing-box 占用 40~50MB，Go 编写的 Cloudflared 占用 30~40MB，加上系统基础栈 50MB，在 256MB 环境下直接达到 209MB 极限；
+  2. **内存见顶触发 V8 频繁全量垃圾回收 (Full GC)**：空闲内存不足 40MB 时，Node.js 频繁执行单线程全量 GC，直接打满单核 CPU；
+  3. **高频连接与流量轮询 (5 秒)**：`pollSingboxClashApiTraffic` 每 5 秒轮询并解析 Clash API 大 JSON，持续冲击单核 CPU；
+  4. **Cloudflared 隧道维护开销**：隧道在后台维持 4 条 QUIC/HTTP2 连接，持续产生网络心跳与内存常驻。
+- **实施解决对策**：
+  1. **Node.js 堆内存严格限额**：
+     - 在 `start.sh`、`v3.service`、`v3.openrc` 与 `package.json` 中统一注入 `--max-old-space-size=64`，将 Node 堆内存限制在 64MB 以内；
+  2. **Go Runtime 激进回收**：
+     - 在启动脚本和服务环境变量中注入 `GOMEMLIMIT=40MiB` 和 `GOGC=20`，并在 `index.js` spawn Sing-box 时强制继承该环境变量，将 Sing-box 内存压制在 40MB 以内并加快 GC；
+  3. **流量统计轮询间隔削减 75%**：
+     - 将 `setInterval(pollSingboxClashApiTraffic, 5000)` 放宽至 `20000` (20 秒)，消除周期性 CPU 脉冲峰值；
+  4. **彻底剥离所有隧道依赖**：
+     - 拔除 `initAndStartCloudflared` 进程与自动下载、移除 8001 端口监听；
+     - 移除后台 Argo 隧道监控看板与设置项，订阅全面走高性能原生直连，立省 35MB+ 内存！

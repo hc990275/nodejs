@@ -55,5 +55,9 @@ if [ -f "./sing-box" ]; then
   chmod +x ./sing-box 2>/dev/null || true
 fi
 
-echo "=== [Adaptive-Linux] 环境检查就绪，正在拉起机场主程序 ==="
-exec node index.js
+# 5. 极小内存 (256MB) 激进轻量化调优 (防止 Sing-box 内存膨胀与 GC 风暴)
+export GOMEMLIMIT=40MiB
+export GOGC=20
+
+echo "=== [Adaptive-Linux] 环境检查就绪，正在拉起机场主程序 (已开启 64MB 堆内存保护) ==="
+exec node --max-old-space-size=64 index.js

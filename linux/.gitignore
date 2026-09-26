@@ -6,6 +6,7 @@
 # 忽略运行时生成与动态数据
 data/*
 !data/.gitkeep
+users.json
 
 # 忽略二进制可执行文件与进程 PID
 sing-box

@@ -2,6 +2,11 @@
 
 本版本为**全发行版综合自适应版本**，在单机多协议专线机场的基础上，全面支持 **Ubuntu 20.04/22.04/24.04**、**Debian 10/11/12**、**Alpine Linux**、**CentOS / RHEL / Rocky Linux** 等主流 Linux 系统与容器环境。
 
+> **项目仓库关联信息**：
+> - **远程代码仓库**：https://github.com/hc990275/nodejs
+> - **对应分支与目录**：`main` 分支的 `linux/` 目录 (https://github.com/hc990275/nodejs/tree/main/linux)
+> - **本地开发目录**：`d:\DeskTop\GitHub\测\lunes\自适应机场`
+
 ---
 
 ## 🌟 核心特性与架构

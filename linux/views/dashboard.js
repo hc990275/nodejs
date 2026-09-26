@@ -19,9 +19,7 @@ function renderDashboard(req, res, ctx) {
     const basePrefix = isV3Prefix ? "/v3" : "";
     const reqHost = req.headers['x-forwarded-host'] || req.headers.host || `${DIRECT_IP}:${SERVER_PORT}`;
     const reqProto = req.headers['x-forwarded-proto'] || (req.connection && req.connection.encrypted ? 'https' : 'http');
-    const baseSubUrl = isTunnelAvailable
-        ? `https://${ARGO_DOMAIN}/sub?token=${currentUser.uuid}`
-        : `${reqProto}://${reqHost}/sub?token=${currentUser.uuid}`;
+    const baseSubUrl = `${reqProto}://${reqHost}/sub?token=${currentUser.uuid}`;
     const clashSubUrl = `${baseSubUrl}&type=clash`;
     const surgeSubUrl = `${baseSubUrl}&type=surge`;
 

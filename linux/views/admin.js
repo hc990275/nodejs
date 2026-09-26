@@ -42,9 +42,7 @@ const totalUsers = usersDatabase.length;
 
             const reqHost = req.headers['x-forwarded-host'] || req.headers.host || `${DIRECT_IP}:${SERVER_PORT}`;
             const reqProto = req.headers['x-forwarded-proto'] || (req.connection && req.connection.encrypted ? 'https' : 'http');
-            const baseSubUrl = isTunnelAvailable
-                ? `https://${ARGO_DOMAIN}/sub?token=${u.uuid}`
-                : `${reqProto}://${reqHost}/sub?token=${u.uuid}`;
+            const baseSubUrl = `${reqProto}://${reqHost}/sub?token=${u.uuid}`;
             const clashSubUrl = `${baseSubUrl}&type=clash`;
             const surgeSubUrl = `${baseSubUrl}&type=surge`;
 
