@@ -28,3 +28,9 @@ Thumbs.db
 *.bak
 *.orig
 scratch_*
+
+# 忽略本地专有同步脚本与缓存 (绝对不提交到远程)
+sync.ps1
+sync.bat
+sync.sh
+.git_sync_cache/

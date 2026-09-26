@@ -2335,28 +2335,56 @@ function handleHttpRequest(req, res) {
                     PORT_SS,
                     SS_METHOD,
                     ENABLE_SOCKS5,
-                    PORT_SOCKS5,
-                    ARGO_TOKEN,
-                    ARGO_DOMAIN,
-                    OPTIMIZED_DOMAIN
-                },
-                tunnelStatus: {
-                    ...tunnelStatusState,
-                    isAvailable: isTunnelAvailable,
-                    domain: ARGO_DOMAIN
+                    PORT_SOCKS5
                 }
             });
         }
 
-        // 独立拉取 Argo 隧道实时状态与心跳日志
-        if (pathname === "/admin/api/tunnel-status") {
-            return sendJsonResponse(res, 200, {
-                success: true,
-                status: "disabled",
-                connected: false,
-                isAvailable: false,
-                message: "隧道功能已由用户停用，当前处于纯直连高性能运行状态。"
+        // 保存全局站点配置与运营参数 (支持落盘与热重载)
+        if (pathname === "/admin/api/settings" && req.method === "POST") {
+            let body = "";
+            req.on("data", (c) => { body += c; });
+            req.on("end", () => {
+                try {
+                    const data = JSON.parse(body || "{}");
+                    if (data.allowRegister !== undefined) {
+                        siteSettings.allowRegister = Boolean(data.allowRegister);
+                    }
+                    if (data.enableClientDownload !== undefined) {
+                        siteSettings.enableClientDownload = Boolean(data.enableClientDownload);
+                    }
+                    if (data.defaultDays !== undefined) {
+                        siteSettings.defaultDays = Math.max(0, parseInt(data.defaultDays, 10) || 0);
+                    }
+                    if (data.defaultTrafficVal !== undefined) {
+                        siteSettings.defaultTrafficVal = Math.max(0, parseFloat(data.defaultTrafficVal) || 0);
+                    }
+                    if (data.defaultTrafficUnit !== undefined) {
+                        const u = String(data.defaultTrafficUnit).toUpperCase();
+                        siteSettings.defaultTrafficUnit = ["MB", "GB", "TB"].includes(u) ? u : "GB";
+                    }
+                    const curVal = siteSettings.defaultTrafficVal !== undefined ? siteSettings.defaultTrafficVal : (data.defaultTrafficGB || 10);
+                    const curUnit = siteSettings.defaultTrafficUnit || "GB";
+                    siteSettings.defaultTrafficGB = curUnit === "TB" ? curVal * 1024 : (curUnit === "MB" ? curVal / 1024 : curVal);
+                    if (data.contactText !== undefined) {
+                        siteSettings.contactText = String(data.contactText || "").trim();
+                    }
+                    if (data.contactUrl !== undefined) {
+                        siteSettings.contactUrl = String(data.contactUrl || "").trim();
+                    }
+                    if (data.envSettings && typeof data.envSettings === "object") {
+                        if (data.envSettings.DIRECT_IP !== undefined) {
+                            DIRECT_IP = String(data.envSettings.DIRECT_IP || "").trim();
+                        }
+                    }
+                    saveSettings();
+                    console.log("[Settings] 站点运营与全局配置保存成功并已落盘生效");
+                    return sendJsonResponse(res, 200, { success: true, settings: siteSettings });
+                } catch (e) {
+                    return sendJsonResponse(res, 500, { error: "保存站点配置失败: " + e.message });
+                }
             });
+            return;
         }
 
         if (pathname === "/admin/api/sync-client-downloads" && req.method === "POST") {

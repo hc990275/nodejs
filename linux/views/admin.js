@@ -1196,7 +1196,7 @@ return sendHtmlResponse(res, 200, `
                             <div style="display:flex; border-bottom:2px solid #ebeef5; margin-bottom:16px; gap:6px;">
                                 <button type="button" class="tab-btn active" id="tab_btn_ops" onclick="switchSettingsTab('ops')" style="padding:8px 14px; background:none; border:none; border-bottom:2px solid var(--el-primary); font-weight:600; color:var(--el-primary); cursor:pointer; font-size:13px;">🏢 运营与注册</button>
                                 <button type="button" class="tab-btn" id="tab_btn_proto" onclick="switchSettingsTab('proto')" style="padding:8px 14px; background:none; border:none; border-bottom:2px solid transparent; font-weight:500; color:var(--el-text-regular); cursor:pointer; font-size:13px;">⚡ 节点协议与端口</button>
-                                <button type="button" class="tab-btn" id="tab_btn_net" onclick="switchSettingsTab('net')" style="padding:8px 14px; background:none; border:none; border-bottom:2px solid transparent; font-weight:500; color:var(--el-text-regular); cursor:pointer; font-size:13px;">🌐 网络与域名穿透</button>
+                                <button type="button" class="tab-btn" id="tab_btn_net" onclick="switchSettingsTab('net')" style="padding:8px 14px; background:none; border:none; border-bottom:2px solid transparent; font-weight:500; color:var(--el-text-regular); cursor:pointer; font-size:13px;">🌐 网络与公网IP</button>
                             </div>
 
                             <!-- TAB 1: 运营与注册 -->
@@ -1355,53 +1355,17 @@ return sendHtmlResponse(res, 200, `
                                 </div>
                             </div>
 
-                            <!-- TAB 3: 网络与穿透 -->
+                            <!-- TAB 3: 原生直连网络模式 -->
                             <div id="tab_content_net" style="display:none;">
-                                <!-- Argo 隧道实时在线状态看板 -->
-                                <div style="background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px; padding:12px 14px; margin-bottom:14px;">
-                                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                                        <div style="display:flex; align-items:center; gap:8px;">
-                                            <span style="font-size:13px; font-weight:600; color:var(--el-text-main);">📡 Argo 隧道运行监控看板</span>
-                                            <span id="tunnelStatusBadge" style="display:inline-flex; align-items:center; gap:4px; font-size:12px; padding:2px 8px; border-radius:12px; background:#f4f4f5; color:#909399; font-weight:500;">
-                                                <span class="badge-dot" style="width:7px; height:7px; border-radius:50%; background:#909399; display:inline-block;"></span>
-                                                <span id="tunnelStatusText">未启用</span>
-                                            </span>
-                                        </div>
-                                        <button type="button" class="btn" style="padding:2px 8px; font-size:11px; background:#ffffff; border:1px solid var(--el-border); color:var(--el-primary);" onclick="refreshTunnelStatusManual()">🔄 刷新状态</button>
-                                    </div>
-                                    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:8px; font-size:12px; color:var(--el-text-secondary); margin-bottom:8px;">
-                                        <div>核心进程 PID: <strong id="tunnelPidText" style="font-family:Consolas, monospace; color:var(--el-text-main);">-</strong></div>
-                                        <div>连接实例 ID: <strong id="tunnelConnIdText" style="font-family:Consolas, monospace; color:var(--el-text-main);">-</strong></div>
-                                        <div>穿透公网域名: <strong id="tunnelDomainText" style="font-family:Consolas, monospace; color:var(--el-primary);">-</strong></div>
-                                    </div>
-                                    <div style="margin-top:6px;">
-                                        <div style="font-size:11px; color:var(--el-text-secondary); margin-bottom:4px; display:flex; justify-content:space-between;">
-                                            <span>心跳与边缘回源日志 (最新30条):</span>
-                                            <span id="tunnelLogTime" style="font-size:10px;">-</span>
-                                        </div>
-                                        <div id="tunnelLogConsole" style="background:#1e1e1e; color:#a6e22e; font-family:Consolas, monospace; font-size:11px; line-height:1.45; padding:8px 10px; border-radius:4px; height:90px; overflow-y:auto; word-break:break-all; border:1px solid #333;">
-                                            <span style="color:#888;">暂无日志输出</span>
-                                        </div>
-                                    </div>
+                                <div style="background:#f0f9eb; border:1px solid #c2e7b0; border-radius:6px; padding:12px 14px; margin-bottom:14px; color:#67c23a;">
+                                    <div style="font-size:13px; font-weight:600; margin-bottom:4px;">⚡ 已启用纯原生直连网络架构 (零隧道开销)</div>
+                                    <div style="font-size:12px; color:#529b2e;">所有节点直接绑定 VPS 真实公网 IP，彻底剔除 Cloudflared 隧道长连接，释放 35MB+ 内存，大幅削减 CPU 占用。</div>
                                 </div>
 
                                 <div class="field-box">
-                                    <label>宿主机外网公网 IPv4 (SERVER_IP)</label>
+                                    <label>宿主机外网公网 IPv4 (SERVER_IP / DIRECT_IP)</label>
                                     <input type="text" id="env_DIRECT_IP" placeholder="留空则由系统权威接口自动探测真实公网 IP" />
-                                    <span style="font-size:11px; color:var(--el-text-secondary); margin-top:4px; display:block;">换 VPS 机房或云服务器迁移时通常保持留空即可。</span>
-                                </div>
-                                <div class="field-box">
-                                    <label>Cloudflare Argo 隧道域名 (ARGO_DOMAIN)</label>
-                                    <input type="text" id="env_ARGO_DOMAIN" placeholder="如: tunnel.mydomain.com (无公网IP时使用)" />
-                                </div>
-                                <div class="field-box">
-                                    <label>Cloudflare Argo 凭证 Token (ARGO_TOKEN)</label>
-                                    <input type="password" id="env_ARGO_TOKEN" placeholder="留空则禁用 Argo 隧道，使用直连" />
-                                </div>
-                                <div class="field-box">
-                                    <label>CDN 优选加速域名与优选 IP 列表 (OPTIMIZED_DOMAIN)</label>
-                                    <textarea id="env_OPTIMIZED_DOMAIN" rows="3" placeholder="支持填写多个优选域名或优选IP，每行一个（或用空格/逗号分隔）&#10;例如:&#10;cdn.cloudflare.com&#10;104.16.88.99&#10;icook.hk" style="width:100%; border:1px solid var(--el-border); border-radius:4px; padding:6px 10px; font-family:Consolas, monospace; font-size:12px; resize:vertical;"></textarea>
-                                    <span style="font-size:11px; color:var(--el-text-secondary); margin-top:4px; display:block;">留空默认直接使用 Argo 隧道域名。配置多个时，客户端订阅将自动展开为对应的测速优选节点组。</span>
+                                    <span style="font-size:11px; color:var(--el-text-secondary); margin-top:4px; display:block;">留空时由服务器自动探测并广播公网 IP，换 VPS 机房或云服务器迁移时通常保持留空即可。</span>
                                 </div>
                             </div>
 
@@ -1677,18 +1641,6 @@ return sendHtmlResponse(res, 200, `
                                 }
                             }
                         });
-
-                        if (tabKey === "net") {
-                            fetchTunnelStatus();
-                            if (!tunnelStatusTimer) {
-                                tunnelStatusTimer = setInterval(fetchTunnelStatus, 3000);
-                            }
-                        } else {
-                            if (tunnelStatusTimer) {
-                                clearInterval(tunnelStatusTimer);
-                                tunnelStatusTimer = null;
-                            }
-                        }
                     }
 
                     async function openSettingsModal() {
@@ -1762,9 +1714,6 @@ return sendHtmlResponse(res, 200, `
                         setVal("env_PORT_SS", env.PORT_SS || "");
 
                         setVal("env_DIRECT_IP", env.DIRECT_IP || "");
-                        setVal("env_ARGO_DOMAIN", env.ARGO_DOMAIN || "");
-                        setVal("env_ARGO_TOKEN", env.ARGO_TOKEN || "");
-                        setVal("env_OPTIMIZED_DOMAIN", env.OPTIMIZED_DOMAIN || "");
 
                         switchSettingsTab("ops");
                         const modal = document.getElementById("settingsModal");
@@ -1797,90 +1746,9 @@ return sendHtmlResponse(res, 200, `
                         }
                     }
 
-                    let tunnelStatusTimer = null;
-
-                    async function fetchTunnelStatus() {
-                        const token = getAdminToken();
-                        const basePrefix = location.pathname.startsWith("/v3") ? "/v3" : "";
-                        try {
-                            const res = await fetch(basePrefix + "/admin/api/tunnel-status" + (token ? "?token=" + encodeURIComponent(token) : ""), {
-                                headers: token ? { "x-admin-token": token } : {}
-                            });
-                            if (res.ok) {
-                                const data = await res.json();
-                                updateTunnelStatusUI(data);
-                            }
-                        } catch (_) {}
-                    }
-
-                    function updateTunnelStatusUI(statusData) {
-                        if (!statusData) return;
-                        const badge = document.getElementById("tunnelStatusBadge");
-                        const statusText = document.getElementById("tunnelStatusText");
-                        const pidText = document.getElementById("tunnelPidText");
-                        const connIdText = document.getElementById("tunnelConnIdText");
-                        const domainText = document.getElementById("tunnelDomainText");
-                        const logConsole = document.getElementById("tunnelLogConsole");
-                        const logTime = document.getElementById("tunnelLogTime");
-
-                        if (pidText) pidText.innerText = statusData.pid ? String(statusData.pid) : "未运行";
-                        if (connIdText) connIdText.innerText = statusData.connectorId ? statusData.connectorId.slice(0, 16) + "..." : "等待建立";
-                        if (domainText) domainText.innerText = statusData.domain || "未绑定域名";
-
-                        if (statusText && badge) {
-                            const dot = badge.querySelector(".badge-dot");
-                            if (statusData.connected) {
-                                statusText.innerText = "已连通 Cloudflare 边缘";
-                                badge.style.background = "#f0f9eb";
-                                badge.style.color = "#67c23a";
-                                if (dot) dot.style.background = "#67c23a";
-                            } else if (statusData.status === "starting") {
-                                statusText.innerText = "正在握手建联中...";
-                                badge.style.background = "#fdf6ec";
-                                badge.style.color = "#e6a23c";
-                                if (dot) dot.style.background = "#e6a23c";
-                            } else if (statusData.status === "error") {
-                                statusText.innerText = "建联异常/多次失败";
-                                badge.style.background = "#fef0f0";
-                                badge.style.color = "#f56c6c";
-                                if (dot) dot.style.background = "#f56c6c";
-                            } else {
-                                statusText.innerText = statusData.isAvailable ? "已就绪待命" : "未开启隧道";
-                                badge.style.background = "#f4f4f5";
-                                badge.style.color = "#909399";
-                                if (dot) dot.style.background = "#909399";
-                            }
-                        }
-
-                        if (logConsole && Array.isArray(statusData.recentLogs)) {
-                            if (statusData.recentLogs.length > 0) {
-                                logConsole.innerHTML = statusData.recentLogs.map((l) => {
-                                    const isErr = /error|fail|exit|warn/i.test(l);
-                                    const isOk = /registered|connected/i.test(l);
-                                    const color = isErr ? "#f56c6c" : (isOk ? "#67c23a" : "#a6e22e");
-                                    return '<div style="color:' + color + ';">' + l.replace(/</g, "&lt;").replace(/>/g, "&gt;") + '</div>';
-                                }).join("");
-                                logConsole.scrollTop = logConsole.scrollHeight;
-                            } else {
-                                logConsole.innerHTML = '<span style="color:#888;">暂无日志输出</span>';
-                            }
-                        }
-                        if (logTime) {
-                            logTime.innerText = "最后活跃: " + (statusData.lastSeen ? new Date(statusData.lastSeen).toLocaleTimeString() : "暂无心跳");
-                        }
-                    }
-
-                    function refreshTunnelStatusManual() {
-                        fetchTunnelStatus();
-                    }
-
                     function closeSettingsModal() {
                         const modal = document.getElementById("settingsModal");
                         if (modal) modal.style.display = "none";
-                        if (tunnelStatusTimer) {
-                            clearInterval(tunnelStatusTimer);
-                            tunnelStatusTimer = null;
-                        }
                     }
 
                     async function saveSiteSettings() {
@@ -1894,7 +1762,7 @@ return sendHtmlResponse(res, 200, `
                         const cd1 = document.getElementById("set_enableClientDownload_1");
                         const enableClientDownload = cd1 ? cd1.checked : true;
 
-                        // 读取全量协议与网络变量
+                        // 读取全量协议与原生网络变量
                         const getCheck = (id) => { const el = document.getElementById(id); return el ? el.checked : false; };
                         const getInt = (id) => { const el = document.getElementById(id); return el && el.value ? parseInt(el.value, 10) || 0 : 0; };
                         const getStr = (id) => { const el = document.getElementById(id); return el ? el.value.trim() : ""; };
@@ -1915,10 +1783,7 @@ return sendHtmlResponse(res, 200, `
                             PORT_TROJAN_TCP: getInt("env_PORT_TROJAN_TCP"),
                             ENABLE_SS: getCheck("env_ENABLE_SS"),
                             PORT_SS: getInt("env_PORT_SS"),
-                            DIRECT_IP: getStr("env_DIRECT_IP"),
-                            ARGO_DOMAIN: getStr("env_ARGO_DOMAIN"),
-                            ARGO_TOKEN: getStr("env_ARGO_TOKEN"),
-                            OPTIMIZED_DOMAIN: getStr("env_OPTIMIZED_DOMAIN")
+                            DIRECT_IP: getStr("env_DIRECT_IP")
                         };
 
                         const btn = document.getElementById("saveSettingsBtn");
@@ -1949,7 +1814,9 @@ return sendHtmlResponse(res, 200, `
                                     envSettings
                                 })
                             });
-                            const data = await res.json();
+                            const text = await res.text();
+                            let data = {};
+                            try { data = JSON.parse(text || "{}"); } catch (_) {}
                             if (res.ok) {
                                 window.__SITE_SETTINGS__ = Object.assign({}, data.settings || {}, { envSettings });
                                 alert("✅ 站点运营与全部协议变量已成功保存并立即落盘热生效！");
@@ -1957,7 +1824,7 @@ return sendHtmlResponse(res, 200, `
                                 const contactDisplay = document.querySelector(".contact-display-val");
                                 if (contactDisplay) contactDisplay.innerText = contactText || "未设置";
                             } else {
-                                alert("❌ 保存失败: " + (data.error || "未授权或服务器异常"));
+                                alert("❌ 保存失败: " + (data.error || text || "未授权或服务器异常"));
                             }
                         } catch (e) {
                             alert("❌ 网络请求异常: " + e.message);
