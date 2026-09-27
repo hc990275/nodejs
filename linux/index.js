@@ -1843,6 +1843,22 @@ function getStructuredNodesForUser(user) {
                 skipCertVerify: true,
                 udp: true
             });
+
+            if (p.hy2.hopPorts && String(p.hy2.hopPorts).trim() !== "") {
+                const hopPortsStr = String(p.hy2.hopPorts).trim();
+                nodes.push({
+                    name: `${wPrefix} | Hy2跳跃[${hopPortsStr}]${nameSuffix}`,
+                    type: "hysteria2-hop",
+                    server: wIp,
+                    port: parseInt(hopPortsStr.split("-")[0], 10) || (p.hy2.port || 18800),
+                    ports: hopPortsStr,
+                    password: uuid,
+                    sni: REALITY_DEST,
+                    skipCertVerify: true,
+                    udp: true,
+                    hopInterval: p.hy2.hopInterval || 30
+                });
+            }
         }
 
         if (p.tuic && p.tuic.enabled) {
@@ -2427,7 +2443,8 @@ function handleHttpRequest(req, res) {
                     maxOnlineIps: siteSettings.defaultMaxOnlineIps || 0,
                     ipLimitPolicy: siteSettings.defaultIpLimitPolicy || "kick_oldest",
                     idleDisconnectEnabled: siteSettings.defaultIdleDisconnectEnabled !== false,
-                    idleTimeoutSeconds: siteSettings.defaultIdleTimeoutSeconds || 60
+                    idleTimeoutSeconds: siteSettings.defaultIdleTimeoutSeconds || 60,
+                    assignedNodes: Array.isArray(siteSettings.defaultAssignedNodes) && siteSettings.defaultAssignedNodes.length > 0 ? siteSettings.defaultAssignedNodes : ["*"]
                 };
 
                 usersDatabase.push(newUser);
@@ -2796,7 +2813,7 @@ function handleHttpRequest(req, res) {
             const reqHost = req.headers["x-forwarded-host"] || req.headers.host || `${DIRECT_IP}:${SERVER_PORT}`;
             const reqProto = req.headers["x-forwarded-proto"] || (req.connection && req.connection.encrypted ? "https" : "http");
             const masterUrl = `${reqProto}://${reqHost}`;
-            const joinCommand = `git clone https://github.com/hc990275/nodejs.git && cd nodejs/linux && ./start-node.sh --master=${masterUrl} --secret=${CLUSTER_SECRET || ADMIN_TOKEN} --name="🇯🇵 日本02"`;
+            const joinCommand = `(curl -fsSL ${masterUrl}/start-node.sh || wget -qO- ${masterUrl}/start-node.sh) | sh -s -- --master=${masterUrl} --secret=${CLUSTER_SECRET || ADMIN_TOKEN} --name="🇯🇵 日本02"`;
 
             return sendJsonResponse(res, 200, {
                 success: true,
@@ -2814,8 +2831,9 @@ function handleHttpRequest(req, res) {
             req.on("data", (c) => { body += c; });
             req.on("end", () => {
                 try {
-                    const { id, name, ip } = JSON.parse(body || "{}");
-                    const target = clusterNodes.find(n => n.id === id);
+                    const { id, nodeId, name, ip } = JSON.parse(body || "{}");
+                    const targetId = id || nodeId;
+                    const target = clusterNodes.find(n => n.id === targetId);
                     if (!target) return sendJsonResponse(res, 404, { error: "未找到目标节点" });
 
                     if (name !== undefined && String(name).trim() !== "") target.name = String(name).trim();
@@ -2842,8 +2860,9 @@ function handleHttpRequest(req, res) {
             req.on("data", (c) => { body += c; });
             req.on("end", () => {
                 try {
-                    const { id, protocols } = JSON.parse(body || "{}");
-                    const target = clusterNodes.find(n => n.id === id);
+                    const { id, nodeId, protocols } = JSON.parse(body || "{}");
+                    const targetId = id || nodeId;
+                    const target = clusterNodes.find(n => n.id === targetId);
                     if (!target) return sendJsonResponse(res, 404, { error: "未找到目标节点" });
 
                     if (protocols && typeof protocols === "object") {
@@ -2868,9 +2887,10 @@ function handleHttpRequest(req, res) {
             req.on("data", (c) => { body += c; });
             req.on("end", () => {
                 try {
-                    const { id } = JSON.parse(body || "{}");
-                    if (id === "master") return sendJsonResponse(res, 400, { error: "禁止删除主控节点" });
-                    const idx = clusterNodes.findIndex(n => n.id === id);
+                    const { id, nodeId } = JSON.parse(body || "{}");
+                    const targetId = id || nodeId;
+                    if (targetId === "master") return sendJsonResponse(res, 400, { error: "禁止删除主控节点" });
+                    const idx = clusterNodes.findIndex(n => n.id === targetId);
                     if (idx < 0) return sendJsonResponse(res, 404, { error: "未找到目标节点" });
 
                     const removed = clusterNodes.splice(idx, 1);
@@ -2952,6 +2972,9 @@ function handleHttpRequest(req, res) {
                     }
                     if (data.contactUrl !== undefined) {
                         siteSettings.contactUrl = String(data.contactUrl || "").trim();
+                    }
+                    if (data.defaultAssignedNodes !== undefined) {
+                        siteSettings.defaultAssignedNodes = Array.isArray(data.defaultAssignedNodes) ? data.defaultAssignedNodes : ["*"];
                     }
 
                     // 准备 .env 持久化更新字典
@@ -3289,7 +3312,7 @@ function handleHttpRequest(req, res) {
                     ipLimitPolicy: JSON.parse(body || "{}").ipLimitPolicy || "kick_oldest",
                     idleDisconnectEnabled: JSON.parse(body || "{}").idleDisconnectEnabled !== false,
                     idleTimeoutSeconds: Math.max(10, parseInt(JSON.parse(body || "{}").idleTimeoutSeconds || "60", 10)),
-                    assignedNodes: Array.isArray(JSON.parse(body || "{}").assignedNodes) ? JSON.parse(body || "{}").assignedNodes : ["*"]
+                    assignedNodes: Array.isArray(JSON.parse(body || "{}").assignedNodes) ? JSON.parse(body || "{}").assignedNodes : (Array.isArray(siteSettings.defaultAssignedNodes) && siteSettings.defaultAssignedNodes.length > 0 ? siteSettings.defaultAssignedNodes : ["*"])
                 };
 
                 usersDatabase.push(newUser);
@@ -4042,7 +4065,15 @@ if (require.main === module) {
                 name: effectiveName,
                 ip: hostIp,
                 currentConfigVersion: workerConfigVersion,
-                trafficDeltas: trafficDeltas
+                trafficDeltas: trafficDeltas,
+                protocols: {
+                    hy2: { enabled: ENABLE_HY2, port: PORT_HY2, hopPorts: HY2_HOP_PORTS || "" },
+                    reality: { enabled: ENABLE_REALITY, port: PORT_REALITY },
+                    tuic: { enabled: ENABLE_TUIC, port: PORT_TUIC },
+                    vlessTcp: { enabled: ENABLE_VLESS_TCP, port: PORT_VLESS_TCP },
+                    trojanTcp: { enabled: ENABLE_TROJAN_TCP, port: PORT_TROJAN_TCP },
+                    ss: { enabled: ENABLE_SS, port: PORT_SS }
+                }
             });
 
             try {
@@ -4104,6 +4135,11 @@ if (require.main === module) {
             if (p.hy2) {
                 ENABLE_HY2 = Boolean(p.hy2.enabled);
                 if (p.hy2.port) PORT_HY2 = p.hy2.port;
+                if (p.hy2.hopPorts !== undefined) {
+                    HY2_HOP_PORTS = String(p.hy2.hopPorts || "").trim();
+                    ENABLE_HY2_HOP = Boolean(HY2_HOP_PORTS && HY2_HOP_PORTS.length > 0);
+                    applyHy2PortHoppingRules();
+                }
             }
             if (p.tuic) {
                 ENABLE_TUIC = Boolean(p.tuic.enabled);
