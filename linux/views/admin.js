@@ -1686,7 +1686,8 @@ return sendHtmlResponse(res, 200, `
                                         <thead>
                                             <tr>
                                                 <th style="width:85px;">协议类型</th>
-                                                <th style="width:150px;">访问者真实 IP</th>
+                                                <th style="width:130px;">接入节点/服务器</th>
+                                                <th style="width:135px;">访问者真实 IP</th>
                                                 <th>IP138 级省市与运营商归属地</th>
                                                 <th style="width:180px; cursor:pointer;" onclick="toggleUserIpModalSort()" title="点击切换按时间正序/倒序排列">
                                                     连入时刻 / 时长 <span id="thSortIcon" style="color:var(--el-primary); font-weight:bold;">↓ (最新)</span>
@@ -1735,16 +1736,17 @@ return sendHtmlResponse(res, 200, `
                                 <table>
                                     <thead>
                                         <tr>
-                                            <th style="width:140px;">连线账号</th>
+                                            <th style="width:120px;">连线账号</th>
+                                            <th style="width:130px;">接入节点/服务器</th>
                                             <th style="width:90px;">协议类型</th>
-                                            <th style="width:150px;">访问者真实 IP</th>
+                                            <th style="width:135px;">访问者真实 IP</th>
                                             <th>IP 归属地与运营商 (IP138级)</th>
                                             <th style="width:130px;">已连接时长 (最新在前)</th>
                                             <th style="width:80px; text-align:center;">状态</th>
                                         </tr>
                                     </thead>
                                     <tbody id="visitorsTableBody">
-                                        <tr><td colspan="6" style="text-align:center; padding:30px 0; color:var(--el-text-secondary);">正在拉取实时访客连线...</td></tr>
+                                        <tr><td colspan="7" style="text-align:center; padding:30px 0; color:var(--el-text-secondary);">正在拉取实时访客连线...</td></tr>
                                     </tbody>
                                 </table>
                             </div>
@@ -2334,7 +2336,11 @@ return sendHtmlResponse(res, 200, `
                             try { data = JSON.parse(text || "{}"); } catch (_) {}
                             if (res.ok) {
                                 window.__SITE_SETTINGS__ = Object.assign({}, data.settings || {}, { envSettings: data.envSettings || envSettings });
-                                alert("✅ 站点运营与全部节点协议配置已成功保存并立即落盘热生效！");
+                                let alertMsg = "✅ 站点运营与全部节点协议配置已成功保存并立即落盘热生效！";
+                                if (data.portWarnings && data.portWarnings.length > 0) {
+                                    alertMsg += "\n\n⚠️【主机端口冲突主动探针提示】\n" + data.portWarnings.join("\n");
+                                }
+                                alert(alertMsg);
                                 closeSettingsModal();
                                 const contactDisplay = document.querySelector(".contact-display-val");
                                 if (contactDisplay) contactDisplay.innerText = contactText || "未设置";
@@ -3190,7 +3196,7 @@ return sendHtmlResponse(res, 200, `
 
                         // 渲染实时连接表格 (显示精确到秒的连入时刻 + 序号高亮)
                         if (conns.length === 0) {
-                            tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; padding:24px 0; color:var(--el-text-secondary);">⚪ 当前该账号暂无实时在线客户端连接</td></tr>';
+                            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:24px 0; color:var(--el-text-secondary);">⚪ 当前该账号暂无实时在线客户端连接</td></tr>';
                         } else {
                             tbody.innerHTML = conns.map((c, idx) => {
                                 const pClass = "proto-" + (c.proto || "").toLowerCase();
@@ -3201,8 +3207,10 @@ return sendHtmlResponse(res, 200, `
                                     ? 'background:#ecf5ff; color:#409eff; font-weight:600; border:1px solid #d9ecff;'
                                     : 'background:#f4f4f5; color:#909399;';
                                 const badgeLabel = '#' + (idx + 1) + (isFirst ? ' 最新' : '');
+                                const serverNodeName = c.serverNode || "🖥️ 美国 (主控)";
 
                                 return '<tr>' +
+                                    '<td><span style="font-size:12px; font-weight:600; color:var(--el-primary); background:#ecf5ff; border:1px solid #d9ecff; padding:2px 7px; border-radius:4px; display:inline-block;">' + escapeHtml(serverNodeName) + '</span></td>' +
                                     '<td><span class="proto-badge ' + pClass + '">' + (c.proto || "WS") + '</span></td>' +
                                     '<td><span class="ip-tag" data-copy="' + c.ip + '" onclick="copyText(this.dataset.copy)" title="点击复制真实IP">' + c.ip + '</span></td>' +
                                     '<td><span class="geo-tag">📍 ' + (c.location || "公网地址") + '</span></td>' +
@@ -3308,13 +3316,15 @@ return sendHtmlResponse(res, 200, `
                         const tbody = document.getElementById("visitorsTableBody");
                         if (!tbody) return;
                         if (!visitors || visitors.length === 0) {
-                            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:36px 0; color:var(--el-text-secondary);">当前无活跃在线访客连接</td></tr>';
+                            tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:36px 0; color:var(--el-text-secondary);">当前无活跃在线访客连接</td></tr>';
                             return;
                         }
                         tbody.innerHTML = visitors.map(v => {
                             let protoClass = "proto-" + (v.proto || "").toLowerCase();
+                            let sNode = v.serverNode || "🖥️ 美国 (主控)";
                             return '<tr>' +
                                 '<td><strong style="color:var(--el-text-main);">' + v.username + '</strong></td>' +
+                                '<td><span style="font-size:12px; font-weight:600; color:var(--el-primary); background:#ecf5ff; border:1px solid #d9ecff; padding:2px 7px; border-radius:4px; display:inline-block;">' + escapeHtml(sNode) + '</span></td>' +
                                 '<td><span class="proto-badge ' + protoClass + '">' + (v.proto || "WS") + '</span></td>' +
                                 '<td><span class="ip-tag" data-copy="' + v.ip + '" onclick="copyText(this.dataset.copy)" title="点击复制真实IP">' + v.ip + '</span></td>' +
                                 '<td><span class="geo-tag">' + (v.location || "公网地址") + '</span></td>' +
@@ -3441,9 +3451,16 @@ return sendHtmlResponse(res, 200, `
                             if (protos.vlessTcp && protos.vlessTcp.enabled) protoTags.push('<span style="background:#f4f4f5; color:#606266; border:1px solid #dcdfe6; padding:1px 5px; border-radius:3px; font-size:11px;">VLESS:' + (protos.vlessTcp.port || 10803) + '</span>');
                             if (protos.trojanTcp && protos.trojanTcp.enabled) protoTags.push('<span style="background:#fef0f0; color:#f56c6c; border:1px solid #fde2e2; padding:1px 5px; border-radius:3px; font-size:11px;">Trojan:' + (protos.trojanTcp.port || 10804) + '</span>');
                             if (protos.ss && protos.ss.enabled) protoTags.push('<span style="background:#eef1f6; color:#303133; border:1px solid #dcdfe6; padding:1px 5px; border-radius:3px; font-size:11px;">SS:' + (protos.ss.port || 10805) + '</span>');
-                            const protoHtml = protoTags.length > 0 ? protoTags.join(" ") : '<span style="color:var(--el-text-secondary); font-size:11px;">未启用</span>';
+                            let portWarnHtml = "";
+                            if (Array.isArray(node.portWarnings) && node.portWarnings.length > 0) {
+                                portWarnHtml = '<div style="margin-top:4px;"><span style="background:#fef0f0; color:#f56c6c; border:1px solid #fde2e2; padding:1px 6px; border-radius:3px; font-size:11px; font-weight:600; cursor:pointer;" onclick="alert(\'⚠️ 该节点端口被外部服务占用，系统已自动递增避让:\\n\\n\' + ' + JSON.stringify(node.portWarnings.join('\\n')) + ')" title="点击查看详情">⚠️ 端口冲突已避让 (' + node.portWarnings.length + ')</span></div>';
+                            }
+                            const protoHtml = (protoTags.length > 0 ? protoTags.join(" ") : '<span style="color:var(--el-text-secondary); font-size:11px;">未启用</span>') + portWarnHtml;
 
-                            const trafficStr = formatBytesClient(node.trafficTotal || 0);
+                            const trafficVal = (node.trafficTotal !== undefined && node.trafficTotal !== null) 
+                                ? node.trafficTotal 
+                                : (node.trafficReported || 0);
+                            const trafficStr = formatBytesClient(trafficVal);
 
                             let actionBtns = "";
                             if (isMaster) {
