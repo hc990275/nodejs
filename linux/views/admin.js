@@ -764,6 +764,12 @@ return sendHtmlResponse(res, 200, `
                     .proto-vless { background: #67c23a; }
                     .proto-vmess { background: #409eff; }
                     .proto-trojan { background: #e6a23c; }
+                    .proto-hysteria2, .proto-hy2 { background: #e65d24; }
+                    .proto-tuic { background: #8e44ad; }
+                    .proto-reality { background: #13c2c2; }
+                    .proto-vless-tcp { background: #52c41a; }
+                    .proto-trojan-tcp { background: #d48806; }
+                    .proto-shadowsocks, .proto-ss { background: #2f54eb; }
 
                     /* 使用者 IP 信息列多用户/多设备展示样式 */
                     .user-ip-list {

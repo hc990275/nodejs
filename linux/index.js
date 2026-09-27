@@ -970,7 +970,7 @@ function generateSingboxConfig() {
             tag: "hy2-in",
             listen: "0.0.0.0",
             listen_port: PORT_HY2,
-            users: activeUsers.map((u) => ({ password: u.uuid })),
+            users: activeUsers.map((u) => ({ name: u.uuid, password: u.uuid })),
             tls: {
                 enabled: true,
                 certificate_path: TLS_CERT_PATH,
@@ -986,7 +986,7 @@ function generateSingboxConfig() {
             tag: "tuic-in",
             listen: "0.0.0.0",
             listen_port: PORT_TUIC,
-            users: activeUsers.map((u) => ({ uuid: u.uuid, password: u.uuid })),
+            users: activeUsers.map((u) => ({ name: u.uuid, uuid: u.uuid, password: u.uuid })),
             congestion_control: "bbr",
             tls: {
                 enabled: true,
@@ -1004,7 +1004,7 @@ function generateSingboxConfig() {
             tag: "vless-reality-in",
             listen: "0.0.0.0",
             listen_port: PORT_REALITY,
-            users: activeUsers.map((u) => ({ uuid: u.uuid })),
+            users: activeUsers.map((u) => ({ name: u.uuid, uuid: u.uuid })),
             tls: {
                 enabled: true,
                 server_name: REALITY_DEST,
@@ -1028,7 +1028,7 @@ function generateSingboxConfig() {
             tag: "vless-tcp-in",
             listen: "0.0.0.0",
             listen_port: PORT_VLESS_TCP,
-            users: activeUsers.map((u) => ({ uuid: u.uuid }))
+            users: activeUsers.map((u) => ({ name: u.uuid, uuid: u.uuid }))
         });
     }
 
@@ -1039,7 +1039,7 @@ function generateSingboxConfig() {
             tag: "trojan-tcp-in",
             listen: "0.0.0.0",
             listen_port: PORT_TROJAN_TCP,
-            users: activeUsers.map((u) => ({ password: u.uuid }))
+            users: activeUsers.map((u) => ({ name: u.uuid, password: u.uuid }))
         });
     }
 
@@ -1661,7 +1661,7 @@ function getNodesForUser(user) {
         } else if (n.type === "hysteria2-hop") {
             linkList.push(`hysteria2://${n.password}@${n.server}:${n.port}/?mport=${n.ports}&ports=${n.ports}&insecure=1&sni=${n.sni}#${n.name}`);
         } else if (n.type === "tuic") {
-            linkList.push(`tuic://${n.uuid}:${n.password}@${n.server}:${n.port}/?congestion_control=bbr&alpn=h3&sni=${n.sni}&allow_insecure=1&insecure=1#${n.name}`);
+            linkList.push(`tuic://${n.uuid}:${n.password}@${n.server}:${n.port}/?congestion_control=bbr&alpn=h3&sni=${n.sni}&allow_insecure=1&insecure=1&allowInsecure=1&allowInsecure=true&skip-cert-verify=true#${n.name}`);
         } else if (n.type === "vless-reality") {
             linkList.push(`vless://${n.uuid}@${n.server}:${n.port}?security=reality&encryption=none&pbk=${n.pbk}&sid=${n.sid}&sni=${n.sni}&fp=${n.fp}&type=tcp#${n.name}`);
         } else if (n.type === "vless-tcp") {
@@ -2776,6 +2776,7 @@ function handleHttpRequest(req, res) {
                 if (act && act.activeList && act.activeList.length > 0) {
                     // 主动过滤已销毁或断开的僵尸套接字
                     act.activeList = act.activeList.filter((c) => {
+                        if (c.isSingbox) return true;
                         if (c.clientSocket && c.clientSocket.destroyed) return false;
                         if (c.backendSocket && c.backendSocket.destroyed) return false;
                         return true;
@@ -3149,6 +3150,9 @@ setInterval(() => {
         const connsToClose = [];
 
         act.activeList.forEach((conn) => {
+            // 如果是 Sing-box 核心协议连接，生命周期由 pollSingboxClashApiTraffic 维护
+            if (conn.isSingbox) return;
+
             // 状态 1：套接字在系统底层已经 destroyed 或关闭（僵尸死连接）
             const isDead = (conn.clientSocket && conn.clientSocket.destroyed) ||
                            (conn.backendSocket && conn.backendSocket.destroyed);
@@ -3180,7 +3184,7 @@ setInterval(() => {
     });
 }, 10000);
 
-// 【方案一核心引擎】：Sing-box 原生 Clash API 流量统计与在线感知轮询 (每 5 秒一次)
+// 【方案一核心引擎】：Sing-box 原生 Clash API 流量统计与全协议在线感知轮询 (每 5 秒一次)
 const activeConnTrafficMap = new Map(); // id -> { lastBytes, lastSeen }
 
 function pollSingboxClashApiTraffic() {
@@ -3224,6 +3228,20 @@ function pollSingboxClashApiTraffic() {
                     }
                     if (!matchedUser) continue;
 
+                    // 3. 智能解析协议类型与客户端源信息
+                    let protoName = "未知";
+                    if (inboundTag.includes("hy2") || inboundTag.includes("hysteria")) protoName = "Hysteria2";
+                    else if (inboundTag.includes("tuic")) protoName = "TUIC";
+                    else if (inboundTag.includes("reality")) protoName = "Reality";
+                    else if (inboundTag.includes("vless-tcp")) protoName = "VLESS-TCP";
+                    else if (inboundTag.includes("trojan-tcp")) protoName = "Trojan-TCP";
+                    else if (inboundTag.includes("ss") || inboundTag.includes("shadowsocks")) protoName = "Shadowsocks";
+                    else if (inboundTag.includes("socks")) protoName = "Socks5";
+                    else if (c.metadata?.type) protoName = String(c.metadata.type).toUpperCase();
+
+                    const clientIp = c.metadata?.sourceIP || "未知IP";
+                    const connStart = c.start ? new Date(c.start).getTime() : now;
+
                     const totalBytes = (c.upload || 0) + (c.download || 0);
                     const prev = activeConnTrafficMap.get(c.id);
                     const prevBytes = prev ? prev.lastBytes : 0;
@@ -3233,36 +3251,70 @@ function pollSingboxClashApiTraffic() {
                         matchedUser.trafficUsed = (matchedUser.trafficUsed || 0) + delta;
                         hasTrafficChanges = true;
 
-                        // 3. 实时刷新用户在线感知与使用者真实 IP
-                        const userAct = getUserActivity(matchedUser.uuid);
-                        if (userAct) {
-                            userAct.lastSeenAt = now;
-                            if (c.metadata?.sourceIP) {
-                                userAct.lastIp = c.metadata.sourceIP;
-                                if (!ipGeoCache.has(c.metadata.sourceIP)) {
-                                    lookupIpLocation(c.metadata.sourceIP).then((loc) => {
-                                        userAct.lastLocation = loc;
-                                    }).catch(() => {});
-                                }
-                            }
-                        }
-
-                        // 4. 超额熔断保护
+                        // 超额熔断保护
                         if (matchedUser.trafficLimit > 0 && matchedUser.trafficUsed >= matchedUser.trafficLimit) {
                             console.warn(`[Quota-ClashApi] 用户 [${matchedUser.username}] 流量超额，触发核心断流`);
                             safeReloadSingbox();
                         }
                     }
 
+                    // 4. 实时刷新用户全协议在线感知与活跃连接列表
+                    const userAct = getUserActivity(matchedUser.uuid);
+                    if (userAct) {
+                        userAct.lastSeenAt = now;
+                        if (clientIp && clientIp !== "未知IP") {
+                            userAct.lastIp = clientIp;
+                            if (!ipGeoCache.has(clientIp)) {
+                                lookupIpLocation(clientIp).then((loc) => {
+                                    userAct.lastLocation = loc;
+                                }).catch(() => {});
+                            }
+                        }
+
+                        if (!userAct.activeList) userAct.activeList = [];
+                        let existing = userAct.activeList.find((x) => x.id === c.id);
+                        if (!existing) {
+                            userAct.activeList.push({
+                                id: c.id,
+                                ip: clientIp,
+                                location: ipGeoCache.get(clientIp) || "查询中...",
+                                proto: protoName,
+                                connectedAt: connStart,
+                                lastActivityAt: now,
+                                isSingbox: true
+                            });
+                        } else {
+                            existing.lastActivityAt = now;
+                            if ((!existing.location || existing.location === "查询中...") && ipGeoCache.has(clientIp)) {
+                                existing.location = ipGeoCache.get(clientIp);
+                            }
+                        }
+                        userAct.activeConnections = userAct.activeList.length;
+                    }
+
                     activeConnTrafficMap.set(c.id, { lastBytes: totalBytes, lastSeen: now });
                 }
 
-                // 5. 垃圾回收：清理已经关闭或超时的断开连接
+                // 5. 垃圾回收：清理已经关闭或超时的断开连接并同步更新活跃列表
                 for (const [id, rec] of activeConnTrafficMap.entries()) {
                     if (!currentConnIds.has(id) || (now - rec.lastSeen > 30000)) {
                         activeConnTrafficMap.delete(id);
                     }
                 }
+                userActivities.forEach((act) => {
+                    if (act.activeList && act.activeList.length > 0) {
+                        const prevLen = act.activeList.length;
+                        act.activeList = act.activeList.filter((conn) => {
+                            if (conn.isSingbox) {
+                                return currentConnIds.has(conn.id) && (now - (conn.lastActivityAt || now) < 35000);
+                            }
+                            return true;
+                        });
+                        if (act.activeList.length !== prevLen) {
+                            act.activeConnections = act.activeList.length;
+                        }
+                    }
+                });
 
                 if (hasTrafficChanges) {
                     triggerDebouncedSave();
@@ -3274,8 +3326,8 @@ function pollSingboxClashApiTraffic() {
     req.setTimeout(3500, () => { req.destroy(); });
 }
 
-// 256MB 极小内存与单核 CPU 深度调优：从 5s 放宽至 20s，削减 75% 轮询与 JSON 解析压力
-setInterval(pollSingboxClashApiTraffic, 20000);
+// 提高感知刷新频率至 5 秒一次，实现毫秒级全协议在线感知实时看板
+setInterval(pollSingboxClashApiTraffic, 5000);
 
 // ==================== 7. 系统启动 ====================
 loadUsers();
