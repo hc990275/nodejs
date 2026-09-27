@@ -118,15 +118,12 @@ if [ -f "index.js" ] && [ -d "views" ]; then
 else
     mkdir -p "$WORK_DIR"
     cd "$WORK_DIR"
-    if [ ! -d ".git" ]; then
-        printf "${BLUE}正在拉取节点最新核心程序...${NC}\n"
-        git clone --depth=1 https://github.com/hc990275/nodejs.git . 2>/dev/null || {
-            printf "${YELLOW}git clone 失败，尝试通过压缩包极速下载...${NC}\n"
-            (curl -fsSL https://github.com/hc990275/nodejs/archive/refs/heads/main.tar.gz || wget -qO- https://github.com/hc990275/nodejs/archive/refs/heads/main.tar.gz) | tar -xz --strip-components=1
-        }
-    else
+    if [ -d ".git" ]; then
         printf "${BLUE}正在更新最新核心程序...${NC}\n"
         git pull || true
+    else
+        printf "${BLUE}正在拉取/覆盖更新最新核心程序...${NC}\n"
+        (curl -fsSL https://github.com/hc990275/nodejs/archive/refs/heads/main.tar.gz || wget -qO- https://github.com/hc990275/nodejs/archive/refs/heads/main.tar.gz) | tar -xz --strip-components=1 2>/dev/null || git clone --depth=1 https://github.com/hc990275/nodejs.git .
     fi
     if [ -d "linux" ]; then
         cd linux
@@ -219,5 +216,9 @@ printf "${CYAN}▶ 您现在可以直接在主控后台【集群分机管理】�
 printf "   1. 实时查看此副机状态、公网IP与心跳延迟\n"
 printf "   2. 远程一键勾选/取消开启 Hy2、Reality、TUIC、VLESS、Trojan 等任意协议\n"
 printf "   3. 远程自定义端口与国家地区标识，保存后主控心跳直接下发自动重载！\n"
+printf "${YELLOW}💡 常用副机运维指令：${NC}\n"
+printf "   - 查看心跳与运行日志: pm2 logs v3-worker --lines 30\n"
+printf "   - 重启副机服务:       pm2 restart v3-worker\n"
+printf "   - 停止副机服务:       pm2 stop v3-worker\n"
 printf "${GREEN}==============================================================================${NC}\n\n"
 
