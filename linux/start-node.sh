@@ -107,28 +107,34 @@ fi
 NODE_VER=$(node -v 2>/dev/null || echo "unknown")
 printf "${GREEN}✓ Node.js 核心运行就绪: %s${NC}\n" "${NODE_VER}"
 
-# 2. 检查工作目录与源码拉取
+# 2. 检查工作目录与源码拉取 (优先在用户主目录建立 nodejs 目录)
 printf "\n${YELLOW}[2/4] 准备副机运行程序源码...${NC}\n"
 
-WORK_DIR="/opt/v3-worker-node"
+TARGET_DIR="${HOME:-/root}/nodejs"
 if [ -f "index.js" ] && [ -d "views" ]; then
     # 当前已在 linux 目录下直接执行
     WORK_DIR="$(pwd)"
     printf "${GREEN}✓ 使用当前目录源码: %s${NC}\n" "${WORK_DIR}"
-else
-    mkdir -p "$WORK_DIR"
-    cd "$WORK_DIR"
+elif [ -d "${TARGET_DIR}/linux" ] && [ -f "${TARGET_DIR}/linux/index.js" ]; then
+    WORK_DIR="${TARGET_DIR}/linux"
+    printf "${GREEN}✓ 使用已有项目目录: %s${NC}\n" "${WORK_DIR}"
+    cd "${TARGET_DIR}"
     if [ -d ".git" ]; then
-        printf "${BLUE}正在更新最新核心程序...${NC}\n"
         git pull || true
     else
-        printf "${BLUE}正在拉取/覆盖更新最新核心程序...${NC}\n"
-        (curl -fsSL https://github.com/hc990275/nodejs/archive/refs/heads/main.tar.gz || wget -qO- https://github.com/hc990275/nodejs/archive/refs/heads/main.tar.gz) | tar -xz --strip-components=1 2>/dev/null || git clone --depth=1 https://github.com/hc990275/nodejs.git .
+        (curl -fsSL https://github.com/hc990275/nodejs/archive/refs/heads/main.tar.gz || wget -qO- https://github.com/hc990275/nodejs/archive/refs/heads/main.tar.gz) | tar -xz --strip-components=1 2>/dev/null || true
     fi
+else
+    mkdir -p "$TARGET_DIR"
+    cd "$TARGET_DIR"
+    printf "${BLUE}正在拉取最新核心程序至 %s...${NC}\n" "${TARGET_DIR}"
+    (curl -fsSL https://github.com/hc990275/nodejs/archive/refs/heads/main.tar.gz || wget -qO- https://github.com/hc990275/nodejs/archive/refs/heads/main.tar.gz) | tar -xz --strip-components=1 2>/dev/null || git clone --depth=1 https://github.com/hc990275/nodejs.git .
     if [ -d "linux" ]; then
-        cd linux
-        WORK_DIR="$(pwd)"
+        WORK_DIR="${TARGET_DIR}/linux"
+    else
+        WORK_DIR="${TARGET_DIR}"
     fi
+    printf "${GREEN}✓ 核心程序就绪: %s${NC}\n" "${WORK_DIR}"
 fi
 
 # 3. 生成专属 Worker .env 配置文件
@@ -151,12 +157,12 @@ fi
 
 printf "${GREEN}✓ .env 配置写入完毕${NC}\n"
 
-# 4. 启动服务与后台保活
-printf "\n${YELLOW}[4/4] 启动副机并与主控建立心跳连线...${NC}\n"
+# 4. 启动服务与后台保活 (端口完全由主控动态下发，内置小内存 VPS 资源压制与防爆机制)
+printf "\n${YELLOW}[4/4] 启动副机并与主控建立心跳连线 (开启 64MB 内存压制与防爆保护)...${NC}\n"
 
 STARTED=0
 
-# 策略 A: 优先使用 PM2
+# 策略 A: 优先使用 PM2 (带 64MB 堆上限与 100MB 自动重启熔断)
 if ! command -v pm2 >/dev/null 2>&1; then
     npm install -g pm2 >/dev/null 2>&1 || true
 fi
@@ -164,9 +170,9 @@ fi
 if command -v pm2 >/dev/null 2>&1; then
     pm2 stop v3-worker >/dev/null 2>&1 || true
     pm2 delete v3-worker >/dev/null 2>&1 || true
-    pm2 start index.js --name "v3-worker" --cwd "$WORK_DIR"
+    pm2 start index.js --name "v3-worker" --cwd "$WORK_DIR" --node-args="--max-old-space-size=64" --max-memory-restart 100M
     pm2 save >/dev/null 2>&1 || true
-    printf "${GREEN}✓ 已使用 PM2 成功启动并设置后台守护进程 (v3-worker)${NC}\n"
+    printf "${GREEN}✓ 已使用 PM2 启动副机 (内存硬上限: 64MB, 熔断阈值: 100MB)${NC}\n"
     STARTED=1
 fi
 
@@ -183,9 +189,11 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=${WORK_DIR}
-ExecStart=${NODE_PATH} ${WORK_DIR}/index.js
+ExecStart=${NODE_PATH} --max-old-space-size=64 ${WORK_DIR}/index.js
 Restart=always
 RestartSec=5
+MemoryMax=120M
+Nice=10
 Environment=NODE_ENV=production
 
 [Install]
@@ -198,12 +206,11 @@ EOF
     STARTED=1
 fi
 
-# 策略 C: 若无 PM2 且无 systemd (如 Alpine 默认环境)，使用 nohup + 循环自愈保活脚本
+# 策略 C: 若无 PM2 且无 systemd (如 Alpine 默认环境)，使用 nohup + 调度优先级压制
 if [ "$STARTED" -eq 0 ]; then
     NODE_PATH=$(command -v node)
-    # 杀死旧进程
     pkill -f "node.*index.js" >/dev/null 2>&1 || true
-    nohup "$NODE_PATH" "${WORK_DIR}/index.js" >/var/log/v3-worker.log 2>&1 &
+    nice -n 10 nohup "$NODE_PATH" --max-old-space-size=64 "${WORK_DIR}/index.js" >/var/log/v3-worker.log 2>&1 &
     PID=$!
     printf "${GREEN}✓ 已使用轻量后台守护进程启动 (PID: %s, 日志: /var/log/v3-worker.log)${NC}\n" "$PID"
     STARTED=1

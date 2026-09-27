@@ -1776,9 +1776,14 @@ return sendHtmlResponse(res, 200, `
                                             集群通信密钥 (NODE_SECRET): <code id="clusterSecretDisplay" style="background:#eef1f6; padding:2px 6px; border-radius:4px; font-weight:600;"></code>
                                         </div>
                                     </div>
-                                    <button class="btn btn-primary" style="font-size:13px;" onclick="toggleJoinCommandBox()">
-                                        ➕ 添加副机节点 (一键接入)
-                                    </button>
+                                    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                                        <button class="btn" style="font-size:13px; background:#f0f9eb; color:#67c23a; border:1px solid #e1f3d8; font-weight:600;" onclick="syncMasterProtocolsToWorkers()">
+                                            ⚡ 一键同步主机协议与端口至所有分机
+                                        </button>
+                                        <button class="btn btn-primary" style="font-size:13px;" onclick="toggleJoinCommandBox()">
+                                            ➕ 添加副机节点 (一键接入)
+                                        </button>
+                                    </div>
                                 </div>
 
                                 <!-- 一键接入命令展开框 -->
@@ -3395,7 +3400,9 @@ return sendHtmlResponse(res, 200, `
 
                     function renderClusterView(data) {
                         const masterUrl = data.masterUrl || location.origin;
-                        const secret = data.secret || window.__CLUSTER_SECRET__ || "未配置";
+                        const secret = data.secret || data.clusterSecret || window.__CLUSTER_SECRET__ || "未配置";
+                        window.__CLUSTER_MASTER_URL__ = masterUrl;
+                        window.__CLUSTER_SECRET__ = secret;
 
                         const masterUrlEl = document.getElementById("clusterMasterUrlDisplay");
                         if (masterUrlEl) masterUrlEl.innerText = masterUrl;
@@ -3442,8 +3449,9 @@ return sendHtmlResponse(res, 200, `
                             if (isMaster) {
                                 actionBtns = '<span style="font-size:12px; color:var(--el-text-secondary);">主控机 (在站点配置维护)</span>';
                             } else {
-                                actionBtns = '<div style="display:flex; gap:6px; justify-content:center;">' +
-                                    '<button class="btn" style="padding:4px 8px; font-size:12px; background:var(--el-primary-light); color:var(--el-primary); border:1px solid var(--el-primary-border);" data-node-id="' + escapeHtml(node.id) + '" onclick="openWorkerProtocolsModal(this.dataset.nodeId)">⚡ 远程协议</button>' +
+                                actionBtns = '<div style="display:flex; gap:6px; justify-content:center; flex-wrap:nowrap;">' +
+                                    '<button class="btn" style="padding:4px 8px; font-size:12px; background:var(--el-primary-light); color:var(--el-primary); border:1px solid var(--el-primary-border);" data-node-id="' + escapeHtml(node.id) + '" onclick="openWorkerProtocolsModal(this.dataset.nodeId)">⚡ 协议</button>' +
+                                    '<button class="btn" style="padding:4px 8px; font-size:12px; background:#f4f4f5; color:#606266; border:1px solid #dcdfe6;" data-node-name="' + escapeHtml(node.name || '') + '" onclick="copyNodeReinstallCmd(this.dataset.nodeName)">📋 复制重装</button>' +
                                     '<button class="btn" style="padding:4px 8px; font-size:12px; background:#ffffff; border:1px solid var(--el-border); color:var(--el-text-regular);" data-node-id="' + escapeHtml(node.id) + '" data-node-name="' + escapeHtml(node.name || '') + '" onclick="promptUpdateNodeName(this.dataset.nodeId, this.dataset.nodeName)">✏️ 改名</button>' +
                                     '<button class="btn" style="padding:4px 8px; font-size:12px; background:var(--el-danger-light); color:var(--el-danger); border:1px solid var(--el-danger-border);" data-node-id="' + escapeHtml(node.id) + '" onclick="deleteClusterNode(this.dataset.nodeId)">🗑️ 剔除</button>' +
                                 '</div>';
@@ -3507,6 +3515,38 @@ return sendHtmlResponse(res, 200, `
                             document.execCommand("copy");
                             showToast("✅ 已复制命令！");
                         });
+                    }
+
+                    function copyNodeReinstallCmd(nodeName) {
+                        const masterUrl = window.__CLUSTER_MASTER_URL__ || (window.location.protocol + "//" + window.location.host);
+                        const secret = window.__CLUSTER_SECRET__ || "";
+                        const safeName = (nodeName || "副机节点").replace(/"/g, '\\"');
+                        const cmd = "(curl -fsSL " + masterUrl + "/start-node.sh || wget -qO- " + masterUrl + "/start-node.sh) | sh -s -- --master=" + masterUrl + " --secret=" + secret + ' --name="' + safeName + '"';
+                        if (navigator.clipboard && navigator.clipboard.writeText) {
+                            navigator.clipboard.writeText(cmd).then(function() {
+                                showToast("✅ 已复制 [" + (nodeName || "该分机") + "] 专属重装命令！");
+                            }).catch(function() {
+                                fallbackCopyText(cmd, "✅ 已复制 [" + (nodeName || "该分机") + "] 专属重装命令！");
+                            });
+                        } else {
+                            fallbackCopyText(cmd, "✅ 已复制 [" + (nodeName || "该分机") + "] 专属重装命令！");
+                        }
+                    }
+
+                    function fallbackCopyText(text, successMsg) {
+                        const tmp = document.createElement("textarea");
+                        tmp.value = text;
+                        tmp.style.position = "fixed";
+                        tmp.style.left = "-9999px";
+                        document.body.appendChild(tmp);
+                        tmp.select();
+                        try {
+                            document.execCommand("copy");
+                            showToast(successMsg || "✅ 已复制到剪贴板！");
+                        } catch (_) {
+                            prompt("请直接手动复制命令：", text);
+                        }
+                        document.body.removeChild(tmp);
                     }
 
                     function openWorkerProtocolsModal(nodeId) {
@@ -3653,6 +3693,29 @@ return sendHtmlResponse(res, 200, `
                             }
                         } catch (e) {
                             alert("异常: " + e.message);
+                        }
+                    }
+
+                    async function syncMasterProtocolsToWorkers() {
+                        if (!confirm("⚠️ 确定要将【主控机】当前的全部协议开关与端口一键下发同步给所有副机吗？\n\n同步后所有分机的协议与端口将与主控完全一致，并在 5 秒心跳内全自动热重载生效！")) return;
+                        const token = getAdminToken();
+                        const basePrefix = location.pathname.startsWith("/v3") ? "/v3" : "";
+                        try {
+                            const reqHeaders = { "Content-Type": "application/json" };
+                            if (token) reqHeaders["x-admin-token"] = token;
+                            const res = await fetch(basePrefix + "/admin/api/cluster/sync-master-protocols" + (token ? "?token=" + encodeURIComponent(token) : ""), {
+                                method: "POST",
+                                headers: reqHeaders
+                            });
+                            const data = await res.json();
+                            if (res.ok && data.success) {
+                                showToast("✅ " + (data.message || "已成功将主机协议端口下发至所有副机！"));
+                                refreshClusterData();
+                            } else {
+                                alert("❌ 同步失败: " + (data.error || "未知异常"));
+                            }
+                        } catch (e) {
+                            alert("网络异常: " + e.message);
                         }
                     }
 
