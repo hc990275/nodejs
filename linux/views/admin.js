@@ -2336,11 +2336,13 @@ return sendHtmlResponse(res, 200, `
                             try { data = JSON.parse(text || "{}"); } catch (_) {}
                             if (res.ok) {
                                 window.__SITE_SETTINGS__ = Object.assign({}, data.settings || {}, { envSettings: data.envSettings || envSettings });
-                                let alertMsg = "✅ 站点运营与全部节点协议配置已成功保存并立即落盘热生效！";
+                                let alertList = ["✅ 站点运营与全部节点协议配置已成功保存并立即落盘热生效！"];
                                 if (data.portWarnings && data.portWarnings.length > 0) {
-                                    alertMsg += "\n\n⚠️【主机端口冲突主动探针提示】\n" + data.portWarnings.join("\n");
+                                    alertList.push("");
+                                    alertList.push("⚠️【主机端口冲突主动探针提示】");
+                                    alertList = alertList.concat(data.portWarnings);
                                 }
-                                alert(alertMsg);
+                                alert(alertList.join(String.fromCharCode(10)));
                                 closeSettingsModal();
                                 const contactDisplay = document.querySelector(".contact-display-val");
                                 if (contactDisplay) contactDisplay.innerText = contactText || "未设置";
@@ -3453,7 +3455,7 @@ return sendHtmlResponse(res, 200, `
                             if (protos.ss && protos.ss.enabled) protoTags.push('<span style="background:#eef1f6; color:#303133; border:1px solid #dcdfe6; padding:1px 5px; border-radius:3px; font-size:11px;">SS:' + (protos.ss.port || 10805) + '</span>');
                             let portWarnHtml = "";
                             if (Array.isArray(node.portWarnings) && node.portWarnings.length > 0) {
-                                portWarnHtml = '<div style="margin-top:4px;"><span style="background:#fef0f0; color:#f56c6c; border:1px solid #fde2e2; padding:1px 6px; border-radius:3px; font-size:11px; font-weight:600; cursor:pointer;" onclick="alert(\'⚠️ 该节点端口被外部服务占用，系统已自动递增避让:\\n\\n\' + ' + JSON.stringify(node.portWarnings.join('\\n')) + ')" title="点击查看详情">⚠️ 端口冲突已避让 (' + node.portWarnings.length + ')</span></div>';
+                                portWarnHtml = '<div style="margin-top:4px;"><span style="background:#fef0f0; color:#f56c6c; border:1px solid #fde2e2; padding:1px 6px; border-radius:3px; font-size:11px; font-weight:600; cursor:pointer;" data-node-id="' + escapeHtml(node.id) + '" onclick="showNodePortWarnings(this.dataset.nodeId)" title="点击查看详情">⚠️ 端口冲突已避让 (' + node.portWarnings.length + ')</span></div>';
                             }
                             const protoHtml = (protoTags.length > 0 ? protoTags.join(" ") : '<span style="color:var(--el-text-secondary); font-size:11px;">未启用</span>') + portWarnHtml;
 
@@ -3515,6 +3517,13 @@ return sendHtmlResponse(res, 200, `
                         if (diff < 60) return diff + " 秒前心跳";
                         if (diff < 3600) return Math.floor(diff / 60) + " 分钟前心跳";
                         return Math.floor(diff / 3600) + " 小时前";
+                    }
+
+                    function showNodePortWarnings(nodeId) {
+                        const node = (window.__CLUSTER_NODES__ || []).find(function(n) { return n.id === nodeId; });
+                        if (!node || !Array.isArray(node.portWarnings) || node.portWarnings.length === 0) return;
+                        const msgList = ["⚠️ 该节点端口被系统服务占用，已自动递增避让生效："].concat(node.portWarnings);
+                        alert(msgList.join(String.fromCharCode(10)));
                     }
 
                     function toggleJoinCommandBox() {
