@@ -1,4 +1,4 @@
-﻿# 踩坑与经验沉淀报告 (Error Tracking)
+# 踩坑与经验沉淀报告 (Error Tracking)
 
 ---
 
@@ -364,3 +364,14 @@
   1. **采用 HTML5 Dataset 属性解耦**：彻底摒弃在 inline onclick 中拼接引号和转义符，改为 data-node-id=" + id + " onclick="func(this.dataset.nodeId)"，完全杜绝转义解析问题；
   2. **换行符二次转义**：确认对话框等字符串内部换行统一采用 \\n；
   3. **Node VM 端到端编译验证**：建立前端脚本 AST 编译测试，自动拦截发往浏览器的任何 JS 语法隐患。
+
+---
+
+### 第三十九号：ES6 模板字符串中直接书写 `\n` 引发客户端内联 JS 物理硬换行断裂 (Invalid or unexpected token)
+- **问题现象**：更新端口避让告警后，管理员访问后台 /admin 再次卡在“正在载入用户数据...”，浏览器控制台报错 `SyntaxError: Invalid or unexpected token`。
+- **原因剖析**：
+  在 `views/admin.js` 内联的客户端脚本中，拼接了包含 `\n` 的字符串字面量（例如 `alertMsg += "\n\n⚠️..."` 和内联点击属性 `onclick="alert('...' + JSON.stringify(...join('\\n'))"`）。因整个页面置于 Node.js ES6 模板字符串（反引号 `` ` ``）中，服务端在渲染下发时将 `\n` 求值为了物理换行符（CR/LF），导致发送给浏览器的客户端 JS 源码在双引号字符串中间发生硬折行，浏览器 JS 引擎抛出语法错误，中断了 DOMContentLoaded 监听和用户表格的 `renderTable()` 渲染。
+- **实施解决对策**：
+  1. **摒弃字面量 `\n` 转义**：字符串换行全面采用 `String.fromCharCode(10)` 或由数组 `join(String.fromCharCode(10))` 实现，彻底避免服务端求值影响；
+  2. **事件与参数 Dataset 解耦**：警告信息查看全部通过 `data-node-id` 绑定独立函数 `showNodePortWarnings`，杜绝内联 `onclick` 拼接转义符；
+  3. **新增客户端 AST 语法自动化守门**：通过 Node 运行提取生成 HTML 中的 `<script>` 并做 `new Function()` AST 语法解析测试，确保 0 语法缺陷发往客户端。
