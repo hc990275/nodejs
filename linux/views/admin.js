@@ -3406,9 +3406,9 @@ return sendHtmlResponse(res, 200, `
                                 actionBtns = '<span style="font-size:12px; color:var(--el-text-secondary);">主控机 (在站点配置维护)</span>';
                             } else {
                                 actionBtns = '<div style="display:flex; gap:6px; justify-content:center;">' +
-                                    '<button class="btn" style="padding:4px 8px; font-size:12px; background:var(--el-primary-light); color:var(--el-primary); border:1px solid var(--el-primary-border);" onclick="openWorkerProtocolsModal(\'' + escapeHtml(node.id) + '\')">⚡ 远程协议</button>' +
-                                    '<button class="btn" style="padding:4px 8px; font-size:12px; background:#ffffff; border:1px solid var(--el-border); color:var(--el-text-regular);" onclick="promptUpdateNodeName(\'' + escapeHtml(node.id) + '\', \'' + escapeHtml(node.name || '') + '\')">✏️ 改名</button>' +
-                                    '<button class="btn" style="padding:4px 8px; font-size:12px; background:var(--el-danger-light); color:var(--el-danger); border:1px solid var(--el-danger-border);" onclick="deleteClusterNode(\'' + escapeHtml(node.id) + '\')">🗑️ 剔除</button>' +
+                                    '<button class="btn" style="padding:4px 8px; font-size:12px; background:var(--el-primary-light); color:var(--el-primary); border:1px solid var(--el-primary-border);" data-node-id="' + escapeHtml(node.id) + '" onclick="openWorkerProtocolsModal(this.dataset.nodeId)">⚡ 远程协议</button>' +
+                                    '<button class="btn" style="padding:4px 8px; font-size:12px; background:#ffffff; border:1px solid var(--el-border); color:var(--el-text-regular);" data-node-id="' + escapeHtml(node.id) + '" data-node-name="' + escapeHtml(node.name || '') + '" onclick="promptUpdateNodeName(this.dataset.nodeId, this.dataset.nodeName)">✏️ 改名</button>' +
+                                    '<button class="btn" style="padding:4px 8px; font-size:12px; background:var(--el-danger-light); color:var(--el-danger); border:1px solid var(--el-danger-border);" data-node-id="' + escapeHtml(node.id) + '" onclick="deleteClusterNode(this.dataset.nodeId)">🗑️ 剔除</button>' +
                                 '</div>';
                             }
 
@@ -3596,7 +3596,7 @@ return sendHtmlResponse(res, 200, `
                     }
 
                     async function deleteClusterNode(nodeId) {
-                        if (!confirm("确定从集群中剔除此副机节点？\n剔除后主控将不再为该节点聚合订阅和下发心跳。")) return;
+                        if (!confirm("确定从集群中剔除此副机节点？\\n剔除后主控将不再为该节点聚合订阅和下发心跳。")) return;
                         const token = getAdminToken();
                         const basePrefix = location.pathname.startsWith("/v3") ? "/v3" : "";
                         try {
