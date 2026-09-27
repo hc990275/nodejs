@@ -183,12 +183,24 @@ const PORT_CLASH_API = parseInt(process.env.PORT_CLASH_API || "19090", 10);
 
 const WORK_DIR = process.env.WORK_DIR || __dirname;
 
-// 数据存储目录 (支持自定义，默认 ./data 或 ../../data)
-const DATA_DIR = process.env.DATA_DIR || (
-    fs.existsSync(path.join(__dirname, "../../data"))
-        ? path.join(__dirname, "../../data")
-        : path.join(__dirname, "data")
-);
+// 数据存储目录 (支持自定义，优先绑定包含历史数据的真实目录，确保重新部署数据不丢)
+const DATA_DIR = (function() {
+    if (process.env.DATA_DIR && fs.existsSync(process.env.DATA_DIR)) {
+        return process.env.DATA_DIR;
+    }
+    const localData = path.join(__dirname, "data");
+    const parentData = path.join(__dirname, "../../data");
+    const midData = path.join(__dirname, "../data");
+
+    // 智能寻回：优先检查哪一个目录包含真实的历史用户数据库或配置文件
+    const candidates = [localData, parentData, midData];
+    for (const c of candidates) {
+        if (fs.existsSync(path.join(c, "v3_users.json")) || fs.existsSync(path.join(c, "v3_settings.json")) || fs.existsSync(path.join(c, "users.json"))) {
+            return c;
+        }
+    }
+    return localData;
+})();
 const defaultDataDir = DATA_DIR;
 if (!fs.existsSync(DATA_DIR)) {
     try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch (_) { }
@@ -529,9 +541,17 @@ function applyHy2PortHoppingRules() {
 function loadSettings() {
     const candidateFiles = [
         SETTINGS_FILE,
+        SETTINGS_FILE + ".bak",
+        path.join(__dirname, "data", "v3_settings.json"),
+        path.join(__dirname, "data", "v3_settings.json.bak"),
+        path.join(__dirname, "v3_settings.json"),
+        path.join(__dirname, "../../data", "v3_settings.json"),
+        path.join(__dirname, "../data", "v3_settings.json"),
         path.join(WORK_DIR, "v3_settings.json"),
         path.join(WORK_DIR, "settings.json"),
-        path.join(WORK_DIR, "data", "v3_settings.json")
+        path.join(WORK_DIR, "data", "v3_settings.json"),
+        path.join(process.cwd(), "v3_settings.json"),
+        path.join(process.cwd(), "data", "v3_settings.json")
     ];
     for (const fPath of candidateFiles) {
         if (fPath && fs.existsSync(fPath)) {
@@ -564,6 +584,7 @@ function saveSettings() {
             fs.mkdirSync(path.dirname(SETTINGS_FILE), { recursive: true });
         }
         fs.writeFileSync(SETTINGS_FILE, JSON.stringify(siteSettings, null, 2), "utf8");
+        try { fs.writeFileSync(SETTINGS_FILE + ".bak", JSON.stringify(siteSettings, null, 2), "utf8"); } catch (_) {}
         console.log(`[Settings] 站点运营与注册配置已安全同步落盘至: ${SETTINGS_FILE}`);
         return true;
     } catch (err) {
@@ -1075,12 +1096,24 @@ function hashPassword(password) {
 }
 
 function loadUsers() {
-    let loaded = false;
     const candidateFiles = [
         USERS_FILE,
+        USERS_FILE + ".bak",
+        path.join(__dirname, "data", "v3_users.json"),
+        path.join(__dirname, "data", "v3_users.json.bak"),
+        path.join(__dirname, "v3_users.json"),
+        path.join(__dirname, "users.json"),
+        path.join(__dirname, "../../data", "v3_users.json"),
+        path.join(__dirname, "../../data", "users.json"),
+        path.join(__dirname, "../data", "v3_users.json"),
         path.join(WORK_DIR, "users.json"),
-        path.join(WORK_DIR, "data", "users.json")
+        path.join(WORK_DIR, "data", "users.json"),
+        path.join(process.cwd(), "v3_users.json"),
+        path.join(process.cwd(), "data", "v3_users.json")
     ];
+
+    let bestUsers = [];
+    let bestSource = "";
 
     for (const fPath of candidateFiles) {
         if (fPath && fs.existsSync(fPath)) {
@@ -1088,19 +1121,13 @@ function loadUsers() {
                 const raw = fs.readFileSync(fPath, "utf8").trim();
                 if (raw.length > 0) {
                     const parsed = JSON.parse(raw);
-                    if (Array.isArray(parsed)) {
-                        usersDatabase = parsed;
-                        loaded = true;
-                    } else if (parsed && typeof parsed === "object" && Array.isArray(parsed.users)) {
-                        usersDatabase = parsed.users;
-                        loaded = true;
-                    }
-                    if (loaded) {
-                        console.log(`[Database] 数据载入成功 (${path.basename(fPath)})，当前总注册用户: ${usersDatabase.length}`);
-                        if (fPath !== USERS_FILE) {
-                            saveUsers();
-                        }
-                        return;
+                    let list = [];
+                    if (Array.isArray(parsed)) list = parsed;
+                    else if (parsed && typeof parsed === "object" && Array.isArray(parsed.users)) list = parsed.users;
+
+                    if (list.length > bestUsers.length) {
+                        bestUsers = list;
+                        bestSource = fPath;
                     }
                 }
             } catch (err) {
@@ -1109,14 +1136,44 @@ function loadUsers() {
         }
     }
 
-    usersDatabase = [];
-    console.log("[Database] 初始化空用户数据库完成，当前总注册用户: 0");
-    saveUsers();
+    if (bestUsers.length > 0) {
+        usersDatabase = bestUsers;
+        console.log(`[Database] 智能寻回历史用户数据成功 (${path.basename(bestSource)})，共恢复注册用户: ${usersDatabase.length} 人`);
+        saveUsers();
+        return;
+    }
+
+    if (!usersDatabase || usersDatabase.length === 0) {
+        usersDatabase = [];
+        console.log("[Database] 初始化空用户数据库完成，当前总注册用户: 0");
+    }
 }
 
 function saveUsers() {
     if (!Array.isArray(usersDatabase)) usersDatabase = [];
+
+    // 防空擦除安全哨兵：若当前内存用户为空，但磁盘文件已有有效用户数据，严禁覆盖！
+    if (usersDatabase.length === 0 && fs.existsSync(USERS_FILE)) {
+        try {
+            const diskContent = fs.readFileSync(USERS_FILE, "utf8").trim();
+            if (diskContent && diskContent.length > 20) {
+                const diskParsed = JSON.parse(diskContent);
+                if (Array.isArray(diskParsed) && diskParsed.length > 0) {
+                    console.warn(`[Database-Safety] 拦截到对有效用户库的清空风险！磁盘现有 ${diskParsed.length} 用户，已自动阻止空数据覆盖并自动恢复。`);
+                    usersDatabase = diskParsed;
+                    return;
+                }
+            }
+        } catch (_) {}
+    }
+
     safeWriteFileAsync(USERS_FILE, JSON.stringify(usersDatabase, null, 2));
+
+    if (usersDatabase.length > 0) {
+        try {
+            safeWriteFileAsync(USERS_FILE + ".bak", JSON.stringify(usersDatabase, null, 2));
+        } catch (_) {}
+    }
 }
 
 function isUserInvalid(user) {
