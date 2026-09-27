@@ -158,7 +158,7 @@ const DATA_DIR = process.env.DATA_DIR || (
 );
 const defaultDataDir = DATA_DIR;
 if (!fs.existsSync(DATA_DIR)) {
-    try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch (_) {}
+    try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch (_) { }
 }
 
 let USERS_FILE = path.join(DATA_DIR, "v3_users.json");
@@ -342,7 +342,7 @@ function ensureAdaptiveLinuxEnvironment() {
         }
         if (fs.existsSync("/etc/alpine-release")) {
             osInfo.id = "alpine";
-            try { osInfo.version = fs.readFileSync("/etc/alpine-release", "utf8").trim(); } catch (_) {}
+            try { osInfo.version = fs.readFileSync("/etc/alpine-release", "utf8").trim(); } catch (_) { }
         }
 
         osInfo.isUbuntu = osInfo.id.includes("ubuntu");
@@ -415,7 +415,7 @@ function ensureMultiProtocolSecrets() {
                 if (raw.privateKey && raw.publicKey) {
                     realityState = raw;
                 }
-            } catch (_) {}
+            } catch (_) { }
         }
         if (!realityState.privateKey || !realityState.publicKey) {
             console.log("[Crypto-Engine] 正在初始化 VLESS-Reality 密钥对与 ShortId...");
@@ -430,7 +430,7 @@ function ensureMultiProtocolSecrets() {
                             pKey = mPriv[1].trim();
                             pubKey = mPub[1].trim();
                         }
-                    } catch (_) {}
+                    } catch (_) { }
                 }
                 if (!pKey || !pubKey) {
                     pKey = "sBcdltAktY4joWSmBsepqeAONWK0UOr3YGlzfO09Zlg";
@@ -448,11 +448,11 @@ function ensureMultiProtocolSecrets() {
         if (fs.existsSync(SS_KEY_FILE)) {
             try {
                 ssSecretState = fs.readFileSync(SS_KEY_FILE, "utf8").trim();
-            } catch (_) {}
+            } catch (_) { }
         }
         if (!ssSecretState) {
             ssSecretState = crypto.randomBytes(16).toString("base64");
-            try { fs.writeFileSync(SS_KEY_FILE, ssSecretState, "utf8"); } catch (_) {}
+            try { fs.writeFileSync(SS_KEY_FILE, ssSecretState, "utf8"); } catch (_) { }
         }
     } catch (err) {
         console.warn("[Crypto-Engine] 多协议密钥引擎自检异常:", err.message);
@@ -478,8 +478,8 @@ function applyHy2PortHoppingRules() {
         // 幂等清理旧规则
         try {
             execSync(`iptables -t nat -D PREROUTING -p udp --dport ${portRangeFormatted} -j REDIRECT --to-ports ${PORT_HY2} 2>/dev/null || true`);
-        } catch (_) {}
-        
+        } catch (_) { }
+
         // 写入重定向规则
         execSync(`iptables -t nat -A PREROUTING -p udp --dport ${portRangeFormatted} -j REDIRECT --to-ports ${PORT_HY2}`);
         console.log(`[Port-Hopping] Hy2 端口跳跃规则配置成功: UDP ${HY2_HOP_PORTS} -> ${PORT_HY2}`);
@@ -548,7 +548,7 @@ function updateEnvFile(updates) {
     if (fs.existsSync(targetPath)) {
         try {
             content = fs.readFileSync(targetPath, "utf8");
-        } catch (_) {}
+        } catch (_) { }
     }
 
     const lines = content ? content.split(/\r?\n/) : [];
@@ -730,7 +730,7 @@ function lookupIpLocation(ip) {
                         ipGeoCache.set(ip, result);
                         return resolve(result);
                     }
-                } catch (_) {}
+                } catch (_) { }
                 fallbackWhois();
             });
         });
@@ -760,7 +760,7 @@ function lookupIpLocation(ip) {
                                 ipGeoCache.set(ip, result);
                                 return resolve(result);
                             }
-                        } catch (_) {}
+                        } catch (_) { }
                         ipGeoCache.set(ip, "公网地址");
                         resolve("公网地址");
                     });
@@ -784,11 +784,11 @@ function lookupIpLocation(ip) {
 
 function getClientIp(req, socket) {
     let ip = (req.headers && req.headers["cf-connecting-ip"]) ||
-             (req.headers && req.headers["x-real-ip"]) ||
-             (req.headers && req.headers["x-forwarded-for"] ? req.headers["x-forwarded-for"].split(",")[0].trim() : "") ||
-             (socket && socket.remoteAddress) ||
-             (req.socket && req.socket.remoteAddress) ||
-             "";
+        (req.headers && req.headers["x-real-ip"]) ||
+        (req.headers && req.headers["x-forwarded-for"] ? req.headers["x-forwarded-for"].split(",")[0].trim() : "") ||
+        (socket && socket.remoteAddress) ||
+        (req.socket && req.socket.remoteAddress) ||
+        "";
     if (ip.startsWith("::ffff:")) ip = ip.substring(7);
     if (ip === "::1") ip = "127.0.0.1";
     return ip;
@@ -1111,7 +1111,7 @@ function killPortOccupants() {
             if (oldPid && !isNaN(oldPid)) {
                 process.kill(oldPid, 'SIGKILL');
             }
-        } catch (_) {}
+        } catch (_) { }
     }
 
     // 2. Linux 原生 /proc 精准扫描清理 (零外部命令依赖，兼容极简容器)
@@ -1126,12 +1126,12 @@ function killPortOccupants() {
                         const cmd = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8');
                         if (cmd.includes('sing-box') && !cmd.includes('node')) {
                             console.log(`[Core] 发现残留代理进程 (PID: ${pid})，正在强制释放...`);
-                            try { process.kill(pid, 'SIGKILL'); } catch (_) {}
+                            try { process.kill(pid, 'SIGKILL'); } catch (_) { }
                         }
-                    } catch (_) {}
+                    } catch (_) { }
                 }
             }
-        } catch (_) {}
+        } catch (_) { }
     }
 
     // 3. 辅助命令查杀 (兼容 Windows 和具备外部工具链的环境)
@@ -1151,8 +1151,8 @@ function killPortOccupants() {
                 } catch (e) { }
             });
         } else {
-            try { execSync(`pkill -9 -f sing-box 2>/dev/null || true`); } catch (_) {}
-            try { execSync(`killall -9 sing-box 2>/dev/null || true`); } catch (_) {}
+            try { execSync(`pkill -9 -f sing-box 2>/dev/null || true`); } catch (_) { }
+            try { execSync(`killall -9 sing-box 2>/dev/null || true`); } catch (_) { }
         }
     } catch (e) { }
 }
@@ -1209,7 +1209,7 @@ function safeReloadSingbox(force = false) {
         global.__v3_singbox_process = singboxProcess;
 
         if (singboxProcess && singboxProcess.pid) {
-            try { fs.writeFileSync(PID_FILE, String(singboxProcess.pid)); } catch (_) {}
+            try { fs.writeFileSync(PID_FILE, String(singboxProcess.pid)); } catch (_) { }
         }
 
         singboxProcess.on("error", (err) => {
@@ -1259,7 +1259,7 @@ function stopCloudflared() {
         try {
             console.log("[Cloudflared] 正在终止现有的 Argo 隧道进程...");
             global.__v3_cloudflared_process.kill("SIGTERM");
-        } catch (_) {}
+        } catch (_) { }
         global.__v3_cloudflared_process = null;
     }
     tunnelStatusState.connected = false;
@@ -1293,7 +1293,7 @@ function stopTunnelServer() {
     if (globalTunnelServer) {
         try {
             globalTunnelServer.close();
-        } catch (_) {}
+        } catch (_) { }
         globalTunnelServer = null;
     }
 }
@@ -1661,7 +1661,7 @@ function getNodesForUser(user) {
         } else if (n.type === "hysteria2-hop") {
             linkList.push(`hysteria2://${n.password}@${n.server}:${n.port}/?mport=${n.ports}&ports=${n.ports}&insecure=1&sni=${n.sni}#${n.name}`);
         } else if (n.type === "tuic") {
-            linkList.push(`tuic://${n.uuid}:${n.password}@${n.server}:${n.port}/?congestion_control=bbr&alpn=h3&sni=${n.sni}&allow_insecure=1&insecure=1&allowInsecure=1&allowInsecure=true&skip-cert-verify=true#${n.name}`);
+            linkList.push(`tuic://${n.uuid}:${n.password}@${n.server}:${n.port}/?congestion_control=bbr&alpn=h3&sni=${n.sni}&allow_insecure=1&insecure=1#${n.name}`);
         } else if (n.type === "vless-reality") {
             linkList.push(`vless://${n.uuid}@${n.server}:${n.port}?security=reality&encryption=none&pbk=${n.pbk}&sid=${n.sid}&sni=${n.sni}&fp=${n.fp}&type=tcp#${n.name}`);
         } else if (n.type === "vless-tcp") {
@@ -2806,7 +2806,7 @@ function handleHttpRequest(req, res) {
     }
 
     // 7. 后台管理页面 (/admin) - 独立 Cookie 鉴权与在线感知看板
-        // 7. 管理后台运营与监控中心 (/admin)
+    // 7. 管理后台运营与监控中心 (/admin)
     if (pathname === "/admin") {
         if (!checkAdminAuth(req, query)) {
             const isV3 = req.url.startsWith("/v3");
@@ -2994,7 +2994,7 @@ function handleUpgradeRequest(req, clientSocket, head) {
                     try {
                         if (c.clientSocket && !c.clientSocket.destroyed) c.clientSocket.destroy();
                         if (c.backendSocket && !c.backendSocket.destroyed) c.backendSocket.destroy();
-                    } catch (_) {}
+                    } catch (_) { }
                 });
             }
         }
@@ -3043,12 +3043,12 @@ function handleUpgradeRequest(req, clientSocket, head) {
             if (connRecord.clientSocket && !connRecord.clientSocket.destroyed) {
                 connRecord.clientSocket.destroy();
             }
-        } catch (_) {}
+        } catch (_) { }
         try {
             if (connRecord.backendSocket && !connRecord.backendSocket.destroyed) {
                 connRecord.backendSocket.destroy();
             }
-        } catch (_) {}
+        } catch (_) { }
 
         // 2. 强一致性清理连接池
         if (userAct && userAct.activeList) {
@@ -3087,7 +3087,7 @@ function handleUpgradeRequest(req, clientSocket, head) {
             lookupIpLocation(clientIp).then((loc) => {
                 connRecord.location = loc;
                 if (userAct) userAct.lastLocation = loc;
-            }).catch(() => {});
+            }).catch(() => { });
         }
     }
 
@@ -3155,7 +3155,7 @@ setInterval(() => {
 
             // 状态 1：套接字在系统底层已经 destroyed 或关闭（僵尸死连接）
             const isDead = (conn.clientSocket && conn.clientSocket.destroyed) ||
-                           (conn.backendSocket && conn.backendSocket.destroyed);
+                (conn.backendSocket && conn.backendSocket.destroyed);
 
             // 状态 2：超过指定时长无数据交互（空闲超时）
             const isIdle = isIdleEnabled && conn.lastActivityAt && (now - conn.lastActivityAt > timeoutMs);
@@ -3175,7 +3175,7 @@ setInterval(() => {
                 try {
                     if (conn.clientSocket && !conn.clientSocket.destroyed) conn.clientSocket.destroy();
                     if (conn.backendSocket && !conn.backendSocket.destroyed) conn.backendSocket.destroy();
-                } catch (_) {}
+                } catch (_) { }
                 const idx = act.activeList.findIndex((c) => c.id === conn.id);
                 if (idx !== -1) act.activeList.splice(idx, 1);
                 act.activeConnections = act.activeList.length;
@@ -3207,13 +3207,19 @@ function pollSingboxClashApiTraffic() {
                     if (!c || !c.id) continue;
                     currentConnIds.add(c.id);
 
-                    // 1. 过滤由 Node.js 本身转入的 WebSocket 内部流量，避免双重计费
-                    const inboundTag = c.metadata?.inboundTag || "";
-                    if (inboundTag === "vless-in" || inboundTag === "vmess-in" || inboundTag === "trojan-in") {
+                    // 1. 过滤本地回环 IP (Node.js 内部反向代理至 Sing-box 的流量，彻底杜绝 127.0.0.1 泄露与虚高连接数)
+                    const clientIp = String(c.metadata?.sourceIP || "").trim();
+                    if (!clientIp || clientIp === "127.0.0.1" || clientIp === "::1" || clientIp.startsWith("127.") || clientIp === "localhost") {
                         continue;
                     }
 
-                    // 2. 精确匹配目标用户 (支持 uuid、用户名及包含判定)
+                    // 2. 过滤内部 WebSocket 入站标签 (兼容 vless-in / vless/vless-in 等各种复合命名)
+                    const rawTag = String(c.metadata?.inboundTag || c.metadata?.inbound || "").toLowerCase();
+                    if (rawTag.includes("vless-in") || rawTag.includes("vmess-in") || rawTag.includes("trojan-in")) {
+                        continue;
+                    }
+
+                    // 3. 精确匹配目标用户 (支持 uuid、用户名及包含判定)
                     const inboundUser = String(c.metadata?.inboundUser || "").trim();
                     let matchedUser = null;
                     if (inboundUser) {
@@ -3228,18 +3234,17 @@ function pollSingboxClashApiTraffic() {
                     }
                     if (!matchedUser) continue;
 
-                    // 3. 智能解析协议类型与客户端源信息
+                    // 4. 智能规范化协议名称
                     let protoName = "未知";
-                    if (inboundTag.includes("hy2") || inboundTag.includes("hysteria")) protoName = "Hysteria2";
-                    else if (inboundTag.includes("tuic")) protoName = "TUIC";
-                    else if (inboundTag.includes("reality")) protoName = "Reality";
-                    else if (inboundTag.includes("vless-tcp")) protoName = "VLESS-TCP";
-                    else if (inboundTag.includes("trojan-tcp")) protoName = "Trojan-TCP";
-                    else if (inboundTag.includes("ss") || inboundTag.includes("shadowsocks")) protoName = "Shadowsocks";
-                    else if (inboundTag.includes("socks")) protoName = "Socks5";
-                    else if (c.metadata?.type) protoName = String(c.metadata.type).toUpperCase();
+                    if (rawTag.includes("hy2") || rawTag.includes("hysteria")) protoName = "Hysteria2";
+                    else if (rawTag.includes("tuic")) protoName = "TUIC";
+                    else if (rawTag.includes("reality")) protoName = "Reality";
+                    else if (rawTag.includes("vless-tcp")) protoName = "VLESS-TCP";
+                    else if (rawTag.includes("trojan-tcp")) protoName = "Trojan-TCP";
+                    else if (rawTag.includes("ss") || rawTag.includes("shadowsocks")) protoName = "Shadowsocks";
+                    else if (rawTag.includes("socks")) protoName = "Socks5";
+                    else if (c.metadata?.type) protoName = String(c.metadata.type).toUpperCase().replace(/\/.*$/, "");
 
-                    const clientIp = c.metadata?.sourceIP || "未知IP";
                     const connStart = c.start ? new Date(c.start).getTime() : now;
 
                     const totalBytes = (c.upload || 0) + (c.download || 0);
@@ -3267,7 +3272,7 @@ function pollSingboxClashApiTraffic() {
                             if (!ipGeoCache.has(clientIp)) {
                                 lookupIpLocation(clientIp).then((loc) => {
                                     userAct.lastLocation = loc;
-                                }).catch(() => {});
+                                }).catch(() => { });
                             }
                         }
 
@@ -3319,10 +3324,10 @@ function pollSingboxClashApiTraffic() {
                 if (hasTrafficChanges) {
                     triggerDebouncedSave();
                 }
-            } catch (_) {}
+            } catch (_) { }
         });
     });
-    req.on("error", () => {});
+    req.on("error", () => { });
     req.setTimeout(3500, () => { req.destroy(); });
 }
 
@@ -3351,8 +3356,8 @@ function reloadV3Config() {
     if (process.env.SERVER_IP) DIRECT_IP = process.env.SERVER_IP;
     if (process.env.SERVER_PORT) SERVER_PORT = parseInt(process.env.SERVER_PORT, 10);
     loadUsers();
-loadSettings();
-loadClientDownloads();
+    loadSettings();
+    loadClientDownloads();
     safeReloadSingbox();
 }
 
@@ -3372,8 +3377,8 @@ function startV3Service(internalPort = 3003, dataDir, externalIp, externalPort, 
         } catch (_) { }
     }
     loadUsers();
-loadSettings();
-loadClientDownloads();
+    loadSettings();
+    loadClientDownloads();
     watchV3ConfigFiles();
 
     const serverExternal = http.createServer(handleHttpRequest);
@@ -3399,9 +3404,9 @@ loadClientDownloads();
 
     // 优雅包装 close 方法，确保热重载或停服时同步干净释放 8001 隧道端口
     const originalClose = serverExternal.close.bind(serverExternal);
-    serverExternal.close = function(cb) {
+    serverExternal.close = function (cb) {
         if (globalTunnelServer) {
-            try { globalTunnelServer.close(); } catch (_) {}
+            try { globalTunnelServer.close(); } catch (_) { }
             globalTunnelServer = null;
         }
         return originalClose(cb);
@@ -3467,7 +3472,7 @@ if (require.main === module) {
     function handleStandaloneExit() {
         console.log("[V3] 收到关闭信号，正在清理 Sing-box 核心进程...");
         if (singboxProcess) {
-            try { singboxProcess.kill("SIGTERM"); } catch (_) {}
+            try { singboxProcess.kill("SIGTERM"); } catch (_) { }
         }
         process.exit(0);
     }
