@@ -2841,6 +2841,14 @@ function handleHttpRequest(req, res) {
                     trafficUsed: u.trafficUsed
                 }));
 
+                // 主控端将统一的 Reality 密钥、证书、SS 密钥下发给副机，确保全集群密钥一致！
+                let tlsCertData = "";
+                let tlsKeyData = "";
+                try {
+                    if (fs.existsSync(TLS_CERT_PATH)) tlsCertData = fs.readFileSync(TLS_CERT_PATH, "utf8");
+                    if (fs.existsSync(TLS_KEY_PATH)) tlsKeyData = fs.readFileSync(TLS_KEY_PATH, "utf8");
+                } catch (_) { }
+
                 return sendJsonResponse(res, 200, {
                     success: true,
                     serverTime: Date.now(),
@@ -2848,6 +2856,18 @@ function handleHttpRequest(req, res) {
                     configVersion: node.configVersion || 1,
                     needReload: Boolean(node.needReload || (currentConfigVersion < (node.configVersion || 1))),
                     protocols: node.protocols,
+                    clusterSecrets: {
+                        reality: {
+                            privateKey: realityState.privateKey,
+                            publicKey: realityState.publicKey,
+                            shortId: realityState.shortId || "16888888",
+                            dest: REALITY_DEST,
+                            port: REALITY_PORT
+                        },
+                        ssSecret: ssSecretState,
+                        tlsCert: tlsCertData,
+                        tlsKey: tlsKeyData
+                    },
                     authorizedUsers: authorizedUsers
                 });
             } catch (err) {
@@ -2960,6 +2980,39 @@ function handleHttpRequest(req, res) {
                 }
             });
             return;
+        }
+
+        // 5. 主控一键批量下发和主机完全一样的协议与端口至所有分机
+        if (pathname === "/admin/api/cluster/sync-master-protocols" && req.method === "POST") {
+            ensureMasterNodeInCluster();
+            const master = clusterNodes.find(n => n.id === "master" || n.role === "master");
+            const masterProtos = (master && master.protocols) ? master.protocols : {
+                hy2: { enabled: ENABLE_HY2, port: PORT_HY2, hopPorts: HY2_HOP_PORTS },
+                tuic: { enabled: ENABLE_TUIC, port: PORT_TUIC },
+                reality: { enabled: ENABLE_REALITY, port: PORT_REALITY, dest: REALITY_DEST, pbk: realityState.publicKey, sid: realityState.shortId || "16888888" },
+                vlessTcp: { enabled: ENABLE_VLESS_TCP, port: PORT_VLESS_TCP },
+                trojanTcp: { enabled: ENABLE_TROJAN_TCP, port: PORT_TROJAN_TCP },
+                ss: { enabled: ENABLE_SS, port: PORT_SS }
+            };
+
+            let updatedCount = 0;
+            clusterNodes.forEach(node => {
+                if (node.role !== "master" && node.id !== "master") {
+                    node.protocols = JSON.parse(JSON.stringify(masterProtos));
+                    node.configVersion = (node.configVersion || 1) + 1;
+                    node.needReload = true;
+                    updatedCount++;
+                }
+            });
+
+            saveClusterNodes();
+            console.log(`[Cluster] 管理员已一键同步主机协议与端口配置至 ${updatedCount} 台副机，下发热重载指令`);
+            return sendJsonResponse(res, 200, {
+                success: true,
+                message: `成功将主机的全部协议与端口一键下发同步至 ${updatedCount} 台分机！`,
+                updatedCount: updatedCount,
+                masterProtocols: masterProtos
+            });
         }
 
         // 读取全局站点配置与全量协议/网络变量
@@ -4077,9 +4130,13 @@ if (require.main === module) {
         SERVER_PORT = port;
 
         console.log("=".repeat(65));
-        console.log(`🚀 V3 极轻量节点与多协议分发控制中枢 (${NODE_ROLE === "worker" ? "集群Worker分机模式" : "主控总控模式"})`);
-        console.log(`📡 自动识别端口: ${port} (来源: ${process.env.SERVER_PORT ? "翼龙面板环境变量" : "本地默认/配置"})`);
-        console.log(`🌍 自动探测公网: ${hostIp} (来源: ${process.env.SERVER_IP ? "指定配置" : "动态公网探测"})`);
+        console.log(`🚀 V3 极轻量节点与多协议分发控制中枢 (${NODE_ROLE === "worker" ? "集群 Worker 分机模式" : "主控总控模式"})`);
+        if (NODE_ROLE === "worker") {
+            console.log(`📡 运行模式: 分机轻量转发引擎 (业务代理端口由主控中心统一分配与动态下发)`);
+        } else {
+            console.log(`📡 主控 Web 监听端口: ${port} (来源: ${process.env.SERVER_PORT ? "环境变量/面板注入" : "默认配置"})`);
+        }
+        console.log(`🌍 自动探测公网 IP: ${hostIp} (来源: ${process.env.SERVER_IP ? "指定配置" : "动态公网探测"})`);
         console.log(`📁 数据持久目录: ${defaultDataDir}`);
         console.log("=".repeat(65));
 
@@ -4171,6 +4228,29 @@ if (require.main === module) {
                                 if (json.needReload || json.configVersion > workerConfigVersion) {
                                     console.log(`[Worker] 收到主控新配置 (v${json.configVersion})，正在热重载代理引擎...`);
                                     workerConfigVersion = json.configVersion;
+                                    if (json.clusterSecrets) {
+                                        const cs = json.clusterSecrets;
+                                        if (cs.reality && cs.reality.privateKey) {
+                                            realityState = {
+                                                privateKey: cs.reality.privateKey,
+                                                publicKey: cs.reality.publicKey,
+                                                shortId: cs.reality.shortId || "16888888"
+                                            };
+                                            if (cs.reality.dest) REALITY_DEST = cs.reality.dest;
+                                            if (cs.reality.port) REALITY_PORT = cs.reality.port;
+                                            try { fs.writeFileSync(REALITY_KEYS_FILE, JSON.stringify(realityState, null, 2), "utf8"); } catch (_) { }
+                                        }
+                                        if (cs.ssSecret) {
+                                            ssSecretState = cs.ssSecret;
+                                            try { fs.writeFileSync(SS_KEY_FILE, ssSecretState, "utf8"); } catch (_) { }
+                                        }
+                                        if (cs.tlsCert && cs.tlsKey) {
+                                            try {
+                                                fs.writeFileSync(TLS_CERT_PATH, cs.tlsCert, "utf8");
+                                                fs.writeFileSync(TLS_KEY_PATH, cs.tlsKey, "utf8");
+                                            } catch (_) { }
+                                        }
+                                    }
                                     if (json.protocols) {
                                         applyWorkerProtocols(json.protocols);
                                     }
@@ -4202,9 +4282,13 @@ if (require.main === module) {
         }
 
         function applyWorkerProtocols(p) {
+            const portsToAllow = [];
             if (p.hy2) {
                 ENABLE_HY2 = Boolean(p.hy2.enabled);
-                if (p.hy2.port) PORT_HY2 = p.hy2.port;
+                if (p.hy2.port) {
+                    PORT_HY2 = p.hy2.port;
+                    if (ENABLE_HY2) portsToAllow.push({ port: PORT_HY2, proto: "udp" });
+                }
                 if (p.hy2.hopPorts !== undefined) {
                     HY2_HOP_PORTS = String(p.hy2.hopPorts || "").trim();
                     ENABLE_HY2_HOP = Boolean(HY2_HOP_PORTS && HY2_HOP_PORTS.length > 0);
@@ -4213,23 +4297,51 @@ if (require.main === module) {
             }
             if (p.tuic) {
                 ENABLE_TUIC = Boolean(p.tuic.enabled);
-                if (p.tuic.port) PORT_TUIC = p.tuic.port;
+                if (p.tuic.port) {
+                    PORT_TUIC = p.tuic.port;
+                    if (ENABLE_TUIC) portsToAllow.push({ port: PORT_TUIC, proto: "udp" });
+                }
             }
             if (p.reality) {
                 ENABLE_REALITY = Boolean(p.reality.enabled);
-                if (p.reality.port) PORT_REALITY = p.reality.port;
+                if (p.reality.port) {
+                    PORT_REALITY = p.reality.port;
+                    if (ENABLE_REALITY) portsToAllow.push({ port: PORT_REALITY, proto: "tcp" });
+                }
             }
             if (p.vlessTcp) {
                 ENABLE_VLESS_TCP = Boolean(p.vlessTcp.enabled);
-                if (p.vlessTcp.port) PORT_VLESS_TCP = p.vlessTcp.port;
+                if (p.vlessTcp.port) {
+                    PORT_VLESS_TCP = p.vlessTcp.port;
+                    if (ENABLE_VLESS_TCP) portsToAllow.push({ port: PORT_VLESS_TCP, proto: "tcp" });
+                }
             }
             if (p.trojanTcp) {
                 ENABLE_TROJAN_TCP = Boolean(p.trojanTcp.enabled);
-                if (p.trojanTcp.port) PORT_TROJAN_TCP = p.trojanTcp.port;
+                if (p.trojanTcp.port) {
+                    PORT_TROJAN_TCP = p.trojanTcp.port;
+                    if (ENABLE_TROJAN_TCP) portsToAllow.push({ port: PORT_TROJAN_TCP, proto: "tcp" });
+                }
             }
             if (p.ss) {
                 ENABLE_SS = Boolean(p.ss.enabled);
-                if (p.ss.port) PORT_SS = p.ss.port;
+                if (p.ss.port) {
+                    PORT_SS = p.ss.port;
+                    if (ENABLE_SS) {
+                        portsToAllow.push({ port: PORT_SS, proto: "tcp" });
+                        portsToAllow.push({ port: PORT_SS, proto: "udp" });
+                    }
+                }
+            }
+
+            // 根据主控动态下发的实际业务端口动态放行防火墙 (主机设置什么端口就放行什么端口)
+            if (process.platform !== "win32" && portsToAllow.length > 0) {
+                portsToAllow.forEach(({ port, proto }) => {
+                    if (port > 0) {
+                        exec(`iptables -C INPUT -p ${proto} --dport ${port} -j ACCEPT 2>/dev/null || iptables -I INPUT -p ${proto} --dport ${port} -j ACCEPT 2>/dev/null`, () => {});
+                        exec(`ufw allow ${port}/${proto} 2>/dev/null`, () => {});
+                    }
+                });
             }
         }
 
