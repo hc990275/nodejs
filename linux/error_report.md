@@ -352,3 +352,15 @@
      - 配置保存后主控递增 configVersion，副机在下一次心跳中接收新配置并平滑热重载（SIGHUP），全程无需登录副机 SSH；
      - 主副机无需统一管理密码，仅凭安全握手密钥 NODE_SECRET 建立受控连接；
   5. **前端模板字面量安全隔离**：在 views/admin.js 中将客户端动态渲染函数重构为标准字符串拼接，杜绝与服务端的语法冲突。
+
+---
+
+### 第三十八号：服务端模板字符串二次求值导致客户端内联 JS 语法解析异常 (Unexpected string)
+- **问题现象**：访问管理后台 /admin 时，界面显示“0人”、“0活跃”、“0 B”，用户列表卡在“正在载入用户数据...”，控制台控制功能未渲染。
+- **原因剖析**：
+  1. 在 views/admin.js 的 HTML 拼接中，函数使用了 '... onclick="func(\'' + id + '\')"' 语法。因为整个 admin 页面是由 Node.js ES6 模板字符串包含的，在服务端生成 HTML 时，\' 被先行求值脱敏为单个 '，导致发往浏览器的 HTML 源码变成了 onclick="func('' + id + '')"，进而触发前端浏览器的 SyntaxError: Unexpected string，中断了整个 <script> 的加载执行；
+  2. deleteClusterNode 弹窗中的 \n 在服务端模板中被求值为物理硬换行，嵌入双引号 JS 字符串中触发语法错误。
+- **实施解决对策**：
+  1. **采用 HTML5 Dataset 属性解耦**：彻底摒弃在 inline onclick 中拼接引号和转义符，改为 data-node-id=" + id + " onclick="func(this.dataset.nodeId)"，完全杜绝转义解析问题；
+  2. **换行符二次转义**：确认对话框等字符串内部换行统一采用 \\n；
+  3. **Node VM 端到端编译验证**：建立前端脚本 AST 编译测试，自动拦截发往浏览器的任何 JS 语法隐患。
