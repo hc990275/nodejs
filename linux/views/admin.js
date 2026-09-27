@@ -2566,6 +2566,15 @@ return sendHtmlResponse(res, 200, `
                                     nodeTagHtml = '<span class="badge" style="background:#fdf6ec; color:#e6a23c; border:1px solid #faecd8; font-size:10px; padding:1px 5px; border-radius:4px; margin-top:3px; display:inline-flex; align-items:center; gap:2px; font-weight:600;" title="授权节点数: ' + assigned.length + ' 个">⚡ ' + assigned.length + ' 节点</span>';
                                 }
 
+                                // 计算流量百分比与胶囊进度条颜色
+                                var pct = 0;
+                                if (u.trafficLimit > 0) {
+                                    pct = Math.min(100, Math.round((u.trafficUsed / u.trafficLimit) * 1000) / 10);
+                                }
+                                var barColor = 'var(--el-primary)';
+                                if (pct >= 100) barColor = 'var(--el-danger)';
+                                else if (pct >= 85) barColor = 'var(--el-warning)';
+
                                 var row = '<tr>';
                                 row += '<td data-label="用户主体">';
                                 row +=   '<div class="user-cell">';
