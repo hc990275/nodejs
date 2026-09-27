@@ -1339,7 +1339,7 @@ return sendHtmlResponse(res, 200, `
                                 </div>
 
                                 <!-- Shadowsocks 2022 (AEAD 多用户独立密钥) -->
-                                <div style="background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px; padding:10px 12px;">
+                                <div style="background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px; padding:10px 12px; margin-bottom:12px;">
                                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
                                         <div>
                                             <span style="font-weight:600; font-size:12px; color:#2c3e50;">🔒 Shadowsocks 2022 (AEAD 多用户专属密钥模式)</span>
@@ -1354,7 +1354,39 @@ return sendHtmlResponse(res, 200, `
                                         <input type="number" id="env_PORT_SS" placeholder="端口如: 10805" />
                                     </div>
                                 </div>
+
+                                <!-- ===== 端口批量分配器 ===== -->
+                                <div style="background:#eef4ff; border:1px solid #c6d8ff; border-radius:6px; padding:12px 14px;">
+                                    <div style="font-weight:600; font-size:13px; color:#2c3e50; margin-bottom:6px;">🎯 端口批量分配器</div>
+                                    <div style="font-size:11px; color:#606266; margin-bottom:10px; line-height:1.6;">
+                                        定义一段连续端口池，系统将依序为已勾选的各协议各分配 1 个端口，<strong>剩余端口全部归 Hy2 端口跳跃 (HOP) 使用</strong>。
+                                    </div>
+                                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:8px;">
+                                        <div class="field-box" style="margin-bottom:0;">
+                                            <label style="font-size:11px;">起始端口</label>
+                                            <input type="number" id="assign_port_start" placeholder="如: 18800" min="1" max="65535" value="18800" />
+                                        </div>
+                                        <div class="field-box" style="margin-bottom:0;">
+                                            <label style="font-size:11px;">结束端口</label>
+                                            <input type="number" id="assign_port_end" placeholder="如: 18850" min="1" max="65535" value="18850" />
+                                        </div>
+                                    </div>
+                                    <div class="field-box" style="margin-bottom:8px;">
+                                        <label style="font-size:11px;">Hy2 主端口策略</label>
+                                        <select id="assign_hy2_mode" style="width:100%;">
+                                            <option value="first">取池首端口做主端口，其余给 Hop</option>
+                                            <option value="last">取池尾端口做主端口，其余给 Hop</option>
+                                            <option value="hop_only">全部端口仅做 Hop（不单设主端口）</option>
+                                        </select>
+                                    </div>
+                                    <button type="button" onclick="autoAssignPorts()"
+                                        style="width:100%; padding:9px 0; background:#409eff; color:#fff; border:none; border-radius:4px; font-size:13px; cursor:pointer; font-weight:600;">
+                                        ⚡ 一键分配
+                                    </button>
+                                    <div id="assign_preview" style="margin-top:10px; font-size:11px; color:#409eff; display:none; background:#fff; border:1px solid #c6d8ff; border-radius:4px; padding:8px 10px; line-height:1.9;"></div>
+                                </div>
                             </div>
+
 
                             <!-- TAB 3: 原生直连网络模式 -->
                             <div id="tab_content_net" style="display:none;">
@@ -1668,6 +1700,110 @@ return sendHtmlResponse(res, 200, `
                                 });
                             }
                         });
+                    }
+
+                    // ===== 端口批量分配器核心逻辑 =====
+                    function autoAssignPorts() {
+                        const startPort = parseInt(document.getElementById('assign_port_start').value, 10);
+                        const endPort   = parseInt(document.getElementById('assign_port_end').value, 10);
+                        const mode      = document.getElementById('assign_hy2_mode').value;
+                        const preview   = document.getElementById('assign_preview');
+
+                        if (!startPort || !endPort || startPort >= endPort || startPort < 1 || endPort > 65535) {
+                            alert('请输入合法的端口范围（起始端口 < 结束端口，且在 1-65535 之间）');
+                            return;
+                        }
+
+                        // 构建完整端口池（含首尾）
+                        const pool = [];
+                        for (let p = startPort; p <= endPort; p++) pool.push(p);
+
+                        // 已勾选的非 Hy2 协议列表（有序）
+                        const protocols = [
+                            { chk: 'env_ENABLE_TUIC',       port: 'env_PORT_TUIC',       label: 'TUIC v5' },
+                            { chk: 'env_ENABLE_REALITY',    port: 'env_PORT_REALITY',     label: 'VLESS Reality' },
+                            { chk: 'env_ENABLE_VLESS_TCP',  port: 'env_PORT_VLESS_TCP',   label: 'VLESS-TCP' },
+                            { chk: 'env_ENABLE_TROJAN_TCP', port: 'env_PORT_TROJAN_TCP',  label: 'Trojan-TCP' },
+                            { chk: 'env_ENABLE_SS',         port: 'env_PORT_SS',          label: 'Shadowsocks' }
+                        ].filter(p => {
+                            const el = document.getElementById(p.chk);
+                            return el && el.checked;
+                        });
+
+                        const needed = protocols.length + (mode !== 'hop_only' ? 1 : 0);
+                        if (pool.length < needed) {
+                            alert('端口池共 ' + pool.length + ' 个端口，但需要至少 ' + needed + ' 个（' + protocols.length + ' 个协议' + (mode !== 'hop_only' ? ' + Hy2 主端口' : '') + '）。请扩大端口范围。');
+                            return;
+                        }
+
+                        let remaining = [...pool];
+                        const assigned = {}; // portId -> port
+                        let hy2Main = 0;
+
+                        // 1. 按策略先确定 Hy2 主端口
+                        if (mode === 'first') {
+                            hy2Main = remaining.shift();
+                        } else if (mode === 'last') {
+                            hy2Main = remaining.pop();
+                        }
+                        // mode === 'hop_only': hy2Main 不设置
+
+                        // 2. 为各协议顺序分配
+                        for (const proto of protocols) {
+                            assigned[proto.port] = remaining.shift();
+                        }
+
+                        // 3. 剩余全部归 Hy2 HOP
+                        const hopPorts = remaining;
+                        let hopRange = '';
+                        if (hopPorts.length > 0) {
+                            // 合并连续段（如 18803-18850）
+                            const ranges = [];
+                            let segStart = hopPorts[0], segEnd = hopPorts[0];
+                            for (let i = 1; i < hopPorts.length; i++) {
+                                if (hopPorts[i] === segEnd + 1) {
+                                    segEnd = hopPorts[i];
+                                } else {
+                                    ranges.push(segStart === segEnd ? String(segStart) : (segStart + '-' + segEnd));
+                                    segStart = segEnd = hopPorts[i];
+                                }
+                            }
+                            ranges.push(segStart === segEnd ? String(segStart) : (segStart + '-' + segEnd));
+                            hopRange = ranges.join(',');
+                        }
+
+                        // 4. 写入各端口字段
+                        const setField = (id, val) => {
+                            const el = document.getElementById(id);
+                            if (el) el.value = val || '';
+                        };
+                        if (mode !== 'hop_only') {
+                            setField('env_PORT_HY2', hy2Main);
+                            // 确保 Hy2 被启用
+                            const hy2Chk = document.getElementById('env_ENABLE_HY2');
+                            if (hy2Chk) hy2Chk.checked = true;
+                        }
+                        setField('env_HY2_HOP_PORTS', hopRange);
+
+                        for (const proto of protocols) {
+                            setField(proto.port, assigned[proto.port]);
+                        }
+
+                        // 5. 生成预览
+                        let lines = ['<strong>✅ 分配结果预览：</strong>'];
+                        if (mode !== 'hop_only') {
+                            lines.push('🚀 Hy2 主端口 → <strong>' + hy2Main + '</strong>');
+                        }
+                        for (const proto of protocols) {
+                            lines.push('📌 ' + proto.label + ' → <strong>' + assigned[proto.port] + '</strong>');
+                        }
+                        if (hopRange) {
+                            lines.push('🔀 Hy2 HOP 跳跃范围 → <strong>' + hopRange + '</strong>（共 ' + hopPorts.length + ' 个端口）');
+                        } else {
+                            lines.push('⚠️ 无剩余端口可用于 Hy2 HOP，建议扩大端口范围');
+                        }
+                        preview.innerHTML = lines.join('<br>');
+                        preview.style.display = 'block';
                     }
 
                     async function openSettingsModal() {
