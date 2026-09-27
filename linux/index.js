@@ -2765,6 +2765,7 @@ function handleHttpRequest(req, res) {
 
                 const validSecret = CLUSTER_SECRET || ADMIN_TOKEN;
                 if (!secret || String(secret).trim() !== String(validSecret).trim()) {
+                    console.warn(`[Cluster] 副机心跳鉴权未通过! 上报 secret: '${secret}', 主控期望: '${validSecret}'`);
                     return sendJsonResponse(res, 401, { error: "集群密钥鉴权失败" });
                 }
 
@@ -4093,8 +4094,9 @@ if (require.main === module) {
     // 集群 Worker 分机轻量守护引擎
     function startWorkerMode(port, hostIp) {
         let workerConfigVersion = 0;
+        let workerHeartbeatOkLogged = 0;
         const workerNodeId = (process.env.NODE_ID || crypto.createHash("md5").update(hostIp + ":" + port).digest("hex").slice(0, 12));
-        const effectiveName = NODE_NAME || getEffectiveServerLocation();
+        const effectiveName = (process.env.NODE_NAME || SERVER_LOCATION || getEffectiveServerLocation());
 
         console.log(`[Worker] 分机节点 ID: ${workerNodeId}`);
         console.log(`[Worker] 主控地址: ${CLUSTER_MASTER || "未配置 (请在 .env 中设置 CLUSTER_MASTER)"}`);
@@ -4144,17 +4146,28 @@ if (require.main === module) {
                     path: parsedUrl.pathname + parsedUrl.search,
                     method: "POST",
                     headers: {
+                        "Host": parsedUrl.host,
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                         "Content-Type": "application/json",
                         "Content-Length": Buffer.byteLength(payload)
                     },
-                    timeout: 5000
+                    rejectUnauthorized: false,
+                    timeout: 8000
                 }, (res) => {
                     let data = "";
                     res.on("data", c => data += c);
                     res.on("end", () => {
+                        if (res.statusCode !== 200) {
+                            console.warn(`[Worker] 心跳被主控拒绝: HTTP ${res.statusCode} ${data}`);
+                            return;
+                        }
                         try {
                             const json = JSON.parse(data);
                             if (json.success) {
+                                if (!workerHeartbeatOkLogged || Date.now() - workerHeartbeatOkLogged > 60000) {
+                                    console.log(`[Worker] 心跳上报成功，副机节点在线中 (主控已确认)`);
+                                    workerHeartbeatOkLogged = Date.now();
+                                }
                                 if (json.needReload || json.configVersion > workerConfigVersion) {
                                     console.log(`[Worker] 收到主控新配置 (v${json.configVersion})，正在热重载代理引擎...`);
                                     workerConfigVersion = json.configVersion;
