@@ -994,71 +994,137 @@ return sendHtmlResponse(res, 200, `
                         100% { box-shadow: 0 0 0 0 rgba(245, 108, 108, 0); }
                     }
 
-                    /* 移动端手机界面媒体查询自适应 */
+                    /* 移动端手机界面媒体查询深度自适应 (Mobile First Responsive) */
                     @media (max-width: 768px) {
-                        body { padding: 12px; }
+                        body { padding: 6px !important; }
+                        .container { padding: 0 !important; }
                         .header {
-                            flex-direction: column;
-                            align-items: flex-start;
-                            gap: 12px;
-                            padding: 14px 16px;
+                            flex-direction: column !important;
+                            align-items: flex-start !important;
+                            gap: 10px !important;
+                            padding: 12px 14px !important;
                         }
                         .header-right {
-                            width: 100%;
-                            justify-content: flex-end;
+                            width: 100% !important;
+                            display: flex !important;
+                            justify-content: space-between !important;
+                            align-items: center !important;
                         }
                         .stats-grid {
-                            grid-template-columns: repeat(2, 1fr);
-                            gap: 10px;
-                            margin-bottom: 12px;
+                            grid-template-columns: 1fr !important;
+                            gap: 8px !important;
+                            margin-bottom: 12px !important;
                         }
                         .stat-card {
-                            padding: 12px 14px;
+                            padding: 12px 14px !important;
                         }
                         .stat-value {
-                            font-size: 18px;
+                            font-size: 20px !important;
                         }
                         .panel {
-                            padding: 14px 12px;
+                            padding: 12px 10px !important;
                         }
                         .panel-header {
-                            flex-direction: column;
-                            align-items: flex-start;
-                            gap: 10px;
+                            flex-direction: column !important;
+                            align-items: stretch !important;
+                            gap: 10px !important;
                         }
                         .panel-header .btn-primary {
-                            width: 100%;
+                            width: 100% !important;
                         }
                         .table-toolbar {
-                            flex-direction: column;
-                            align-items: stretch;
+                            flex-direction: column !important;
+                            align-items: stretch !important;
+                            gap: 8px !important;
                         }
-                        .toolbar-left {
-                            flex-direction: column;
-                            align-items: stretch;
+                        .toolbar-left, .toolbar-right {
+                            flex-direction: column !important;
+                            align-items: stretch !important;
+                            width: 100% !important;
+                            gap: 8px !important;
                         }
                         .search-input-wrap {
-                            max-width: 100%;
-                            width: 100%;
+                            max-width: 100% !important;
+                            width: 100% !important;
                         }
                         .sort-select, .btn-sort-dir {
-                            width: 100%;
-                            justify-content: center;
+                            width: 100% !important;
+                            justify-content: center !important;
+                        }
+                        .table-wrapper {
+                            overflow-x: auto !important;
+                            -webkit-overflow-scrolling: touch !important;
+                            border: 1px solid var(--el-border) !important;
+                            border-radius: 4px !important;
+                            margin-bottom: 12px !important;
+                        }
+                        .table-wrapper table {
+                            min-width: 720px !important;
                         }
                         .pagination-container {
-                            flex-direction: column;
-                            align-items: center;
-                            gap: 10px;
+                            flex-direction: column !important;
+                            align-items: center !important;
+                            gap: 10px !important;
+                        }
+                        .pagination-controls {
+                            flex-wrap: wrap !important;
+                            justify-content: center !important;
                         }
                         .mobile-tip {
                             display: block !important;
                             font-size: 11px;
                             color: var(--el-text-secondary);
                             margin-bottom: 8px;
+                            background: #fdf6ec;
+                            border: 1px solid #faecd8;
+                            padding: 4px 8px;
+                            border-radius: 4px;
+                            text-align: center;
+                        }
+                        /* 模态框全套移动端自适应 */
+                        .modal-mask {
+                            padding: 6px !important;
+                            align-items: flex-end !important;
                         }
                         .modal {
-                            padding: 18px 16px;
-                            max-width: 95vw;
+                            padding: 18px 14px !important;
+                            max-width: 100% !important;
+                            width: 100% !important;
+                            max-height: 92vh !important;
+                            border-radius: 12px 12px 0 0 !important;
+                            box-sizing: border-box !important;
+                        }
+                        .modal-tabs {
+                            overflow-x: auto !important;
+                            flex-wrap: nowrap !important;
+                            -webkit-overflow-scrolling: touch !important;
+                            padding-bottom: 2px !important;
+                        }
+                        .modal-tabs .tab-btn {
+                            flex-shrink: 0 !important;
+                            padding: 6px 10px !important;
+                            font-size: 12px !important;
+                            white-space: nowrap !important;
+                        }
+                        .form-responsive-row {
+                            flex-direction: column !important;
+                            gap: 8px !important;
+                        }
+                        .client-download-box {
+                            flex-direction: column !important;
+                            align-items: stretch !important;
+                            gap: 10px !important;
+                        }
+                        .client-download-box button {
+                            width: 100% !important;
+                        }
+                        .modal-footer {
+                            flex-direction: column-reverse !important;
+                            gap: 8px !important;
+                        }
+                        .modal-footer button {
+                            width: 100% !important;
+                            padding: 10px 0 !important;
                         }
                     }
                     .mobile-tip { display: none; }
@@ -1194,7 +1260,7 @@ return sendHtmlResponse(res, 200, `
                             <h4>⚙️ 节点集群与参数控制中心</h4>
                             
                             <!-- 选项卡切换器 -->
-                            <div style="display:flex; border-bottom:2px solid #ebeef5; margin-bottom:16px; gap:6px;">
+                            <div class="modal-tabs" style="display:flex; border-bottom:2px solid #ebeef5; margin-bottom:16px; gap:6px; overflow-x:auto;">
                                 <button type="button" class="tab-btn active" id="tab_btn_ops" onclick="switchSettingsTab('ops')" style="padding:8px 14px; background:none; border:none; border-bottom:2px solid var(--el-primary); font-weight:600; color:var(--el-primary); cursor:pointer; font-size:13px;">🏢 运营与注册</button>
                                 <button type="button" class="tab-btn" id="tab_btn_proto" onclick="switchSettingsTab('proto')" style="padding:8px 14px; background:none; border:none; border-bottom:2px solid transparent; font-weight:500; color:var(--el-text-regular); cursor:pointer; font-size:13px;">⚡ 节点协议与端口</button>
                                 <button type="button" class="tab-btn" id="tab_btn_net" onclick="switchSettingsTab('net')" style="padding:8px 14px; background:none; border:none; border-bottom:2px solid transparent; font-weight:500; color:var(--el-text-regular); cursor:pointer; font-size:13px;">🌐 网络与公网IP</button>
@@ -1204,8 +1270,8 @@ return sendHtmlResponse(res, 200, `
                             <div id="tab_content_ops">
                                 <div class="field-box">
                                     <label>推荐客户端下载 (FlClash 各平台全适配)</label>
-                                    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; padding:8px 12px; background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px;">
-                                        <div style="display:flex; gap:16px;">
+                                    <div class="client-download-box" style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; padding:8px 12px; background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px;">
+                                        <div style="display:flex; gap:16px; flex-wrap:wrap;">
                                             <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
                                                 <input type="radio" name="set_enableClientDownload" value="1" id="set_enableClientDownload_1" />
                                                 <span style="color:var(--el-success); font-weight:600;">开启推荐客户端</span>
@@ -1222,7 +1288,7 @@ return sendHtmlResponse(res, 200, `
                                 </div>
                                 <div class="field-box">
                                     <label>开放游客自主注册</label>
-                                    <div style="display:flex; gap:16px; margin-top:8px; padding:8px 12px; background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px;">
+                                    <div style="display:flex; gap:16px; margin-top:8px; padding:8px 12px; background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px; flex-wrap:wrap;">
                                         <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
                                             <input type="radio" name="set_allowRegister" value="1" id="set_allowRegister_1" />
                                             <span style="color:var(--el-success); font-weight:600;">允许自主注册</span>
@@ -1233,7 +1299,7 @@ return sendHtmlResponse(res, 200, `
                                         </label>
                                     </div>
                                 </div>
-                                <div style="display:flex; gap:12px;">
+                                <div class="form-responsive-row" style="display:flex; gap:12px;">
                                     <div class="field-box" style="flex:1;">
                                         <label>注册试用天数 (天)</label>
                                         <input type="number" id="set_defaultDays" placeholder="例如: 3" value="3" min="0" />
@@ -1252,11 +1318,11 @@ return sendHtmlResponse(res, 200, `
                                 </div>
                                 <div class="field-box">
                                     <label>站长联系方式展示文案</label>
-                                    <input type="text" id="set_contactText" placeholder="例如: Telegram: @mybot 或 微信: abc" />
+                                    <input type="text" id="set_contactText" placeholder="例如: Telegram: @robberer" value="Telegram: @robberer" />
                                 </div>
                                 <div class="field-box">
                                     <label>站长联系直达链接 (URL)</label>
-                                    <input type="text" id="set_contactUrl" placeholder="例如: https://t.me/mybot (无跳转可留空)" />
+                                    <input type="text" id="set_contactUrl" placeholder="例如: https://t.me/s5gydl" value="https://t.me/s5gydl" />
                                 </div>
                             </div>
 
@@ -1841,10 +1907,10 @@ return sendHtmlResponse(res, 200, `
                         if (tUnitSelect) tUnitSelect.value = tUnit;
 
                         const cText = document.getElementById("set_contactText");
-                        if (cText) cText.value = s.contactText || "";
+                        if (cText) cText.value = (s.contactText && !String(s.contactText).includes("abcai")) ? s.contactText : "Telegram: @robberer";
 
                         const cUrl = document.getElementById("set_contactUrl");
-                        if (cUrl) cUrl.value = s.contactUrl || "";
+                        if (cUrl) cUrl.value = (s.contactUrl && !String(s.contactUrl).includes("abcai")) ? s.contactUrl : "https://t.me/s5gydl";
 
                         const cd1 = document.getElementById("set_enableClientDownload_1");
                         const cd0 = document.getElementById("set_enableClientDownload_0");
