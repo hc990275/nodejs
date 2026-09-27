@@ -3697,7 +3697,7 @@ return sendHtmlResponse(res, 200, `
                     }
 
                     async function syncMasterProtocolsToWorkers() {
-                        if (!confirm("⚠️ 确定要将【主控机】当前的全部协议开关与端口一键下发同步给所有副机吗？\n\n同步后所有分机的协议与端口将与主控完全一致，并在 5 秒心跳内全自动热重载生效！")) return;
+                        if (!confirm("⚠️ 确定要将【主控机】当前的全部协议开关与端口一键下发同步给所有副机吗？\\n\\n同步后所有分机的协议与端口将与主控完全一致，并在 5 秒心跳内全自动热重载生效！")) return;
                         const token = getAdminToken();
                         const basePrefix = location.pathname.startsWith("/v3") ? "/v3" : "";
                         try {
