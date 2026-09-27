@@ -24,7 +24,7 @@ if ! command -v node >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -y && apt-get install -y --no-install-recommends nodejs npm curl tar ca-certificates openssl iptables procps
   elif [ "$OS_ID" = "alpine" ]; then
-    apk update && apk add --no-cache nodejs npm curl tar ca-certificates openssl iptables
+    apk update && apk add --no-cache nodejs npm curl tar ca-certificates openssl iptables bash
   elif [ "$OS_ID" = "centos" ] || [ "$OS_ID" = "rhel" ] || [ "$OS_ID" = "rocky" ] || [ "$OS_ID" = "almalinux" ] || [ "$OS_ID" = "fedora" ]; then
     (command -v dnf >/dev/null 2>&1 && dnf install -y nodejs npm curl tar ca-certificates openssl iptables procps) || yum install -y nodejs npm curl tar ca-certificates openssl iptables procps
   elif [ "$OS_ID" = "arch" ] || [ "$OS_ID" = "manjaro" ]; then
@@ -35,7 +35,7 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 # 3. 检查基础工具链
-for cmd in curl tar openssl iptables; do
+for cmd in curl tar openssl iptables bash; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo "[Adaptive-Linux] 正在补充安装 $cmd..."
     if [ "$OS_ID" = "ubuntu" ] || [ "$OS_ID" = "debian" ]; then
