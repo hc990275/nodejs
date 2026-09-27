@@ -23,6 +23,7 @@ const fs = require("fs");
 const path = require("path");
 const { exec, execSync, spawn } = require("child_process");
 const crypto = require("crypto");
+const dgram = require("dgram");
 
 // ==============================================================================
 // 🔑【置顶最优先】: 在所有变量声明前同步读取 .env，确保 SERVER_PORT 等覆盖面板注入值
@@ -99,7 +100,7 @@ let ENABLE_TUIC = process.env.ENABLE_TUIC !== "false";
 // VLESS-Reality (基于 TCP/TLS 偷跑官方大站证书，抗审查防封锁顶级) — 未配置时为 0 (禁用)
 let PORT_REALITY = parseInt(process.env.PORT_REALITY || "0", 10);
 let ENABLE_REALITY = process.env.ENABLE_REALITY !== "false";
-let REALITY_DEST = process.env.REALITY_DEST || "addons.mozilla.org";
+let REALITY_DEST = process.env.REALITY_DEST || "www.apple.com";
 let REALITY_PORT = parseInt(process.env.REALITY_PORT || "443", 10);
 
 // VLESS-TCP 原生纯直连 (无 WS 封装开销，延迟极低) — 未配置时为 0 (禁用)
@@ -301,6 +302,130 @@ function appendTunnelLog(msg) {
 const activeSessions = new Map();       // user session: token -> username
 const adminSessions = new Map();        // admin session: token -> expireTime
 const registeringUsers = new Map();     // 防并发注册击穿锁: username.toLowerCase() -> timestamp
+
+const clusterWorkerVisitorsMap = new Map(); // 分布式副机在线访客连接池: nodeId -> Array<Visitor>
+let workerNodeTotalTraffic = 0;              // 分机业务累计流量 (字节)
+let workerPortWarnings = [];                 // 端口冲突主动探针告警日志
+
+// ==================== 端口冲突主动探针与智能自愈避让引擎 ====================
+function getPortOccupantPid(port, proto = "tcp") {
+    if (process.platform !== "linux") return null;
+    try {
+        try {
+            const out = execSync(`ss -lptn 'sport = :${port}' 2>/dev/null`, { timeout: 800 }).toString();
+            const m = out.match(/pid=(\d+)/);
+            if (m) return parseInt(m[1], 10);
+        } catch (_) {}
+        try {
+            const out = execSync(`fuser ${port}/${proto} 2>/dev/null`, { timeout: 800 }).toString().trim();
+            const p = parseInt(out, 10);
+            if (!isNaN(p) && p > 0) return p;
+        } catch (_) {}
+    } catch (_) {}
+    return null;
+}
+
+function checkPortFree(port, proto = "tcp") {
+    return new Promise((resolve) => {
+        if (!port || port <= 0 || port > 65535) return resolve(false);
+        if (proto === "udp") {
+            let resolved = false;
+            let socket = null;
+            try {
+                socket = dgram.createSocket("udp4");
+                socket.once("error", () => {
+                    if (!resolved) { resolved = true; resolve(false); }
+                });
+                socket.bind(port, "0.0.0.0", () => {
+                    if (!resolved) {
+                        resolved = true;
+                        try { socket.close(() => resolve(true)); } catch (_) { resolve(true); }
+                    }
+                });
+            } catch (_) {
+                if (!resolved) { resolved = true; resolve(false); }
+            }
+            setTimeout(() => {
+                if (!resolved) {
+                    resolved = true;
+                    if (socket) try { socket.close(); } catch (_) {}
+                    resolve(false);
+                }
+            }, 300);
+        } else {
+            let resolved = false;
+            let server = null;
+            try {
+                server = net.createServer();
+                server.once("error", () => {
+                    if (!resolved) { resolved = true; resolve(false); }
+                });
+                server.once("listening", () => {
+                    if (!resolved) {
+                        resolved = true;
+                        server.close(() => resolve(true));
+                    }
+                });
+                server.listen(port, "0.0.0.0");
+            } catch (_) {
+                if (!resolved) { resolved = true; resolve(false); }
+            }
+            setTimeout(() => {
+                if (!resolved) {
+                    resolved = true;
+                    if (server) try { server.close(); } catch (_) {}
+                    resolve(false);
+                }
+            }, 300);
+        }
+    });
+}
+
+async function resolveSafePort(targetPort, proto = "tcp", serviceName = "服务", currentRunningPort = 0) {
+    const origPort = parseInt(targetPort, 10);
+    if (!origPort || origPort <= 0) return { port: origPort, conflicted: false };
+
+    const selfPid = (singboxProcess && !singboxProcess.killed) ? singboxProcess.pid : null;
+    if (currentRunningPort && origPort === currentRunningPort && selfPid) {
+        return { port: origPort, conflicted: false };
+    }
+
+    const isFree = await checkPortFree(origPort, proto);
+    if (isFree) {
+        return { port: origPort, conflicted: false };
+    }
+
+    if (selfPid) {
+        const occPid = getPortOccupantPid(origPort, proto);
+        if (occPid && occPid === selfPid) {
+            return { port: origPort, conflicted: false };
+        }
+    }
+
+    let candidate = origPort + 1;
+    let foundPort = origPort;
+    let found = false;
+
+    for (let i = 0; i < 100; i++) {
+        const free = await checkPortFree(candidate, proto);
+        if (free) {
+            foundPort = candidate;
+            found = true;
+            break;
+        }
+        candidate++;
+    }
+
+    if (found) {
+        const warnMsg = `[端口冲突探针] ${serviceName} 目标端口 ${origPort} (${proto.toUpperCase()}) 已被其他系统进程占用，已自动避让递增至 ${foundPort}！`;
+        console.warn(warnMsg);
+        return { port: foundPort, originalPort: origPort, conflicted: true, warning: warnMsg };
+    } else {
+        const warnMsg = `[端口冲突探针] ${serviceName} 目标端口 ${origPort} 冲突且递增探测未找到空闲端口！`;
+        console.warn(warnMsg);
+        return { port: origPort, originalPort: origPort, conflicted: true, warning: warnMsg };
+    }
+}
 
 let isCrawlingDownloads = false;
 let lastCrawlTimestamp = 0;
@@ -760,6 +885,7 @@ function initClusterHeartbeatMonitor() {
             if (node.role !== "master") {
                 if (node.status === "online" && (now - (node.lastHeartbeat || 0) > 30000)) {
                     node.status = "offline";
+                    clusterWorkerVisitorsMap.delete(node.id);
                     changed = true;
                     console.log(`[Cluster] 警告：副机节点 [${node.name || node.id}] 已超过 30 秒未上报心跳，自动标记为离线`);
                 }
@@ -1872,14 +1998,55 @@ function getStructuredNodesForUser(user) {
 
         const wPrefix = worker.name || "集群分机";
         const wIp = worker.ip || DIRECT_IP;
+        const wPort = worker.port || SERVER_PORT;
         const p = worker.protocols || {};
 
+        // 1. 分机专属 WebSocket 直连三剑客 (直连-VLESS / 直连-VMess / 直连-Trojan)
+        nodes.push({
+            name: `${wPrefix} | 直连-VLESS${nameSuffix}`,
+            type: "vless",
+            server: wIp,
+            port: wPort,
+            uuid: uuid,
+            tls: false,
+            network: "ws",
+            wsPath: vlessPath,
+            wsHeaders: { Host: wIp }
+        });
+
+        nodes.push({
+            name: `${wPrefix} | 直连-VMess${nameSuffix}`,
+            type: "vmess",
+            server: wIp,
+            port: wPort,
+            uuid: uuid,
+            alterId: 0,
+            cipher: "auto",
+            tls: false,
+            network: "ws",
+            wsPath: vmessPath,
+            wsHeaders: { Host: wIp }
+        });
+
+        nodes.push({
+            name: `${wPrefix} | 直连-Trojan${nameSuffix}`,
+            type: "trojan",
+            server: wIp,
+            port: wPort,
+            password: uuid,
+            tls: false,
+            network: "ws",
+            wsPath: trojanPath,
+            wsHeaders: { Host: wIp }
+        });
+
         if (p.reality && p.reality.enabled) {
+            const rPort = p.reality.port || PORT_REALITY || 18802;
             nodes.push({
-                name: `${wPrefix} | Reality抗封[${p.reality.port || 18802}]${nameSuffix}`,
+                name: `${wPrefix} | Reality抗封[${rPort}]${nameSuffix}`,
                 type: "vless-reality",
                 server: wIp,
-                port: p.reality.port || 18802,
+                port: rPort,
                 uuid: uuid,
                 sni: p.reality.dest || REALITY_DEST,
                 pbk: p.reality.pbk || realityState.publicKey,
@@ -1890,11 +2057,12 @@ function getStructuredNodesForUser(user) {
         }
 
         if (p.hy2 && p.hy2.enabled) {
+            const hPort = p.hy2.port || PORT_HY2 || 18800;
             nodes.push({
-                name: `${wPrefix} | Hy2极速[${p.hy2.port || 18800}]${nameSuffix}`,
+                name: `${wPrefix} | Hy2极速[${hPort}]${nameSuffix}`,
                 type: "hysteria2",
                 server: wIp,
-                port: p.hy2.port || 18800,
+                port: hPort,
                 password: uuid,
                 sni: REALITY_DEST,
                 skipCertVerify: true,
@@ -1907,7 +2075,7 @@ function getStructuredNodesForUser(user) {
                     name: `${wPrefix} | Hy2跳跃[${hopPortsStr}]${nameSuffix}`,
                     type: "hysteria2-hop",
                     server: wIp,
-                    port: parseInt(hopPortsStr.split("-")[0], 10) || (p.hy2.port || 18800),
+                    port: parseInt(hopPortsStr.split("-")[0], 10) || hPort,
                     ports: hopPortsStr,
                     password: uuid,
                     sni: REALITY_DEST,
@@ -1919,11 +2087,12 @@ function getStructuredNodesForUser(user) {
         }
 
         if (p.tuic && p.tuic.enabled) {
+            const tPort = p.tuic.port || PORT_TUIC || 18801;
             nodes.push({
-                name: `${wPrefix} | TUICv5[${p.tuic.port || 18801}]${nameSuffix}`,
+                name: `${wPrefix} | TUICv5[${tPort}]${nameSuffix}`,
                 type: "tuic",
                 server: wIp,
-                port: p.tuic.port || 18801,
+                port: tPort,
                 uuid: uuid,
                 password: uuid,
                 sni: REALITY_DEST,
@@ -1934,11 +2103,12 @@ function getStructuredNodesForUser(user) {
         }
 
         if (p.vlessTcp && p.vlessTcp.enabled) {
+            const vtPort = p.vlessTcp.port || PORT_VLESS_TCP || 18803;
             nodes.push({
-                name: `${wPrefix} | VLESS纯直连[${p.vlessTcp.port || 18803}]${nameSuffix}`,
+                name: `${wPrefix} | VLESS纯直连[${vtPort}]${nameSuffix}`,
                 type: "vless-tcp",
                 server: wIp,
-                port: p.vlessTcp.port || 18803,
+                port: vtPort,
                 uuid: uuid,
                 network: "tcp",
                 tls: false,
@@ -1947,11 +2117,12 @@ function getStructuredNodesForUser(user) {
         }
 
         if (p.trojanTcp && p.trojanTcp.enabled) {
+            const ttPort = p.trojanTcp.port || PORT_TROJAN_TCP || 18804;
             nodes.push({
-                name: `${wPrefix} | Trojan直连[${p.trojanTcp.port || 18804}]${nameSuffix}`,
+                name: `${wPrefix} | Trojan直连[${ttPort}]${nameSuffix}`,
                 type: "trojan-tcp",
                 server: wIp,
-                port: p.trojanTcp.port || 18804,
+                port: ttPort,
                 password: uuid,
                 network: "tcp",
                 tls: false,
@@ -1960,12 +2131,13 @@ function getStructuredNodesForUser(user) {
         }
 
         if (p.ss && p.ss.enabled && ssSecretState) {
+            const sPort = p.ss.port || PORT_SS || 18805;
             const userSsKey = getUserSsKey(user.uuid);
             nodes.push({
-                name: `${wPrefix} | SS2022[${p.ss.port || 18805}]${nameSuffix}`,
+                name: `${wPrefix} | SS2022[${sPort}]${nameSuffix}`,
                 type: "shadowsocks",
                 server: wIp,
-                port: p.ss.port || 18805,
+                port: sPort,
                 method: SS_METHOD,
                 password: `${ssSecretState}:${userSsKey}`,
                 udp: true
@@ -2761,7 +2933,7 @@ function handleHttpRequest(req, res) {
         req.on("end", () => {
             try {
                 const data = JSON.parse(body || "{}");
-                const { secret, nodeId, name, ip, trafficDeltas, currentConfigVersion, protocols } = data;
+                const { secret, nodeId, name, ip, port, trafficDeltas, currentConfigVersion, protocols } = data;
 
                 const validSecret = CLUSTER_SECRET || ADMIN_TOKEN;
                 if (!secret || String(secret).trim() !== String(validSecret).trim()) {
@@ -2776,6 +2948,7 @@ function handleHttpRequest(req, res) {
                 let node = clusterNodes.find(n => n.id === nodeId);
                 const reqIp = (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.socket.remoteAddress || "";
                 const effectiveIp = (ip && ip.trim()) ? ip.trim() : (reqIp.replace(/^.*:/, "") || DIRECT_IP);
+                const effectivePort = parseInt(port || "19900", 10) || SERVER_PORT;
 
                 if (!node) {
                     node = {
@@ -2783,6 +2956,7 @@ function handleHttpRequest(req, res) {
                         role: "worker",
                         name: name || `集群分机-${nodeId.slice(0, 6)}`,
                         ip: effectiveIp,
+                        port: effectivePort,
                         status: "online",
                         lastHeartbeat: Date.now(),
                         trafficReported: 0,
@@ -2803,6 +2977,7 @@ function handleHttpRequest(req, res) {
                     node.status = "online";
                     node.lastHeartbeat = Date.now();
                     if (effectiveIp && effectiveIp !== "127.0.0.1") node.ip = effectiveIp;
+                    if (effectivePort) node.port = effectivePort;
                     if (name && (!node.name || node.name.startsWith("集群分机-"))) node.name = name;
                 }
 
@@ -2820,6 +2995,29 @@ function handleHttpRequest(req, res) {
                 }
                 if (usersChanged) {
                     saveUsers();
+                }
+
+                // 记录副机累计总业务流量
+                if (data.trafficTotal !== undefined && data.trafficTotal > 0) {
+                    node.trafficReported = Math.max(node.trafficReported || 0, data.trafficTotal);
+                }
+                node.trafficTotal = node.trafficReported || 0;
+
+                // 缓存副机当前实时在线访客连接池
+                if (Array.isArray(data.activeVisitors)) {
+                    clusterWorkerVisitorsMap.set(nodeId, data.activeVisitors);
+                }
+
+                // 记录副机端口冲突主动探针告警
+                if (Array.isArray(data.portWarnings) && data.portWarnings.length > 0) {
+                    node.portWarnings = data.portWarnings;
+                } else if (node.portWarnings) {
+                    delete node.portWarnings;
+                }
+
+                // 实时更新副机真实生效协议端口
+                if (protocols && typeof protocols === "object") {
+                    node.protocols = Object.assign({}, node.protocols, protocols);
                 }
 
                 if (node.needReload && currentConfigVersion >= node.configVersion) {
@@ -2892,6 +3090,21 @@ function handleHttpRequest(req, res) {
             const reqProto = req.headers["x-forwarded-proto"] || (req.connection && req.connection.encrypted ? "https" : "http");
             const masterUrl = `${reqProto}://${reqHost}`;
             const joinCommand = `(curl -fsSL ${masterUrl}/start-node.sh || wget -qO- ${masterUrl}/start-node.sh) | sh -s -- --master=${masterUrl} --secret=${CLUSTER_SECRET || ADMIN_TOKEN} --name="🇯🇵 日本02"`;
+
+            // 精确计算主控与分机节点的累计业务流量 (彻底杜绝 0 B 显示)
+            const totalUserTraffic = usersDatabase.reduce((sum, u) => sum + (u.trafficUsed || 0), 0);
+            const workerTrafficSum = clusterNodes.filter(n => n.role !== "master" && n.id !== "master").reduce((sum, n) => sum + (n.trafficReported || n.trafficTotal || 0), 0);
+
+            clusterNodes.forEach(n => {
+                if (n.role === "master" || n.id === "master") {
+                    let masterTraffic = totalUserTraffic - workerTrafficSum;
+                    if (masterTraffic <= 0 && totalUserTraffic > 0) masterTraffic = totalUserTraffic;
+                    n.trafficTotal = Math.max(0, masterTraffic);
+                    n.trafficReported = n.trafficTotal;
+                } else {
+                    n.trafficTotal = n.trafficReported || n.trafficTotal || 0;
+                }
+            });
 
             return sendJsonResponse(res, 200, {
                 success: true,
@@ -3051,7 +3264,7 @@ function handleHttpRequest(req, res) {
         if (pathname === "/admin/api/settings" && req.method === "POST") {
             let body = "";
             req.on("data", (c) => { body += c; });
-            req.on("end", () => {
+            req.on("end", async () => {
                 try {
                     const data = JSON.parse(body || "{}");
                     if (data.serverLocation !== undefined) {
@@ -3088,8 +3301,9 @@ function handleHttpRequest(req, res) {
                         siteSettings.defaultAssignedNodes = Array.isArray(data.defaultAssignedNodes) ? data.defaultAssignedNodes : ["*"];
                     }
 
-                    // 准备 .env 持久化更新字典
+                    // 准备 .env 持久化更新字典与端口探针告警记录
                     const envUpdates = {};
+                    const masterPortWarnings = [];
 
                     if (data.envSettings && typeof data.envSettings === "object") {
                         const env = data.envSettings;
@@ -3106,7 +3320,14 @@ function handleHttpRequest(req, res) {
                             envUpdates.ENABLE_HY2 = String(ENABLE_HY2);
                         }
                         if (env.PORT_HY2 !== undefined) {
-                            PORT_HY2 = Math.max(0, parseInt(env.PORT_HY2, 10) || 0);
+                            const p = Math.max(0, parseInt(env.PORT_HY2, 10) || 0);
+                            if (p > 0 && ENABLE_HY2) {
+                                const probed = await resolveSafePort(p, "udp", "主机 Hysteria 2", PORT_HY2);
+                                PORT_HY2 = probed.port;
+                                if (probed.conflicted) masterPortWarnings.push(probed.warning);
+                            } else {
+                                PORT_HY2 = p;
+                            }
                             envUpdates.PORT_HY2 = String(PORT_HY2);
                         }
                         if (env.ENABLE_HY2_HOP !== undefined) {
@@ -3124,7 +3345,14 @@ function handleHttpRequest(req, res) {
                             envUpdates.ENABLE_TUIC = String(ENABLE_TUIC);
                         }
                         if (env.PORT_TUIC !== undefined) {
-                            PORT_TUIC = Math.max(0, parseInt(env.PORT_TUIC, 10) || 0);
+                            const p = Math.max(0, parseInt(env.PORT_TUIC, 10) || 0);
+                            if (p > 0 && ENABLE_TUIC) {
+                                const probed = await resolveSafePort(p, "udp", "主机 TUIC v5", PORT_TUIC);
+                                PORT_TUIC = probed.port;
+                                if (probed.conflicted) masterPortWarnings.push(probed.warning);
+                            } else {
+                                PORT_TUIC = p;
+                            }
                             envUpdates.PORT_TUIC = String(PORT_TUIC);
                         }
 
@@ -3134,11 +3362,18 @@ function handleHttpRequest(req, res) {
                             envUpdates.ENABLE_REALITY = String(ENABLE_REALITY);
                         }
                         if (env.PORT_REALITY !== undefined) {
-                            PORT_REALITY = Math.max(0, parseInt(env.PORT_REALITY, 10) || 0);
+                            const p = Math.max(0, parseInt(env.PORT_REALITY, 10) || 0);
+                            if (p > 0 && ENABLE_REALITY) {
+                                const probed = await resolveSafePort(p, "tcp", "主机 Reality", PORT_REALITY);
+                                PORT_REALITY = probed.port;
+                                if (probed.conflicted) masterPortWarnings.push(probed.warning);
+                            } else {
+                                PORT_REALITY = p;
+                            }
                             envUpdates.PORT_REALITY = String(PORT_REALITY);
                         }
                         if (env.REALITY_DEST !== undefined) {
-                            REALITY_DEST = String(env.REALITY_DEST || "").trim() || "addons.mozilla.org";
+                            REALITY_DEST = String(env.REALITY_DEST || "").trim() || "www.apple.com";
                             envUpdates.REALITY_DEST = REALITY_DEST;
                         }
 
@@ -3148,7 +3383,14 @@ function handleHttpRequest(req, res) {
                             envUpdates.ENABLE_VLESS_TCP = String(ENABLE_VLESS_TCP);
                         }
                         if (env.PORT_VLESS_TCP !== undefined) {
-                            PORT_VLESS_TCP = Math.max(0, parseInt(env.PORT_VLESS_TCP, 10) || 0);
+                            const p = Math.max(0, parseInt(env.PORT_VLESS_TCP, 10) || 0);
+                            if (p > 0 && ENABLE_VLESS_TCP) {
+                                const probed = await resolveSafePort(p, "tcp", "主机 VLESS-TCP", PORT_VLESS_TCP);
+                                PORT_VLESS_TCP = probed.port;
+                                if (probed.conflicted) masterPortWarnings.push(probed.warning);
+                            } else {
+                                PORT_VLESS_TCP = p;
+                            }
                             envUpdates.PORT_VLESS_TCP = String(PORT_VLESS_TCP);
                         }
 
@@ -3158,7 +3400,14 @@ function handleHttpRequest(req, res) {
                             envUpdates.ENABLE_TROJAN_TCP = String(ENABLE_TROJAN_TCP);
                         }
                         if (env.PORT_TROJAN_TCP !== undefined) {
-                            PORT_TROJAN_TCP = Math.max(0, parseInt(env.PORT_TROJAN_TCP, 10) || 0);
+                            const p = Math.max(0, parseInt(env.PORT_TROJAN_TCP, 10) || 0);
+                            if (p > 0 && ENABLE_TROJAN_TCP) {
+                                const probed = await resolveSafePort(p, "tcp", "主机 Trojan-TCP", PORT_TROJAN_TCP);
+                                PORT_TROJAN_TCP = probed.port;
+                                if (probed.conflicted) masterPortWarnings.push(probed.warning);
+                            } else {
+                                PORT_TROJAN_TCP = p;
+                            }
                             envUpdates.PORT_TROJAN_TCP = String(PORT_TROJAN_TCP);
                         }
 
@@ -3168,7 +3417,14 @@ function handleHttpRequest(req, res) {
                             envUpdates.ENABLE_SS = String(ENABLE_SS);
                         }
                         if (env.PORT_SS !== undefined) {
-                            PORT_SS = Math.max(0, parseInt(env.PORT_SS, 10) || 0);
+                            const p = Math.max(0, parseInt(env.PORT_SS, 10) || 0);
+                            if (p > 0 && ENABLE_SS) {
+                                const probed = await resolveSafePort(p, "tcp", "主机 Shadowsocks", PORT_SS);
+                                PORT_SS = probed.port;
+                                if (probed.conflicted) masterPortWarnings.push(probed.warning);
+                            } else {
+                                PORT_SS = p;
+                            }
                             envUpdates.PORT_SS = String(PORT_SS);
                         }
 
@@ -3222,7 +3478,8 @@ function handleHttpRequest(req, res) {
                     sendJsonResponse(res, 200, {
                         success: true,
                         settings: siteSettings,
-                        envSettings: currentEnvSettings
+                        envSettings: currentEnvSettings,
+                        portWarnings: masterPortWarnings
                     });
 
                     // 异步执行 Sing-box 核心热重载，彻底脱离 HTTP 响应生命周期
@@ -3437,10 +3694,12 @@ function handleHttpRequest(req, res) {
 
         if (pathname === "/admin/api/visitors" && req.method === "GET") {
             const visitors = [];
+            const masterNodeName = `${getEffectiveServerLocation()} (主控)`;
+
+            // 1. 收集主控本机的实时活跃连线
             usersDatabase.forEach((u) => {
                 const act = getUserActivity(u.uuid);
                 if (act && act.activeList && act.activeList.length > 0) {
-                    // 主动过滤已销毁或断开的僵尸套接字
                     act.activeList = act.activeList.filter((c) => {
                         if (c.isSingbox) return true;
                         if (c.clientSocket && c.clientSocket.destroyed) return false;
@@ -3457,12 +3716,35 @@ function handleHttpRequest(req, res) {
                             ip: c.ip,
                             location: c.location || ipGeoCache.get(c.ip) || "正在解析归属地...",
                             proto: c.proto || "未知",
+                            serverNode: c.serverNode || masterNodeName,
                             connectedAt: c.connectedAt,
                             connectedStr: formatRelativeTime(c.connectedAt)
                         });
                     });
                 }
             });
+
+            // 2. 跨服务器聚合所有分布式在线副机的活跃连线
+            clusterWorkerVisitorsMap.forEach((workerVisitors, workerId) => {
+                const workerNode = clusterNodes.find(n => n.id === workerId);
+                const workerName = (workerNode && workerNode.name) ? workerNode.name : `副机-${workerId.slice(0, 6)}`;
+                if (Array.isArray(workerVisitors)) {
+                    workerVisitors.forEach((wv) => {
+                        visitors.push({
+                            id: wv.id,
+                            uuid: wv.uuid,
+                            username: wv.username,
+                            ip: wv.ip,
+                            location: wv.location || ipGeoCache.get(wv.ip) || "公网地址",
+                            proto: wv.proto || "未知",
+                            serverNode: wv.serverNode || workerName,
+                            connectedAt: wv.connectedAt,
+                            connectedStr: formatRelativeTime(wv.connectedAt)
+                        });
+                    });
+                }
+            });
+
             visitors.sort((a, b) => (b.connectedAt || 0) - (a.connectedAt || 0));
             return sendJsonResponse(res, 200, {
                 totalLiveConnections: visitors.length,
@@ -3675,6 +3957,7 @@ function handleUpgradeRequest(req, clientSocket, head) {
         ip: clientIp || "未知IP",
         location: ipGeoCache.get(clientIp) || "查询中...",
         proto: protoName,
+        serverNode: (NODE_ROLE === "worker" ? (process.env.NODE_NAME || SERVER_LOCATION || getEffectiveServerLocation()) : `${getEffectiveServerLocation()} (主控)`),
         connectedAt: Date.now(),
         lastActivityAt: Date.now(),
         clientSocket: clientSocket,
@@ -3692,6 +3975,7 @@ function handleUpgradeRequest(req, clientSocket, head) {
 
         if (uncommittedBytes >= FLUSH_THRESHOLD) {
             matchedUser.trafficUsed += uncommittedBytes;
+            workerNodeTotalTraffic = (workerNodeTotalTraffic || 0) + uncommittedBytes;
             uncommittedBytes = 0;
             triggerDebouncedSave();
 
@@ -3732,6 +4016,7 @@ function handleUpgradeRequest(req, clientSocket, head) {
         // 3. 提交剩余流量
         if (matchedUser && uncommittedBytes > 0) {
             matchedUser.trafficUsed += uncommittedBytes;
+            workerNodeTotalTraffic = (workerNodeTotalTraffic || 0) + uncommittedBytes;
             uncommittedBytes = 0;
             triggerDebouncedSave();
         }
@@ -3923,6 +4208,7 @@ function pollSingboxClashApiTraffic() {
 
                     if (delta > 0) {
                         matchedUser.trafficUsed = (matchedUser.trafficUsed || 0) + delta;
+                        workerNodeTotalTraffic = (workerNodeTotalTraffic || 0) + delta;
                         hasTrafficChanges = true;
 
                         // 超额熔断保护
@@ -3953,12 +4239,16 @@ function pollSingboxClashApiTraffic() {
                                 ip: clientIp,
                                 location: ipGeoCache.get(clientIp) || "查询中...",
                                 proto: protoName,
+                                serverNode: (NODE_ROLE === "worker" ? (process.env.NODE_NAME || SERVER_LOCATION || getEffectiveServerLocation()) : `${getEffectiveServerLocation()} (主控)`),
                                 connectedAt: connStart,
                                 lastActivityAt: now,
                                 isSingbox: true
                             });
                         } else {
                             existing.lastActivityAt = now;
+                            if (!existing.serverNode) {
+                                existing.serverNode = (NODE_ROLE === "worker" ? (process.env.NODE_NAME || SERVER_LOCATION || getEffectiveServerLocation()) : `${getEffectiveServerLocation()} (主控)`);
+                            }
                             if ((!existing.location || existing.location === "查询中...") && ipGeoCache.has(clientIp)) {
                                 existing.location = ipGeoCache.get(clientIp);
                             }
@@ -4161,6 +4451,28 @@ if (require.main === module) {
 
         initSingboxCore();
 
+        // 启动副机轻量 WebSocket 直连分流网关 (供 VLESS-ws / VMess-ws / Trojan-ws 直连接入)
+        let workerGatewayServer = null;
+        try {
+            workerGatewayServer = http.createServer((req, res) => {
+                res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+                res.end("V3 Worker Gateway Online");
+            });
+            workerGatewayServer.on("upgrade", handleUpgradeRequest);
+            workerGatewayServer.on("error", (e) => {
+                console.warn(`[Worker] WebSocket 直连分流网关异常: ${e.message}`);
+            });
+            workerGatewayServer.listen(port, "0.0.0.0", () => {
+                console.log(`[Worker] WebSocket 直连分流网关已启动 (监听端口: ${port})`);
+            });
+            if (process.platform !== "win32") {
+                exec(`iptables -C INPUT -p tcp --dport ${port} -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport ${port} -j ACCEPT 2>/dev/null`, () => {});
+                exec(`ufw allow ${port}/tcp 2>/dev/null`, () => {});
+            }
+        } catch (e) {
+            console.warn(`[Worker] WebSocket 直连分流网关启动失败: ${e.message}`);
+        }
+
         async function sendWorkerHeartbeat() {
             if (!CLUSTER_MASTER) return;
 
@@ -4175,13 +4487,37 @@ if (require.main === module) {
                 }
             });
 
+            // 收集副机当前的活跃在线访客 (打上本机节点名称)
+            const activeVisitors = [];
+            usersDatabase.forEach((u) => {
+                const act = getUserActivity(u.uuid);
+                if (act && act.activeList && act.activeList.length > 0) {
+                    act.activeList.forEach((c) => {
+                        activeVisitors.push({
+                            id: c.id,
+                            uuid: u.uuid,
+                            username: u.username,
+                            ip: c.ip,
+                            location: c.location || ipGeoCache.get(c.ip) || "查询中...",
+                            proto: c.proto || "未知",
+                            serverNode: effectiveName,
+                            connectedAt: c.connectedAt
+                        });
+                    });
+                }
+            });
+
             const payload = JSON.stringify({
                 secret: CLUSTER_SECRET,
                 nodeId: workerNodeId,
                 name: effectiveName,
                 ip: hostIp,
+                port: port,
                 currentConfigVersion: workerConfigVersion,
                 trafficDeltas: trafficDeltas,
+                trafficTotal: workerNodeTotalTraffic || 0,
+                activeVisitors: activeVisitors,
+                portWarnings: workerPortWarnings || [],
                 protocols: {
                     hy2: { enabled: ENABLE_HY2, port: PORT_HY2, hopPorts: HY2_HOP_PORTS || "" },
                     reality: { enabled: ENABLE_REALITY, port: PORT_REALITY },
@@ -4213,7 +4549,7 @@ if (require.main === module) {
                 }, (res) => {
                     let data = "";
                     res.on("data", c => data += c);
-                    res.on("end", () => {
+                    res.on("end", async () => {
                         if (res.statusCode !== 200) {
                             console.warn(`[Worker] 心跳被主控拒绝: HTTP ${res.statusCode} ${data}`);
                             return;
@@ -4226,7 +4562,7 @@ if (require.main === module) {
                                     workerHeartbeatOkLogged = Date.now();
                                 }
                                 if (json.needReload || json.configVersion > workerConfigVersion) {
-                                    console.log(`[Worker] 收到主控新配置 (v${json.configVersion})，正在热重载代理引擎...`);
+                                    console.log(`[Worker] 收到主控新配置 (v${json.configVersion})，正在探针校验端口并热重载代理引擎...`);
                                     workerConfigVersion = json.configVersion;
                                     if (json.clusterSecrets) {
                                         const cs = json.clusterSecrets;
@@ -4252,7 +4588,7 @@ if (require.main === module) {
                                         }
                                     }
                                     if (json.protocols) {
-                                        applyWorkerProtocols(json.protocols);
+                                        await applyWorkerProtocols(json.protocols);
                                     }
                                     if (Array.isArray(json.authorizedUsers)) {
                                         usersDatabase = json.authorizedUsers.map(u => ({
@@ -4281,12 +4617,19 @@ if (require.main === module) {
             }
         }
 
-        function applyWorkerProtocols(p) {
+        async function applyWorkerProtocols(p) {
+            workerPortWarnings = [];
             const portsToAllow = [];
+
             if (p.hy2) {
                 ENABLE_HY2 = Boolean(p.hy2.enabled);
                 if (p.hy2.port) {
-                    PORT_HY2 = p.hy2.port;
+                    const probed = await resolveSafePort(p.hy2.port, "udp", "副机 Hysteria 2", PORT_HY2);
+                    PORT_HY2 = probed.port;
+                    if (probed.conflicted) {
+                        workerPortWarnings.push(probed.warning);
+                        p.hy2.port = probed.port;
+                    }
                     if (ENABLE_HY2) portsToAllow.push({ port: PORT_HY2, proto: "udp" });
                 }
                 if (p.hy2.hopPorts !== undefined) {
@@ -4298,35 +4641,60 @@ if (require.main === module) {
             if (p.tuic) {
                 ENABLE_TUIC = Boolean(p.tuic.enabled);
                 if (p.tuic.port) {
-                    PORT_TUIC = p.tuic.port;
+                    const probed = await resolveSafePort(p.tuic.port, "udp", "副机 TUIC v5", PORT_TUIC);
+                    PORT_TUIC = probed.port;
+                    if (probed.conflicted) {
+                        workerPortWarnings.push(probed.warning);
+                        p.tuic.port = probed.port;
+                    }
                     if (ENABLE_TUIC) portsToAllow.push({ port: PORT_TUIC, proto: "udp" });
                 }
             }
             if (p.reality) {
                 ENABLE_REALITY = Boolean(p.reality.enabled);
                 if (p.reality.port) {
-                    PORT_REALITY = p.reality.port;
+                    const probed = await resolveSafePort(p.reality.port, "tcp", "副机 VLESS-Reality", PORT_REALITY);
+                    PORT_REALITY = probed.port;
+                    if (probed.conflicted) {
+                        workerPortWarnings.push(probed.warning);
+                        p.reality.port = probed.port;
+                    }
                     if (ENABLE_REALITY) portsToAllow.push({ port: PORT_REALITY, proto: "tcp" });
                 }
             }
             if (p.vlessTcp) {
                 ENABLE_VLESS_TCP = Boolean(p.vlessTcp.enabled);
                 if (p.vlessTcp.port) {
-                    PORT_VLESS_TCP = p.vlessTcp.port;
+                    const probed = await resolveSafePort(p.vlessTcp.port, "tcp", "副机 VLESS-TCP", PORT_VLESS_TCP);
+                    PORT_VLESS_TCP = probed.port;
+                    if (probed.conflicted) {
+                        workerPortWarnings.push(probed.warning);
+                        p.vlessTcp.port = probed.port;
+                    }
                     if (ENABLE_VLESS_TCP) portsToAllow.push({ port: PORT_VLESS_TCP, proto: "tcp" });
                 }
             }
             if (p.trojanTcp) {
                 ENABLE_TROJAN_TCP = Boolean(p.trojanTcp.enabled);
                 if (p.trojanTcp.port) {
-                    PORT_TROJAN_TCP = p.trojanTcp.port;
+                    const probed = await resolveSafePort(p.trojanTcp.port, "tcp", "副机 Trojan-TCP", PORT_TROJAN_TCP);
+                    PORT_TROJAN_TCP = probed.port;
+                    if (probed.conflicted) {
+                        workerPortWarnings.push(probed.warning);
+                        p.trojanTcp.port = probed.port;
+                    }
                     if (ENABLE_TROJAN_TCP) portsToAllow.push({ port: PORT_TROJAN_TCP, proto: "tcp" });
                 }
             }
             if (p.ss) {
                 ENABLE_SS = Boolean(p.ss.enabled);
                 if (p.ss.port) {
-                    PORT_SS = p.ss.port;
+                    const probed = await resolveSafePort(p.ss.port, "tcp", "副机 Shadowsocks", PORT_SS);
+                    PORT_SS = probed.port;
+                    if (probed.conflicted) {
+                        workerPortWarnings.push(probed.warning);
+                        p.ss.port = probed.port;
+                    }
                     if (ENABLE_SS) {
                         portsToAllow.push({ port: PORT_SS, proto: "tcp" });
                         portsToAllow.push({ port: PORT_SS, proto: "udp" });
@@ -4334,7 +4702,7 @@ if (require.main === module) {
                 }
             }
 
-            // 根据主控动态下发的实际业务端口动态放行防火墙 (主机设置什么端口就放行什么端口)
+            // 根据主控动态下发的实际业务端口动态放行防火墙
             if (process.platform !== "win32" && portsToAllow.length > 0) {
                 portsToAllow.forEach(({ port, proto }) => {
                     if (port > 0) {

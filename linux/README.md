@@ -118,7 +118,7 @@ PORT_TUIC=
 
 # 第 5 组：VLESS Reality（留空 = 禁用）
 PORT_REALITY=
-REALITY_DEST=addons.mozilla.org
+REALITY_DEST=www.apple.com
 
 # 第 6 组：TCP 直连（留空 = 禁用）
 PORT_VLESS_TCP=
