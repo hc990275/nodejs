@@ -1344,6 +1344,20 @@ return sendHtmlResponse(res, 200, `
                                     <input type="text" id="set_serverLocation" placeholder="例如: 🇺🇸 美西01 或 🇭🇰 香港01 (留空则自动识别)" />
                                     <div style="font-size:11px; color:var(--el-text-secondary); margin-top:3px;">用于订阅客户端节点名称前缀，例如：🇺🇸 美西01 | Reality抗封[18802]-用户名</div>
                                 </div>
+                                <div class="field-box">
+                                    <label>新注册用户默认授权节点范围</label>
+                                    <div style="display:flex; gap:16px; margin-top:8px; padding:8px 12px; background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px; flex-wrap:wrap;">
+                                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
+                                            <input type="radio" name="set_defaultAssignedNodes" value="all" id="set_defaultAssignedNodes_all" checked />
+                                            <span style="color:var(--el-success); font-weight:600;">全部服务器节点 (包含主机及所有分机)</span>
+                                        </label>
+                                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
+                                            <input type="radio" name="set_defaultAssignedNodes" value="master" id="set_defaultAssignedNodes_master" />
+                                            <span style="color:var(--el-primary); font-weight:600;">仅限当前主控主机 (分机需管理员单独授权)</span>
+                                        </label>
+                                    </div>
+                                    <div style="font-size:11px; color:var(--el-text-secondary); margin-top:3px;">决定新用户注册时默认拥有的节点范围。选择“仅限主控主机”可将分机作为特权节点在编辑用户时单独分配。</div>
+                                </div>
                             </div>
 
                             <!-- TAB 2: 节点协议与端口 -->
@@ -2126,6 +2140,15 @@ return sendHtmlResponse(res, 200, `
                         const sLoc = document.getElementById("set_serverLocation");
                         if (sLoc) sLoc.value = s.serverLocation || "";
 
+                        const defNodes = Array.isArray(s.defaultAssignedNodes) ? s.defaultAssignedNodes : ["*"];
+                        const isMasterOnly = defNodes.length === 1 && defNodes[0] === "master";
+                        const defAllRadio = document.getElementById("set_defaultAssignedNodes_all");
+                        const defMasterRadio = document.getElementById("set_defaultAssignedNodes_master");
+                        if (defAllRadio && defMasterRadio) {
+                            if (isMasterOnly) defMasterRadio.checked = true;
+                            else defAllRadio.checked = true;
+                        }
+
                         const cd1 = document.getElementById("set_enableClientDownload_1");
                         const cd0 = document.getElementById("set_enableClientDownload_0");
                         if (cd1 && cd0) {
@@ -2222,6 +2245,8 @@ return sendHtmlResponse(res, 200, `
                         const serverLocation = getVal("set_serverLocation", "");
                         const cd1 = document.getElementById("set_enableClientDownload_1");
                         const enableClientDownload = cd1 ? cd1.checked : true;
+                        const defMasterRadio = document.getElementById("set_defaultAssignedNodes_master");
+                        const defaultAssignedNodes = (defMasterRadio && defMasterRadio.checked) ? ["master"] : ["*"];
 
                         // 协议开关与推荐端口智能保活 (用户勾选但未指定端口时自动赋予推荐端口)
                         const enableHy2 = getCheck("env_ENABLE_HY2");
@@ -2287,6 +2312,7 @@ return sendHtmlResponse(res, 200, `
                             defaultDays,
                             defaultTrafficVal,
                             defaultTrafficUnit,
+                            defaultAssignedNodes,
                             contactText,
                             contactUrl,
                             envSettings
@@ -2530,14 +2556,15 @@ return sendHtmlResponse(res, 200, `
                                 var avatarChar = (u.username || "?").substring(0, 1).toUpperCase();
                                 var uuidSub = (u.uuid || "").substring(0, 8) + '...';
 
-                                // 计算流量百分比与胶囊进度条颜色
-                                var pct = 0;
-                                if (u.trafficLimit > 0) {
-                                    pct = Math.min(100, Math.round((u.trafficUsed / u.trafficLimit) * 1000) / 10);
+                                var assigned = Array.isArray(u.assignedNodes) && u.assignedNodes.length > 0 ? u.assignedNodes : ["*"];
+                                var nodeTagHtml = '';
+                                if (assigned.includes("*")) {
+                                    nodeTagHtml = '<span class="badge" style="background:#f0f9eb; color:#67c23a; border:1px solid #e1f3d8; font-size:10px; padding:1px 5px; border-radius:4px; margin-top:3px; display:inline-flex; align-items:center; gap:2px; font-weight:600;" title="授权范围：全节点集群 (包含主机及所有分机)">🌐 全节点</span>';
+                                } else if (assigned.includes("master") && assigned.length === 1) {
+                                    nodeTagHtml = '<span class="badge" style="background:#ecf5ff; color:#409eff; border:1px solid #d9ecff; font-size:10px; padding:1px 5px; border-radius:4px; margin-top:3px; display:inline-flex; align-items:center; gap:2px; font-weight:600;" title="授权范围：仅限当前主控主机">🖥️ 仅主机</span>';
+                                } else {
+                                    nodeTagHtml = '<span class="badge" style="background:#fdf6ec; color:#e6a23c; border:1px solid #faecd8; font-size:10px; padding:1px 5px; border-radius:4px; margin-top:3px; display:inline-flex; align-items:center; gap:2px; font-weight:600;" title="授权节点数: ' + assigned.length + ' 个">⚡ ' + assigned.length + ' 节点</span>';
                                 }
-                                var barColor = 'var(--el-primary)';
-                                if (pct >= 100) barColor = 'var(--el-danger)';
-                                else if (pct >= 85) barColor = 'var(--el-warning)';
 
                                 var row = '<tr>';
                                 row += '<td data-label="用户主体">';
@@ -2545,6 +2572,7 @@ return sendHtmlResponse(res, 200, `
                                 row +=     '<span class="avatar">' + avatarChar + '</span>';
                                 row +=     '<div class="user-info">';
                                 row +=       '<span class="uname">' + escapeHtml(u.username) + '</span>';
+                                row +=       nodeTagHtml;
                                 row +=       '<div class="uuid-pill" title="完整UUID: ' + u.uuid + ' (点击复制)">';
                                 row +=         '<span class="uuid-text" data-copy="' + u.uuid + '" onclick="copyText(this.dataset.copy)">' + uuidSub + '</span>';
                                 row +=         '<button type="button" class="btn-mini-icon" data-copy="' + u.uuid + '" onclick="copyText(this.dataset.copy)" title="复制完整UUID">📋</button>';
@@ -3366,7 +3394,7 @@ return sendHtmlResponse(res, 200, `
                         if (secretEl) secretEl.innerText = secret;
                         const joinCmdInput = document.getElementById("clusterJoinCommandInput");
                         if (joinCmdInput) {
-                            joinCmdInput.value = data.joinCommand || ("git clone https://github.com/hc990275/nodejs.git && cd nodejs/linux && ./start-node.sh --master=" + masterUrl + " --secret=" + secret);
+                            joinCmdInput.value = data.joinCommand || ("(curl -fsSL " + masterUrl + "/start-node.sh || wget -qO- " + masterUrl + "/start-node.sh) | sh -s -- --master=" + masterUrl + " --secret=" + secret + ' --name="🇯🇵 日本02"');
                         }
 
                         const tbody = document.getElementById("clusterNodesTableBody");
