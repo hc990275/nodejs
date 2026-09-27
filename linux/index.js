@@ -188,8 +188,8 @@ const DEFAULT_MAX_ONLINE_IPS = parseInt(process.env.DEFAULT_MAX_ONLINE_IPS || "0
 const DEFAULT_IP_LIMIT_POLICY = process.env.DEFAULT_IP_LIMIT_POLICY || "kick_oldest"; // 超额策略
 const DEFAULT_IDLE_DISCONNECT_ENABLED = process.env.DEFAULT_IDLE_DISCONNECT !== "false"; // 初始空闲自动断链
 const DEFAULT_IDLE_TIMEOUT_SECONDS = parseInt(process.env.DEFAULT_IDLE_TIMEOUT_SECONDS || "60", 10); // 初始空闲秒数
-const DEFAULT_CONTACT_TEXT = process.env.DEFAULT_CONTACT_TEXT || "Telegram: @abcai"; // 站长联系方式文案
-const DEFAULT_CONTACT_URL = process.env.DEFAULT_CONTACT_URL || "https://t.me/abcai"; // 站长联系链接
+const DEFAULT_CONTACT_TEXT = process.env.DEFAULT_CONTACT_TEXT || "Telegram: @robberer"; // 站长联系方式文案
+const DEFAULT_CONTACT_URL = process.env.DEFAULT_CONTACT_URL || "https://t.me/s5gydl"; // 站长联系链接
 
 const defaultSettings = {
     allowRegister: DEFAULT_ALLOW_REGISTER,
@@ -503,6 +503,12 @@ function loadSettings() {
                 if (raw.length > 0) {
                     const parsed = JSON.parse(raw);
                     siteSettings = Object.assign({}, defaultSettings, parsed);
+                    if (!siteSettings.contactText || String(siteSettings.contactText).includes("abcai")) {
+                        siteSettings.contactText = DEFAULT_CONTACT_TEXT;
+                    }
+                    if (!siteSettings.contactUrl || String(siteSettings.contactUrl).includes("abcai")) {
+                        siteSettings.contactUrl = DEFAULT_CONTACT_URL;
+                    }
                     console.log(`[Settings] 站点与注册配置载入成功 (${path.basename(fPath)})`);
                     return;
                 }
