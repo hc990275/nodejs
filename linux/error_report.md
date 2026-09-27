@@ -315,3 +315,16 @@
   2. **自愈式安全落盘引擎**：在 safeWriteFileAsync 与 safeWriteFileSync 中均注入 wait fs.promises.mkdir(path.dirname(filePath), { recursive: true })，确保任意深层路径写入前父级目录必定存在；
   3. **内核平滑热加载**：在 safeReloadSingbox 中引入 Linux 环境下的 SIGHUP 信号热加载机制，配置变动时无需强杀进程，避免用户活跃连接意外断开；
   4. **全环境 Shell 自动降级与工具补齐**：在 linux/start.sh 中将 ash 纳入基础工具链自动安装；在启动器中增加 ash/sh 双模动态探测与 Node 原生 encodeURIComponent，彻底杜绝环境差异导致的异常。
+
+---
+
+### 第三十六号：历史落盘配置残留与控制中心弹窗移动端布局适配
+- **问题现象**：
+  1. 尽管代码已将默认联系方式变更为 @robberer，线上 VPS 管理控制面板弹窗中依然显示旧的 Telegram: @abcai 与 https://t.me/abcai；
+  2. 手机端访问控制中心弹窗时，宽度超出屏幕边界，表单控件重叠变形。
+- **原因剖析**：
+  1. 服务端之前保存的 v3_settings.json 已写入过历史旧值，单纯更改默认常量变量无法覆盖磁盘已有持久化记录；
+  2. 前端弹窗使用固定宽度与多列 flex 布局，在小屏设备上缺乏断点自适应与横向滚动支持。
+- **实施解决对策**：
+  1. **智能自愈配置升级**：在服务端的 loadSettings() 与前端 openSettingsModal() 中均注入自动洗涤逻辑，检测到含有历史 abcai 字样时自动升级为 @robberer 与 https://t.me/s5gydl；
+  2. **移动端深度响应式 CSS**：在 views/admin.js 中增加针对 <=768px 屏幕的流式媒体查询，实现全屏弹窗、平滑横向滚动标签栏与单列输入组。
