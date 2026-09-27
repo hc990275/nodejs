@@ -18,7 +18,7 @@ console.log(`[工作侦听端口] ${PORT}`);
 const TUIC_NAME = "hc990275-TUIC";
 const REALITY_NAME = "hc990275-vless";
 
-const bashScript = `#!/bin/bash
+const bashScript = `#!/bin/sh
 set -e
 
 export PORT="${PORT}"
@@ -123,23 +123,15 @@ CONF
 PID=\$!
 IP=\$(curl -s --max-time 5 ipv4.ip.sb || echo "面板外网域名IP")
 
-urlencode() {
-  local s="\${1}"; local l=\${#s}; local e=""; local p c o
-  for ((p=0; p<l; p++)); do
-    c=\${s:\$p:1}
-    case "\$c" in [-_.~a-zA-Z0-9]) o="\${c}";; *) printf -v o '%%%02x' "'\$c";; esac
-    e+="\${o}"
-  done
-  echo "\${e}"
-}
+echo ""
+echo "============================================="
+echo "🎉 节点全自动配置完毕 (Sing-Box TUIC / vless)"
+echo "============================================="
+echo "tuic://\${UUID}:admin@\${IP}:\${TUIC_PORT}?sni=www.bing.com&alpn=h3&congestion_control=bbr&allowInsecure=1#${encodeURIComponent(TUIC_NAME)}" | tee "list.txt"
+echo "vless://\${UUID}@\${IP}:\${REALITY_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.nazhumi.com&fp=firefox&pbk=\${PUBLIC_KEY}&type=tcp#${encodeURIComponent(REALITY_NAME)}" | tee -a "list.txt"
 
-echo -e "\n============================================="
-echo -e "🎉 节点全自动配置完毕 (Sing-Box TUIC / vless)"
-echo -e "============================================="
-echo "tuic://\${UUID}:admin@\${IP}:\${TUIC_PORT}?sni=www.bing.com&alpn=h3&congestion_control=bbr&allowInsecure=1#\$(urlencode "\$TUIC_NAME")" | tee "list.txt"
-echo "vless://\${UUID}@\${IP}:\${REALITY_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.nazhumi.com&fp=firefox&pbk=\${PUBLIC_KEY}&type=tcp#\$(urlencode "\$REALITY_NAME")" | tee -a "list.txt"
-
-echo -e "\n============================================="
+echo ""
+echo "============================================="
 echo "🛡️ 守护进程已拉起..."
 
 # ================== 守护进程 ==================
@@ -156,8 +148,15 @@ done
 const runnerFile = 'sb_runner.sh';
 fs.writeFileSync(runnerFile, bashScript);
 
+const shellCmd = (function() {
+    try {
+        if (fs.existsSync('/bin/bash') || fs.existsSync('/usr/bin/bash')) return 'bash';
+    } catch (_) {}
+    return 'sh';
+})();
+
 try {
-    execSync(`bash ${runnerFile}`, { stdio: 'inherit' });
+    execSync(`${shellCmd} ${runnerFile}`, { stdio: 'inherit' });
 } catch (error) {
-    console.log("⚠️ 守护主服务终止结束。");
+    console.log("⚠️ 守护主服务终止结束:", error.message);
 }

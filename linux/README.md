@@ -5,7 +5,7 @@
 > **项目仓库关联信息**：
 > - **远程代码仓库**：https://github.com/hc990275/nodejs
 > - **对应分支与目录**：`main` 分支的 `linux/` 目录 (https://github.com/hc990275/nodejs/tree/main/linux)
-> - **本地开发目录**：`d:\DeskTop\GitHub\测\lunes\自适应机场`
+> - **本地开发目录**：`d:\DeskTop\GitHub\测\lunes\nodejs`
 
 ---
 

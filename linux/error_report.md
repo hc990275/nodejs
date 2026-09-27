@@ -1,4 +1,4 @@
-# 踩坑与经验沉淀报告 (Error Tracking)
+﻿# 踩坑与经验沉淀报告 (Error Tracking)
 
 ---
 
@@ -133,7 +133,7 @@
 - **现象**：此前脚本深度绑定 Alpine Linux（使用 `apk` 与 OpenRC），在主流 Ubuntu 20.04/22.04/24.04、Debian 或 CentOS/Rocky 环境下直接运行报错（如 `command not found: apk`，或缺少 systemd 单元文件无法开机自启）。
 - **原因**：不同 Linux 发行版的包管理器（Debian/Ubuntu 的 `apt-get`、Alpine 的 `apk`、CentOS/Rocky 的 `dnf/yum`、Arch 的 `pacman`）、Init 守护系统（现代 Linux 的 `systemd` 与极简容器的 `OpenRC`）存在本质架构差异。
 - **方案**：
-  1. **独立版本工程化**：在 `d:\DeskTop\GitHub\测\lunes\自适应机场` 建立全新的自适应版本，保持与 Alpine 版本的独立隔离；
+  1. **独立版本工程化**：在 `d:\DeskTop\GitHub\测\lunes\nodejs` 建立全新的自适应版本，保持与 Alpine 版本的独立隔离；
   2. **智能发行版与架构感知**：在 `index.js` 与 `start.sh` 中动态解析 `/etc/os-release`，自适应判断发行版族系（Ubuntu / Debian / Alpine / RHEL / Arch），匹配专用包管理器自动安装缺失的 Node.js 与核心工具链；
   3. **双轨开机自启守护**：配套编写针对 Ubuntu/Debian/CentOS 的 `v3.service` (systemd) 与针对 Alpine 的 `v3.openrc` (OpenRC)，并封装 `install_service.sh` 实现一键智能探知并注册为系统服务；
   4. **容器与文档双写交付**：提供基于 Ubuntu 24.04 LTS 的标准 Dockerfile，并同步交付自用版 `README.md` 与开源分享版 `README_SHARE.md`。
@@ -257,7 +257,7 @@
 ### 第三十一号：远程代码仓库映射与目录归属归档
 - **对应远程仓库**：https://github.com/hc990275/nodejs
 - **对应分支与目录**：main 分支下的 linux/ 子目录 (https://github.com/hc990275/nodejs/tree/main/linux)
-- **本地开发目录**：d:\DeskTop\GitHub\测\lunes\自适应机场
+- **本地开发目录**：d:\DeskTop\GitHub\测\lunes\nodejs
 - **归档说明**：本地工作目录 自适应机场 即为远程仓库 hc990275/nodejs 中 linux/ 目录的本地完整镜像；未来所有该项目的优化与提交，均精确同步至远程仓库 main 分支的 linux/ 路径下。
 
 ---
@@ -300,3 +300,18 @@
   1. **响应优先与重载异步化**：在 `index.js` 的 `POST /admin/api/settings` 中，数据校验落盘后先立即发送 200 成功响应，随后在 `setImmediate` 中异步执行 Sing-box 核心热重载，彻底脱离当前 HTTP 请求生命周期；
   2. **全局 CORS 与 OPTIONS 预检支持**：在 `handleHttpRequest` 顶部增加统一的 OPTIONS 拦截器与动态 CORS 头注入；
   3. **前端凭据规范化与安全降级通道**：在 `views/admin.js` 中移除 `credentials: "include"`，并在发生网络抖动时提供静默简单请求降级重试机制。
+
+---
+
+### 第三十五号：文件安全写入缺少递归父目录与 Alpine Linux 容器环境兼容性修复
+- **问题现象**：
+  1. 服务端写入用户数据库时抛错：[FS-Async] 写入文件失败 (/root/v3-airport/linux/data/v3_users.json): ENOENT: no such file or directory, open '/root/v3-airport/linux/data/v3_users.json'；
+  2. 在 Alpine 3.22 容器环境中执行启动脚本时报错：/bin/sh: bash: not found，⚠️ 守护主服务终止结束。。
+- **原因剖析**：
+  1. safeWriteFileAsync 异步队列在调用 fs.promises.writeFile 前未预先确保其所在父级目录存在，新环境下 data 目录尚未生成时直接写入导致抛出 ENOENT；
+  2. 历史提交误将单节点精简版启动器（163行）覆盖至完整的 linux/index.js，该精简启动器硬编码了 ash 调用与非 POSIX 的 urlencode 语法，在默认仅有 /bin/sh 的 Alpine Linux 极简镜像中无法执行。
+- **实施解决对策**：
+  1. **完整还原主程序**：恢复 linux/index.js 完整 3400+ 行机场核心后端服务；
+  2. **自愈式安全落盘引擎**：在 safeWriteFileAsync 与 safeWriteFileSync 中均注入 wait fs.promises.mkdir(path.dirname(filePath), { recursive: true })，确保任意深层路径写入前父级目录必定存在；
+  3. **内核平滑热加载**：在 safeReloadSingbox 中引入 Linux 环境下的 SIGHUP 信号热加载机制，配置变动时无需强杀进程，避免用户活跃连接意外断开；
+  4. **全环境 Shell 自动降级与工具补齐**：在 linux/start.sh 中将 ash 纳入基础工具链自动安装；在启动器中增加 ash/sh 双模动态探测与 Node 原生 encodeURIComponent，彻底杜绝环境差异导致的异常。
