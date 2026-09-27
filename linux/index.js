@@ -129,8 +129,41 @@ let ARGO_DOMAIN = process.env.ARGO_DOMAIN || "";
 // CDN 优选加速域名 (留空则默认使用 ARGO_DOMAIN)
 let OPTIMIZED_DOMAIN = process.env.OPTIMIZED_DOMAIN || "";
 
-// -------------------- 3. 异地集群扩展节点 (可选) --------------------
-// 外部集群节点配置 JSON 数组字符串
+// -------------------- 3. 分布式集群与多服务器管理 (Master / Worker) --------------------
+let NODE_ROLE = (process.env.NODE_ROLE || "master").toLowerCase(); // "master" (主控) 或 "worker" (节点分机)
+let CLUSTER_SECRET = (process.env.CLUSTER_SECRET || process.env.NODE_SECRET || ADMIN_TOKEN || "").trim();
+let CLUSTER_MASTER = (process.env.CLUSTER_MASTER || "").replace(/\/+$/, ""); // Worker 连接 Master 的完整根 URL
+let SERVER_LOCATION = (process.env.SERVER_LOCATION || process.env.NODE_NAME || "").trim();
+
+// 国家代码与国旗 Emoji 字典
+const COUNTRY_FLAGS = {
+    US: { flag: "🇺🇸", name: "美国" },
+    HK: { flag: "🇭🇰", name: "香港" },
+    TW: { flag: "🇹🇼", name: "台湾" },
+    JP: { flag: "🇯🇵", name: "日本" },
+    SG: { flag: "🇸🇬", name: "新加坡" },
+    KR: { flag: "🇰🇷", name: "韩国" },
+    GB: { flag: "🇬🇧", name: "英国" },
+    DE: { flag: "🇩🇪", name: "德国" },
+    FR: { flag: "🇫🇷", name: "法国" },
+    NL: { flag: "🇳🇱", name: "荷兰" },
+    CA: { flag: "🇨🇦", name: "加拿大" },
+    AU: { flag: "🇦🇺", name: "澳大利亚" },
+    RU: { flag: "🇷🇺", name: "俄罗斯" },
+    IN: { flag: "🇮🇳", name: "印度" },
+    TR: { flag: "🇹🇷", name: "土耳其" },
+    MY: { flag: "🇲🇾", name: "马来西亚" },
+    TH: { flag: "🇹🇭", name: "泰国" },
+    VN: { flag: "🇻🇳", name: "越南" },
+    PH: { flag: "🇵🇭", name: "菲律宾" },
+    ID: { flag: "🇮🇩", name: "印尼" },
+    CN: { flag: "🇨🇳", name: "中国" },
+};
+
+let detectedCountry = null; // { code: "US", flag: "🇺🇸", name: "美国" }
+let isDetectingLocation = false;
+
+// 外部集群节点配置 JSON 数组字符串 (兼容历史静态配置)
 let EXTRA_NODES_RAW = process.env.EXTRA_NODES || "";
 let extraNodesConfig = [];
 try {
@@ -165,7 +198,10 @@ let USERS_FILE = path.join(DATA_DIR, "v3_users.json");
 let CONFIG_FILE = path.join(DATA_DIR, "v3_config.json");
 let SETTINGS_FILE = path.join(DATA_DIR, "v3_settings.json");
 let CLIENT_DOWNLOADS_FILE = path.join(DATA_DIR, "v3_client_downloads.json");
+let CLUSTER_NODES_FILE = path.join(DATA_DIR, "v3_cluster_nodes.json");
 let PID_FILE = path.join(WORK_DIR, "singbox.pid");
+
+let clusterNodes = [];
 
 let SINGBOX_BIN = process.env.SINGBOX_BIN || path.join(WORK_DIR, "sing-box");
 let CLOUDFLARED_BIN = process.env.CLOUDFLARED_BIN || path.join(WORK_DIR, "cloudflared");
@@ -194,6 +230,7 @@ const DEFAULT_CONTACT_URL = process.env.DEFAULT_CONTACT_URL || "https://t.me/s5g
 const defaultSettings = {
     allowRegister: DEFAULT_ALLOW_REGISTER,
     enableClientDownload: DEFAULT_ENABLE_CLIENT_DOWNLOAD,
+    serverLocation: SERVER_LOCATION || "",
     defaultDays: DEFAULT_DAYS,
     defaultTrafficVal: DEFAULT_TRAFFIC_VAL,
     defaultTrafficUnit: DEFAULT_TRAFFIC_UNIT,
@@ -533,6 +570,184 @@ function saveSettings() {
         console.error(`[Settings] 同步落盘写入配置失败 (${SETTINGS_FILE}):`, err.message);
         return false;
     }
+}
+
+// ==================== 集群管理与地理位置智能定位引擎 ====================
+
+// 异步探测公网 IP 的国家/地区信息
+function detectServerLocation(targetIp = "") {
+    const ip = targetIp || DIRECT_IP;
+    if (!ip || isDetectingLocation) return;
+    isDetectingLocation = true;
+
+    const options = {
+        hostname: "ipwho.is",
+        path: `/${encodeURIComponent(ip)}`,
+        method: "GET",
+        headers: { "User-Agent": "NodeJS-GeoIP/1.0" },
+        timeout: 4000
+    };
+
+    const req = http.request(options, (res) => {
+        let data = "";
+        res.on("data", (chunk) => { data += chunk; });
+        res.on("end", () => {
+            isDetectingLocation = false;
+            try {
+                const json = JSON.parse(data);
+                if (json && json.success && json.country_code) {
+                    const cCode = json.country_code.toUpperCase();
+                    const info = COUNTRY_FLAGS[cCode] || { flag: "🌐", name: json.country || cCode };
+                    detectedCountry = {
+                        code: cCode,
+                        flag: info.flag,
+                        name: info.name,
+                        city: json.city || ""
+                    };
+                    console.log(`[GeoIP] 探测到公网 IP (${ip}) 所在地区: ${detectedCountry.flag} ${detectedCountry.name} (${detectedCountry.city || cCode})`);
+                    ensureMasterNodeInCluster();
+                }
+            } catch (err) { }
+        });
+    });
+
+    req.on("error", () => {
+        isDetectingLocation = false;
+        fallbackDetectFromDomain();
+    });
+
+    req.on("timeout", () => {
+        req.destroy();
+        isDetectingLocation = false;
+        fallbackDetectFromDomain();
+    });
+
+    req.end();
+}
+
+function fallbackDetectFromDomain() {
+    if (detectedCountry) return;
+    const domain = (ARGO_DOMAIN || "").toLowerCase();
+    if (domain.startsWith("us.") || domain.includes("-us")) {
+        detectedCountry = { code: "US", flag: "🇺🇸", name: "美国", city: "" };
+    } else if (domain.startsWith("hk.") || domain.includes("-hk")) {
+        detectedCountry = { code: "HK", flag: "🇭🇰", name: "香港", city: "" };
+    } else if (domain.startsWith("jp.") || domain.includes("-jp")) {
+        detectedCountry = { code: "JP", flag: "🇯🇵", name: "日本", city: "" };
+    } else if (domain.startsWith("sg.") || domain.includes("-sg")) {
+        detectedCountry = { code: "SG", flag: "🇸🇬", name: "新加坡", city: "" };
+    } else {
+        detectedCountry = { code: "US", flag: "🇺🇸", name: "美国", city: "" };
+    }
+    console.log(`[GeoIP] 根据网络特征自动匹配默认地区: ${detectedCountry.flag} ${detectedCountry.name}`);
+    ensureMasterNodeInCluster();
+}
+
+// 获取当前服务器生效的地区/名称 (优先级: siteSettings.serverLocation > SERVER_LOCATION > 自动探测 > 兜底)
+function getEffectiveServerLocation() {
+    if (siteSettings.serverLocation && siteSettings.serverLocation.trim() !== "") {
+        return siteSettings.serverLocation.trim();
+    }
+    if (SERVER_LOCATION && SERVER_LOCATION.trim() !== "") {
+        return SERVER_LOCATION.trim();
+    }
+    if (detectedCountry) {
+        return `${detectedCountry.flag} ${detectedCountry.name}`;
+    }
+    return "🇺🇸 美国";
+}
+
+// 载入集群节点配置 (v3_cluster_nodes.json)
+function loadClusterNodes() {
+    try {
+        if (fs.existsSync(CLUSTER_NODES_FILE)) {
+            const raw = fs.readFileSync(CLUSTER_NODES_FILE, "utf8").trim();
+            if (raw) {
+                const list = JSON.parse(raw);
+                if (Array.isArray(list)) {
+                    clusterNodes = list;
+                }
+            }
+        }
+    } catch (e) {
+        console.warn("[Cluster] 载入集群节点配置异常:", e.message);
+    }
+    ensureMasterNodeInCluster();
+}
+
+// 保存集群节点配置 (原子写入)
+function saveClusterNodes() {
+    try {
+        if (!fs.existsSync(path.dirname(CLUSTER_NODES_FILE))) {
+            fs.mkdirSync(path.dirname(CLUSTER_NODES_FILE), { recursive: true });
+        }
+        fs.writeFileSync(CLUSTER_NODES_FILE, JSON.stringify(clusterNodes, null, 2), "utf8");
+        return true;
+    } catch (e) {
+        console.error("[Cluster] 保存集群节点配置失败:", e.message);
+        return false;
+    }
+}
+
+// 确保本地主控节点在集群表中始终就绪
+function ensureMasterNodeInCluster() {
+    let master = clusterNodes.find(n => n.id === "master" || n.role === "master");
+    const loc = getEffectiveServerLocation();
+    const masterProtocols = {
+        hy2: { enabled: ENABLE_HY2, port: PORT_HY2, hopPorts: HY2_HOP_PORTS },
+        tuic: { enabled: ENABLE_TUIC, port: PORT_TUIC },
+        reality: { enabled: ENABLE_REALITY, port: PORT_REALITY, dest: REALITY_DEST, pbk: realityState.publicKey, sid: realityState.shortId || "16888888" },
+        vlessTcp: { enabled: ENABLE_VLESS_TCP, port: PORT_VLESS_TCP },
+        trojanTcp: { enabled: ENABLE_TROJAN_TCP, port: PORT_TROJAN_TCP },
+        ss: { enabled: ENABLE_SS, port: PORT_SS }
+    };
+
+    if (!master) {
+        master = {
+            id: "master",
+            role: "master",
+            name: `${loc} (主控)`,
+            ip: DIRECT_IP,
+            port: SERVER_PORT,
+            status: "online",
+            lastHeartbeat: Date.now(),
+            trafficReported: 0,
+            protocols: masterProtocols,
+            configVersion: 1,
+            needReload: false
+        };
+        clusterNodes.unshift(master);
+        saveClusterNodes();
+    } else {
+        master.ip = DIRECT_IP;
+        master.port = SERVER_PORT;
+        master.status = "online";
+        master.lastHeartbeat = Date.now();
+        if (!master.name || master.name === "主控节点" || master.name.includes("undefined")) {
+            master.name = `${loc} (主控)`;
+        }
+        master.protocols = masterProtocols;
+    }
+}
+
+// 周期性健康扫描：副机超过 30 秒无心跳自动标记为离线
+function initClusterHeartbeatMonitor() {
+    setInterval(() => {
+        const now = Date.now();
+        let changed = false;
+        clusterNodes.forEach(node => {
+            if (node.role !== "master") {
+                if (node.status === "online" && (now - (node.lastHeartbeat || 0) > 30000)) {
+                    node.status = "offline";
+                    changed = true;
+                    console.log(`[Cluster] 警告：副机节点 [${node.name || node.id}] 已超过 30 秒未上报心跳，自动标记为离线`);
+                }
+            }
+        });
+        if (changed) {
+            saveClusterNodes();
+        }
+    }, 10000);
 }
 
 // 优雅同步原子更新 .env 文件中的键值对
@@ -1383,7 +1598,7 @@ function checkAdminAuth(req, query) {
     return false;
 }
 
-// 生成结构化节点池 (支持多节点集群与异地节点)
+// 生成结构化节点池 (支持国家地区前缀、多节点集群与异地节点聚合)
 function getStructuredNodesForUser(user) {
     const uuid = user.uuid;
     const nameSuffix = `-${user.username}`;
@@ -1392,205 +1607,300 @@ function getStructuredNodesForUser(user) {
     const trojanPath = `/trojan/${uuid}`;
 
     const nodes = [];
+    const assigned = Array.isArray(user.assignedNodes) && user.assignedNodes.length > 0 ? user.assignedNodes : ["*"];
+    const allowMaster = assigned.includes("*") || assigned.includes("master");
+    const masterPrefix = getEffectiveServerLocation();
 
-    // 1. 直连节点 (VLESS / VMess / Trojan)
-    nodes.push({
-        name: `直连-VLESS${nameSuffix}`,
-        type: "vless",
-        server: DIRECT_IP,
-        port: SERVER_PORT,
-        uuid: uuid,
-        tls: false,
-        network: "ws",
-        wsPath: vlessPath,
-        wsHeaders: { Host: DIRECT_IP }
-    });
-
-    nodes.push({
-        name: `直连-VMess${nameSuffix}`,
-        type: "vmess",
-        server: DIRECT_IP,
-        port: SERVER_PORT,
-        uuid: uuid,
-        alterId: 0,
-        cipher: "auto",
-        tls: false,
-        network: "ws",
-        wsPath: vmessPath,
-        wsHeaders: { Host: DIRECT_IP }
-    });
-
-    nodes.push({
-        name: `直连-Trojan${nameSuffix}`,
-        type: "trojan",
-        server: DIRECT_IP,
-        port: SERVER_PORT,
-        password: uuid,
-        tls: false,
-        network: "ws",
-        wsPath: trojanPath,
-        wsHeaders: { Host: DIRECT_IP }
-    });
-
-    // 1.1 独立多端口专属协议节点 (来自 .env 动态配置)
-    if (ENABLE_HY2) {
-        // 原生单端口节点
+    // 1. 本地主控节点 (当用户权限允许时生成)
+    if (allowMaster) {
         nodes.push({
-            name: `Hy2极速[${PORT_HY2}]${nameSuffix}`,
-            type: "hysteria2",
+            name: `${masterPrefix} | 直连-VLESS${nameSuffix}`,
+            type: "vless",
             server: DIRECT_IP,
-            port: PORT_HY2,
-            password: uuid,
-            sni: REALITY_DEST,
-            skipCertVerify: true,
-            udp: true
+            port: SERVER_PORT,
+            uuid: uuid,
+            tls: false,
+            network: "ws",
+            wsPath: vlessPath,
+            wsHeaders: { Host: DIRECT_IP }
         });
 
-        // 专属端口跳跃节点 (10900-10909 防 QoS)
-        if (ENABLE_HY2_HOP) {
+        nodes.push({
+            name: `${masterPrefix} | 直连-VMess${nameSuffix}`,
+            type: "vmess",
+            server: DIRECT_IP,
+            port: SERVER_PORT,
+            uuid: uuid,
+            alterId: 0,
+            cipher: "auto",
+            tls: false,
+            network: "ws",
+            wsPath: vmessPath,
+            wsHeaders: { Host: DIRECT_IP }
+        });
+
+        nodes.push({
+            name: `${masterPrefix} | 直连-Trojan${nameSuffix}`,
+            type: "trojan",
+            server: DIRECT_IP,
+            port: SERVER_PORT,
+            password: uuid,
+            tls: false,
+            network: "ws",
+            wsPath: trojanPath,
+            wsHeaders: { Host: DIRECT_IP }
+        });
+
+        if (ENABLE_HY2) {
             nodes.push({
-                name: `Hy2跳跃[${HY2_HOP_PORTS}]${nameSuffix}`,
-                type: "hysteria2-hop",
+                name: `${masterPrefix} | Hy2极速[${PORT_HY2}]${nameSuffix}`,
+                type: "hysteria2",
                 server: DIRECT_IP,
-                port: parseInt(HY2_HOP_PORTS.split("-")[0], 10),
-                ports: HY2_HOP_PORTS,
+                port: PORT_HY2,
                 password: uuid,
                 sni: REALITY_DEST,
                 skipCertVerify: true,
-                udp: true,
-                hopInterval: HY2_HOP_INTERVAL
+                udp: true
             });
-        }
-    }
 
-    if (ENABLE_TUIC) {
-        nodes.push({
-            name: `TUICv5[${PORT_TUIC}]${nameSuffix}`,
-            type: "tuic",
-            server: DIRECT_IP,
-            port: PORT_TUIC,
-            uuid: uuid,
-            password: uuid,
-            sni: REALITY_DEST,
-            congestion: "bbr",
-            skipCertVerify: true,
-            udp: true
-        });
-    }
-
-    if (ENABLE_REALITY && realityState.publicKey) {
-        nodes.push({
-            name: `Reality抗封[${PORT_REALITY}]${nameSuffix}`,
-            type: "vless-reality",
-            server: DIRECT_IP,
-            port: PORT_REALITY,
-            uuid: uuid,
-            sni: REALITY_DEST,
-            pbk: realityState.publicKey,
-            sid: realityState.shortId || "16888888",
-            fp: "chrome",
-            udp: true
-        });
-    }
-
-    if (ENABLE_VLESS_TCP) {
-        nodes.push({
-            name: `VLESS纯直连[${PORT_VLESS_TCP}]${nameSuffix}`,
-            type: "vless-tcp",
-            server: DIRECT_IP,
-            port: PORT_VLESS_TCP,
-            uuid: uuid,
-            network: "tcp",
-            tls: false,
-            udp: true
-        });
-    }
-
-    if (ENABLE_TROJAN_TCP) {
-        nodes.push({
-            name: `Trojan直连[${PORT_TROJAN_TCP}]${nameSuffix}`,
-            type: "trojan-tcp",
-            server: DIRECT_IP,
-            port: PORT_TROJAN_TCP,
-            password: uuid,
-            network: "tcp",
-            tls: false,
-            udp: true
-        });
-    }
-
-    if (ENABLE_SS && PORT_SS > 0 && ssSecretState) {
-        const userSsKey = getUserSsKey(user.uuid);
-        nodes.push({
-            name: `SS2022[${PORT_SS}]${nameSuffix}`,
-            type: "shadowsocks",
-            server: DIRECT_IP,
-            port: PORT_SS,
-            method: SS_METHOD,
-            password: `${ssSecretState}:${userSsKey}`,
-            udp: true
-        });
-    }
-
-
-    // 2. Argo 优选穿透节点 (支持多优选 CDN 域名/IP 列表展开)
-    if (isTunnelAvailable) {
-        let optList = [];
-        if (OPTIMIZED_DOMAIN && OPTIMIZED_DOMAIN.trim() !== "") {
-            optList = OPTIMIZED_DOMAIN.split(/[\r\n,; ]+/)
-                .map((s) => s.trim())
-                .filter((s) => s.length > 0);
-        }
-        if (optList.length === 0) {
-            optList = [ARGO_DOMAIN];
+            if (ENABLE_HY2_HOP) {
+                nodes.push({
+                    name: `${masterPrefix} | Hy2跳跃[${HY2_HOP_PORTS}]${nameSuffix}`,
+                    type: "hysteria2-hop",
+                    server: DIRECT_IP,
+                    port: parseInt(HY2_HOP_PORTS.split("-")[0], 10),
+                    ports: HY2_HOP_PORTS,
+                    password: uuid,
+                    sni: REALITY_DEST,
+                    skipCertVerify: true,
+                    udp: true,
+                    hopInterval: HY2_HOP_INTERVAL
+                });
+            }
         }
 
-        optList.forEach((optAddress, optIdx) => {
-            const optLabel = optList.length > 1 ? `优选${optIdx + 1}` : "优选";
+        if (ENABLE_TUIC) {
             nodes.push({
-                name: `${optLabel}-VLESS${nameSuffix} [${optAddress}]`,
-                type: "vless",
-                server: optAddress,
-                port: 443,
+                name: `${masterPrefix} | TUICv5[${PORT_TUIC}]${nameSuffix}`,
+                type: "tuic",
+                server: DIRECT_IP,
+                port: PORT_TUIC,
                 uuid: uuid,
-                tls: true,
-                sni: ARGO_DOMAIN,
-                network: "ws",
-                wsPath: vlessPath,
-                wsHeaders: { Host: ARGO_DOMAIN }
-            });
-
-            nodes.push({
-                name: `${optLabel}-VMess${nameSuffix} [${optAddress}]`,
-                type: "vmess",
-                server: optAddress,
-                port: 443,
-                uuid: uuid,
-                alterId: 0,
-                cipher: "auto",
-                tls: true,
-                sni: ARGO_DOMAIN,
-                network: "ws",
-                wsPath: vmessPath,
-                wsHeaders: { Host: ARGO_DOMAIN }
-            });
-
-            nodes.push({
-                name: `${optLabel}-Trojan${nameSuffix} [${optAddress}]`,
-                type: "trojan",
-                server: optAddress,
-                port: 443,
                 password: uuid,
-                tls: true,
-                sni: ARGO_DOMAIN,
-                network: "ws",
-                wsPath: trojanPath,
-                wsHeaders: { Host: ARGO_DOMAIN }
+                sni: REALITY_DEST,
+                congestion: "bbr",
+                skipCertVerify: true,
+                udp: true
             });
-        });
+        }
+
+        if (ENABLE_REALITY && realityState.publicKey) {
+            nodes.push({
+                name: `${masterPrefix} | Reality抗封[${PORT_REALITY}]${nameSuffix}`,
+                type: "vless-reality",
+                server: DIRECT_IP,
+                port: PORT_REALITY,
+                uuid: uuid,
+                sni: REALITY_DEST,
+                pbk: realityState.publicKey,
+                sid: realityState.shortId || "16888888",
+                fp: "chrome",
+                udp: true
+            });
+        }
+
+        if (ENABLE_VLESS_TCP) {
+            nodes.push({
+                name: `${masterPrefix} | VLESS纯直连[${PORT_VLESS_TCP}]${nameSuffix}`,
+                type: "vless-tcp",
+                server: DIRECT_IP,
+                port: PORT_VLESS_TCP,
+                uuid: uuid,
+                network: "tcp",
+                tls: false,
+                udp: true
+            });
+        }
+
+        if (ENABLE_TROJAN_TCP) {
+            nodes.push({
+                name: `${masterPrefix} | Trojan直连[${PORT_TROJAN_TCP}]${nameSuffix}`,
+                type: "trojan-tcp",
+                server: DIRECT_IP,
+                port: PORT_TROJAN_TCP,
+                password: uuid,
+                network: "tcp",
+                tls: false,
+                udp: true
+            });
+        }
+
+        if (ENABLE_SS && PORT_SS > 0 && ssSecretState) {
+            const userSsKey = getUserSsKey(user.uuid);
+            nodes.push({
+                name: `${masterPrefix} | SS2022[${PORT_SS}]${nameSuffix}`,
+                type: "shadowsocks",
+                server: DIRECT_IP,
+                port: PORT_SS,
+                method: SS_METHOD,
+                password: `${ssSecretState}:${userSsKey}`,
+                udp: true
+            });
+        }
+
+        // Argo 优选穿透节点
+        if (isTunnelAvailable) {
+            let optList = [];
+            if (OPTIMIZED_DOMAIN && OPTIMIZED_DOMAIN.trim() !== "") {
+                optList = OPTIMIZED_DOMAIN.split(/[\r\n,; ]+/)
+                    .map((s) => s.trim())
+                    .filter((s) => s.length > 0);
+            }
+            if (optList.length === 0) {
+                optList = [ARGO_DOMAIN];
+            }
+
+            optList.forEach((optAddress, optIdx) => {
+                const optLabel = optList.length > 1 ? `优选${optIdx + 1}` : "优选";
+                nodes.push({
+                    name: `${masterPrefix} | ${optLabel}-VLESS${nameSuffix} [${optAddress}]`,
+                    type: "vless",
+                    server: optAddress,
+                    port: 443,
+                    uuid: uuid,
+                    tls: true,
+                    sni: ARGO_DOMAIN,
+                    network: "ws",
+                    wsPath: vlessPath,
+                    wsHeaders: { Host: ARGO_DOMAIN }
+                });
+
+                nodes.push({
+                    name: `${masterPrefix} | ${optLabel}-VMess${nameSuffix} [${optAddress}]`,
+                    type: "vmess",
+                    server: optAddress,
+                    port: 443,
+                    uuid: uuid,
+                    alterId: 0,
+                    cipher: "auto",
+                    tls: true,
+                    sni: ARGO_DOMAIN,
+                    network: "ws",
+                    wsPath: vmessPath,
+                    wsHeaders: { Host: ARGO_DOMAIN }
+                });
+
+                nodes.push({
+                    name: `${masterPrefix} | ${optLabel}-Trojan${nameSuffix} [${optAddress}]`,
+                    type: "trojan",
+                    server: optAddress,
+                    port: 443,
+                    password: uuid,
+                    tls: true,
+                    sni: ARGO_DOMAIN,
+                    network: "ws",
+                    wsPath: trojanPath,
+                    wsHeaders: { Host: ARGO_DOMAIN }
+                });
+            });
+        }
     }
 
-    // 3. 动态扩展集群节点 (从 EXTRA_NODES 配置注入)
+    // 2. 动态聚合集群在线副服务器节点 (带权限过滤与各副机开启协议自适应)
+    clusterNodes.forEach((worker) => {
+        if (worker.role === "master") return;
+        if (worker.status !== "online") return; // 自动剔除离线/失联节点
+        const allowWorker = assigned.includes("*") || assigned.includes(worker.id);
+        if (!allowWorker) return;
+
+        const wPrefix = worker.name || "集群分机";
+        const wIp = worker.ip || DIRECT_IP;
+        const p = worker.protocols || {};
+
+        if (p.reality && p.reality.enabled) {
+            nodes.push({
+                name: `${wPrefix} | Reality抗封[${p.reality.port || 18802}]${nameSuffix}`,
+                type: "vless-reality",
+                server: wIp,
+                port: p.reality.port || 18802,
+                uuid: uuid,
+                sni: p.reality.dest || REALITY_DEST,
+                pbk: p.reality.pbk || realityState.publicKey,
+                sid: p.reality.sid || realityState.shortId || "16888888",
+                fp: "chrome",
+                udp: true
+            });
+        }
+
+        if (p.hy2 && p.hy2.enabled) {
+            nodes.push({
+                name: `${wPrefix} | Hy2极速[${p.hy2.port || 18800}]${nameSuffix}`,
+                type: "hysteria2",
+                server: wIp,
+                port: p.hy2.port || 18800,
+                password: uuid,
+                sni: REALITY_DEST,
+                skipCertVerify: true,
+                udp: true
+            });
+        }
+
+        if (p.tuic && p.tuic.enabled) {
+            nodes.push({
+                name: `${wPrefix} | TUICv5[${p.tuic.port || 18801}]${nameSuffix}`,
+                type: "tuic",
+                server: wIp,
+                port: p.tuic.port || 18801,
+                uuid: uuid,
+                password: uuid,
+                sni: REALITY_DEST,
+                congestion: "bbr",
+                skipCertVerify: true,
+                udp: true
+            });
+        }
+
+        if (p.vlessTcp && p.vlessTcp.enabled) {
+            nodes.push({
+                name: `${wPrefix} | VLESS纯直连[${p.vlessTcp.port || 18803}]${nameSuffix}`,
+                type: "vless-tcp",
+                server: wIp,
+                port: p.vlessTcp.port || 18803,
+                uuid: uuid,
+                network: "tcp",
+                tls: false,
+                udp: true
+            });
+        }
+
+        if (p.trojanTcp && p.trojanTcp.enabled) {
+            nodes.push({
+                name: `${wPrefix} | Trojan直连[${p.trojanTcp.port || 18804}]${nameSuffix}`,
+                type: "trojan-tcp",
+                server: wIp,
+                port: p.trojanTcp.port || 18804,
+                password: uuid,
+                network: "tcp",
+                tls: false,
+                udp: true
+            });
+        }
+
+        if (p.ss && p.ss.enabled && ssSecretState) {
+            const userSsKey = getUserSsKey(user.uuid);
+            nodes.push({
+                name: `${wPrefix} | SS2022[${p.ss.port || 18805}]${nameSuffix}`,
+                type: "shadowsocks",
+                server: wIp,
+                port: p.ss.port || 18805,
+                method: SS_METHOD,
+                password: `${ssSecretState}:${userSsKey}`,
+                udp: true
+            });
+        }
+    });
+
+    // 3. 动态扩展集群节点 (从 EXTRA_NODES 静态配置兼容注入)
     if (Array.isArray(extraNodesConfig) && extraNodesConfig.length > 0) {
         extraNodesConfig.forEach((ext, idx) => {
             const extName = `${ext.name || `集群节点-${idx + 1}`}${nameSuffix}`;
@@ -2016,6 +2326,18 @@ function handleHttpRequest(req, res) {
         return res.end(getNodesForUser(user));
     }
 
+    // 1.1 分布式集群分机一键部署脚本分发
+    if (pathname === "/start-node.sh" || pathname === "/install-node.sh") {
+        const scriptPath = path.join(__dirname, "start-node.sh");
+        if (fs.existsSync(scriptPath)) {
+            res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+            return res.end(fs.readFileSync(scriptPath, "utf-8"));
+        } else {
+            res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+            return res.end("# start-node.sh not found");
+        }
+    }
+
     // 2. 实时用量异步轮询 API
     if (pathname === "/api/my-stats") {
         const currentUser = getSessionUser(req);
@@ -2358,6 +2680,108 @@ function handleHttpRequest(req, res) {
         return res.end();
     }
 
+    // -------------------- 5.1 集群副机通信与心跳 API --------------------
+    if (pathname === "/api/internal/node/heartbeat" && req.method === "POST") {
+        let body = "";
+        req.on("data", (c) => { body += c; });
+        req.on("end", () => {
+            try {
+                const data = JSON.parse(body || "{}");
+                const { secret, nodeId, name, ip, trafficDeltas, currentConfigVersion, protocols } = data;
+
+                const validSecret = CLUSTER_SECRET || ADMIN_TOKEN;
+                if (!secret || String(secret).trim() !== String(validSecret).trim()) {
+                    return sendJsonResponse(res, 401, { error: "集群密钥鉴权失败" });
+                }
+
+                if (!nodeId) {
+                    return sendJsonResponse(res, 400, { error: "缺少副机节点 ID" });
+                }
+
+                let node = clusterNodes.find(n => n.id === nodeId);
+                const reqIp = (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.socket.remoteAddress || "";
+                const effectiveIp = (ip && ip.trim()) ? ip.trim() : (reqIp.replace(/^.*:/, "") || DIRECT_IP);
+
+                if (!node) {
+                    node = {
+                        id: nodeId,
+                        role: "worker",
+                        name: name || `集群分机-${nodeId.slice(0, 6)}`,
+                        ip: effectiveIp,
+                        status: "online",
+                        lastHeartbeat: Date.now(),
+                        trafficReported: 0,
+                        protocols: protocols || {
+                            reality: { enabled: true, port: 18802 },
+                            hy2: { enabled: true, port: 18800 },
+                            tuic: { enabled: false, port: 18801 },
+                            vlessTcp: { enabled: true, port: 18803 },
+                            trojanTcp: { enabled: false, port: 18804 },
+                            ss: { enabled: false, port: 18805 }
+                        },
+                        configVersion: 1,
+                        needReload: false
+                    };
+                    clusterNodes.push(node);
+                    console.log(`[Cluster] 新副机成功加入集群: [${node.name}] (${effectiveIp})`);
+                } else {
+                    node.status = "online";
+                    node.lastHeartbeat = Date.now();
+                    if (effectiveIp && effectiveIp !== "127.0.0.1") node.ip = effectiveIp;
+                    if (name && (!node.name || node.name.startsWith("集群分机-"))) node.name = name;
+                }
+
+                // 累加流量增量上报
+                let usersChanged = false;
+                if (Array.isArray(trafficDeltas) && trafficDeltas.length > 0) {
+                    trafficDeltas.forEach(delta => {
+                        const targetUser = usersDatabase.find(u => u.uuid === delta.uuid);
+                        if (targetUser && delta.bytes > 0) {
+                            targetUser.trafficUsed = (targetUser.trafficUsed || 0) + delta.bytes;
+                            node.trafficReported = (node.trafficReported || 0) + delta.bytes;
+                            usersChanged = true;
+                        }
+                    });
+                }
+                if (usersChanged) {
+                    saveUsers();
+                }
+
+                if (node.needReload && currentConfigVersion >= node.configVersion) {
+                    node.needReload = false;
+                }
+                saveClusterNodes();
+
+                // 获取授权给该副机的有效用户列表
+                const authorizedUsers = usersDatabase.filter(u => {
+                    if (u.enabled === false) return false;
+                    if (u.expireTime > 0 && u.expireTime < Date.now()) return false;
+                    if (u.trafficLimit > 0 && (u.trafficUsed || 0) >= u.trafficLimit) return false;
+                    const assigned = Array.isArray(u.assignedNodes) && u.assignedNodes.length > 0 ? u.assignedNodes : ["*"];
+                    return assigned.includes("*") || assigned.includes(nodeId);
+                }).map(u => ({
+                    uuid: u.uuid,
+                    username: u.username,
+                    trafficLimit: u.trafficLimit,
+                    trafficUsed: u.trafficUsed
+                }));
+
+                return sendJsonResponse(res, 200, {
+                    success: true,
+                    serverTime: Date.now(),
+                    nodeId: node.id,
+                    configVersion: node.configVersion || 1,
+                    needReload: Boolean(node.needReload || (currentConfigVersion < (node.configVersion || 1))),
+                    protocols: node.protocols,
+                    authorizedUsers: authorizedUsers
+                });
+            } catch (err) {
+                return sendJsonResponse(res, 500, { error: "心跳处理异常: " + err.message });
+            }
+        });
+        return;
+    }
+
     // 6. 后台管理 API (严格经过 checkAdminAuth 隔离校验)
     if (pathname.startsWith("/admin/api/")) {
         if (!checkAdminAuth(req, query)) {
@@ -2365,10 +2789,106 @@ function handleHttpRequest(req, res) {
             return res.end(JSON.stringify({ error: "管理凭据未授权或会话已过期" }));
         }
 
+        // -------------------- 集群总控后台管理 API --------------------
+        // 1. 获取所有节点列表及一键接入命令
+        if (pathname === "/admin/api/cluster/nodes" && req.method === "GET") {
+            ensureMasterNodeInCluster();
+            const reqHost = req.headers["x-forwarded-host"] || req.headers.host || `${DIRECT_IP}:${SERVER_PORT}`;
+            const reqProto = req.headers["x-forwarded-proto"] || (req.connection && req.connection.encrypted ? "https" : "http");
+            const masterUrl = `${reqProto}://${reqHost}`;
+            const joinCommand = `git clone https://github.com/hc990275/nodejs.git && cd nodejs/linux && ./start-node.sh --master=${masterUrl} --secret=${CLUSTER_SECRET || ADMIN_TOKEN} --name="🇯🇵 日本02"`;
+
+            return sendJsonResponse(res, 200, {
+                success: true,
+                nodes: clusterNodes,
+                masterUrl: masterUrl,
+                clusterSecret: CLUSTER_SECRET || ADMIN_TOKEN,
+                joinCommand: joinCommand,
+                currentLocation: getEffectiveServerLocation()
+            });
+        }
+
+        // 2. 修改节点基本信息 (名称/地区/IP)
+        if (pathname === "/admin/api/cluster/node/update" && req.method === "POST") {
+            let body = "";
+            req.on("data", (c) => { body += c; });
+            req.on("end", () => {
+                try {
+                    const { id, name, ip } = JSON.parse(body || "{}");
+                    const target = clusterNodes.find(n => n.id === id);
+                    if (!target) return sendJsonResponse(res, 404, { error: "未找到目标节点" });
+
+                    if (name !== undefined && String(name).trim() !== "") target.name = String(name).trim();
+                    if (ip !== undefined && String(ip).trim() !== "") target.ip = String(ip).trim();
+
+                    if (target.id === "master" || target.role === "master") {
+                        siteSettings.serverLocation = target.name;
+                        SERVER_LOCATION = target.name;
+                        saveSettings();
+                    }
+
+                    saveClusterNodes();
+                    return sendJsonResponse(res, 200, { success: true, node: target });
+                } catch (e) {
+                    return sendJsonResponse(res, 500, { error: "修改节点失败: " + e.message });
+                }
+            });
+            return;
+        }
+
+        // 3. 远程配置副机协议与端口 (一键开关协议，通知副机热重载)
+        if (pathname === "/admin/api/cluster/node/protocols" && req.method === "POST") {
+            let body = "";
+            req.on("data", (c) => { body += c; });
+            req.on("end", () => {
+                try {
+                    const { id, protocols } = JSON.parse(body || "{}");
+                    const target = clusterNodes.find(n => n.id === id);
+                    if (!target) return sendJsonResponse(res, 404, { error: "未找到目标节点" });
+
+                    if (protocols && typeof protocols === "object") {
+                        target.protocols = Object.assign({}, target.protocols, protocols);
+                        target.configVersion = (target.configVersion || 1) + 1;
+                        target.needReload = true; // 标记需重载，副机下一次心跳秒级拉取并生效
+                    }
+
+                    saveClusterNodes();
+                    console.log(`[Cluster] 管理员已远程更新副机 [${target.name}] 协议配置，下发版本升至 v${target.configVersion}`);
+                    return sendJsonResponse(res, 200, { success: true, node: target });
+                } catch (e) {
+                    return sendJsonResponse(res, 500, { error: "更新协议配置失败: " + e.message });
+                }
+            });
+            return;
+        }
+
+        // 4. 踢出/删除副机节点
+        if (pathname === "/admin/api/cluster/node/delete" && req.method === "POST") {
+            let body = "";
+            req.on("data", (c) => { body += c; });
+            req.on("end", () => {
+                try {
+                    const { id } = JSON.parse(body || "{}");
+                    if (id === "master") return sendJsonResponse(res, 400, { error: "禁止删除主控节点" });
+                    const idx = clusterNodes.findIndex(n => n.id === id);
+                    if (idx < 0) return sendJsonResponse(res, 404, { error: "未找到目标节点" });
+
+                    const removed = clusterNodes.splice(idx, 1);
+                    saveClusterNodes();
+                    console.log(`[Cluster] 管理员已将副机 [${removed[0].name || id}] 踢出集群`);
+                    return sendJsonResponse(res, 200, { success: true });
+                } catch (e) {
+                    return sendJsonResponse(res, 500, { error: "删除节点失败: " + e.message });
+                }
+            });
+            return;
+        }
+
         // 读取全局站点配置与全量协议/网络变量
         if (pathname === "/admin/api/settings" && req.method === "GET") {
             return sendJsonResponse(res, 200, {
                 ...siteSettings,
+                serverLocation: getEffectiveServerLocation(),
                 envSettings: {
                     SERVER_PORT,
                     DIRECT_IP,
@@ -2403,6 +2923,11 @@ function handleHttpRequest(req, res) {
             req.on("end", () => {
                 try {
                     const data = JSON.parse(body || "{}");
+                    if (data.serverLocation !== undefined) {
+                        siteSettings.serverLocation = String(data.serverLocation || "").trim();
+                        SERVER_LOCATION = siteSettings.serverLocation;
+                        ensureMasterNodeInCluster();
+                    }
                     if (data.allowRegister !== undefined) {
                         siteSettings.allowRegister = Boolean(data.allowRegister);
                     }
@@ -2656,6 +3181,12 @@ function handleHttpRequest(req, res) {
                     user.idleTimeoutSeconds = Math.max(10, parseInt(idleTimeoutSeconds, 10) || 60);
                 }
 
+                // 注入允许访问的集群节点权限
+                const { assignedNodes } = JSON.parse(body || "{}");
+                if (assignedNodes !== undefined) {
+                    user.assignedNodes = Array.isArray(assignedNodes) ? assignedNodes : ["*"];
+                }
+
                 saveUsers();
                 safeReloadSingbox();
 
@@ -2757,7 +3288,8 @@ function handleHttpRequest(req, res) {
                     maxOnlineIps: Math.max(0, parseInt(JSON.parse(body || "{}").maxOnlineIps || "0", 10)),
                     ipLimitPolicy: JSON.parse(body || "{}").ipLimitPolicy || "kick_oldest",
                     idleDisconnectEnabled: JSON.parse(body || "{}").idleDisconnectEnabled !== false,
-                    idleTimeoutSeconds: Math.max(10, parseInt(JSON.parse(body || "{}").idleTimeoutSeconds || "60", 10))
+                    idleTimeoutSeconds: Math.max(10, parseInt(JSON.parse(body || "{}").idleTimeoutSeconds || "60", 10)),
+                    assignedNodes: Array.isArray(JSON.parse(body || "{}").assignedNodes) ? JSON.parse(body || "{}").assignedNodes : ["*"]
                 };
 
                 usersDatabase.push(newUser);
@@ -2858,6 +3390,9 @@ function handleHttpRequest(req, res) {
             getActiveUsers,
             getUserActivity,
             userActivityMap,
+            clusterNodes,
+            CLUSTER_SECRET,
+            masterLocation: getEffectiveServerLocation(),
             sendHtmlResponse
         });
     }
@@ -3338,6 +3873,9 @@ setInterval(pollSingboxClashApiTraffic, 5000);
 loadUsers();
 loadSettings();
 loadClientDownloads();
+loadClusterNodes();
+initClusterHeartbeatMonitor();
+detectServerLocation();
 
 
 let v3FileWatchInit = false;
@@ -3458,15 +3996,140 @@ if (require.main === module) {
         SERVER_PORT = port;
 
         console.log("=".repeat(65));
-        console.log("🚀 V3 极轻量节点与多协议分发控制中枢 (独立启动模式)");
+        console.log(`🚀 V3 极轻量节点与多协议分发控制中枢 (${NODE_ROLE === "worker" ? "集群Worker分机模式" : "主控总控模式"})`);
         console.log(`📡 自动识别端口: ${port} (来源: ${process.env.SERVER_PORT ? "翼龙面板环境变量" : "本地默认/配置"})`);
         console.log(`🌍 自动探测公网: ${hostIp} (来源: ${process.env.SERVER_IP ? "指定配置" : "动态公网探测"})`);
         console.log(`📁 数据持久目录: ${defaultDataDir}`);
         console.log("=".repeat(65));
 
-        // 3. 独立启动模式：直接监听 0.0.0.0 对外开放端口
-        startV3Service(port, defaultDataDir, hostIp, port, "0.0.0.0");
+        if (NODE_ROLE === "worker") {
+            startWorkerMode(port, hostIp);
+        } else {
+            // 3. 主控独立启动模式：直接监听 0.0.0.0 对外开放端口
+            startV3Service(port, defaultDataDir, hostIp, port, "0.0.0.0");
+        }
     })();
+
+    // 集群 Worker 分机轻量守护引擎
+    function startWorkerMode(port, hostIp) {
+        let workerConfigVersion = 0;
+        const workerNodeId = (process.env.NODE_ID || crypto.createHash("md5").update(hostIp + ":" + port).digest("hex").slice(0, 12));
+        const effectiveName = NODE_NAME || getEffectiveServerLocation();
+
+        console.log(`[Worker] 分机节点 ID: ${workerNodeId}`);
+        console.log(`[Worker] 主控地址: ${CLUSTER_MASTER || "未配置 (请在 .env 中设置 CLUSTER_MASTER)"}`);
+        console.log(`[Worker] 分机节点名称: ${effectiveName}`);
+
+        initSingboxCore();
+
+        async function sendWorkerHeartbeat() {
+            if (!CLUSTER_MASTER) return;
+
+            const trafficDeltas = [];
+            userActivityMap.forEach((act, uuid) => {
+                if (act.lastReportedBytes === undefined) act.lastReportedBytes = 0;
+                const curBytes = act.totalBytes || 0;
+                const delta = curBytes - act.lastReportedBytes;
+                if (delta > 0) {
+                    trafficDeltas.push({ uuid, bytes: delta });
+                    act.lastReportedBytes = curBytes;
+                }
+            });
+
+            const payload = JSON.stringify({
+                secret: CLUSTER_SECRET,
+                nodeId: workerNodeId,
+                name: effectiveName,
+                ip: hostIp,
+                currentConfigVersion: workerConfigVersion,
+                trafficDeltas: trafficDeltas
+            });
+
+            try {
+                const parsedUrl = new URL(CLUSTER_MASTER + "/api/internal/node/heartbeat");
+                const isHttps = parsedUrl.protocol === "https:";
+                const client = isHttps ? https : http;
+
+                const req = client.request({
+                    hostname: parsedUrl.hostname,
+                    port: parsedUrl.port || (isHttps ? 443 : 80),
+                    path: parsedUrl.pathname + parsedUrl.search,
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Content-Length": Buffer.byteLength(payload)
+                    },
+                    timeout: 5000
+                }, (res) => {
+                    let data = "";
+                    res.on("data", c => data += c);
+                    res.on("end", () => {
+                        try {
+                            const json = JSON.parse(data);
+                            if (json.success) {
+                                if (json.needReload || json.configVersion > workerConfigVersion) {
+                                    console.log(`[Worker] 收到主控新配置 (v${json.configVersion})，正在热重载代理引擎...`);
+                                    workerConfigVersion = json.configVersion;
+                                    if (json.protocols) {
+                                        applyWorkerProtocols(json.protocols);
+                                    }
+                                    if (Array.isArray(json.authorizedUsers)) {
+                                        usersDatabase = json.authorizedUsers.map(u => ({
+                                            uuid: u.uuid,
+                                            username: u.username,
+                                            enabled: true,
+                                            trafficLimit: u.trafficLimit || 0,
+                                            trafficUsed: u.trafficUsed || 0
+                                        }));
+                                        saveUsers();
+                                    }
+                                    safeReloadSingbox(true);
+                                }
+                            }
+                        } catch (_) { }
+                    });
+                });
+
+                req.on("error", (e) => {
+                    console.warn(`[Worker] 心跳上报连接主控失败: ${e.message}`);
+                });
+                req.write(payload);
+                req.end();
+            } catch (err) {
+                console.warn(`[Worker] 心跳发送异常: ${err.message}`);
+            }
+        }
+
+        function applyWorkerProtocols(p) {
+            if (p.hy2) {
+                ENABLE_HY2 = Boolean(p.hy2.enabled);
+                if (p.hy2.port) PORT_HY2 = p.hy2.port;
+            }
+            if (p.tuic) {
+                ENABLE_TUIC = Boolean(p.tuic.enabled);
+                if (p.tuic.port) PORT_TUIC = p.tuic.port;
+            }
+            if (p.reality) {
+                ENABLE_REALITY = Boolean(p.reality.enabled);
+                if (p.reality.port) PORT_REALITY = p.reality.port;
+            }
+            if (p.vlessTcp) {
+                ENABLE_VLESS_TCP = Boolean(p.vlessTcp.enabled);
+                if (p.vlessTcp.port) PORT_VLESS_TCP = p.vlessTcp.port;
+            }
+            if (p.trojanTcp) {
+                ENABLE_TROJAN_TCP = Boolean(p.trojanTcp.enabled);
+                if (p.trojanTcp.port) PORT_TROJAN_TCP = p.trojanTcp.port;
+            }
+            if (p.ss) {
+                ENABLE_SS = Boolean(p.ss.enabled);
+                if (p.ss.port) PORT_SS = p.ss.port;
+            }
+        }
+
+        setTimeout(sendWorkerHeartbeat, 1500);
+        setInterval(sendWorkerHeartbeat, 5000);
+    }
 
     // 优雅关闭信号监听
     function handleStandaloneExit() {

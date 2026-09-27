@@ -22,6 +22,9 @@ function renderAdminPage(req, res, ctx) {
         getActiveUsers,
         getUserActivity,
         userActivityMap,
+        clusterNodes = [],
+        CLUSTER_SECRET = "",
+        masterLocation = "🇺🇸 美西01",
         sendHtmlResponse
     } = ctx;
 
@@ -81,11 +84,13 @@ const totalUsers = usersDatabase.length;
                 maxOnlineIps: u.maxOnlineIps !== undefined ? u.maxOnlineIps : 0,
                 ipLimitPolicy: u.ipLimitPolicy || "kick_oldest",
                 idleDisconnectEnabled: u.idleDisconnectEnabled !== undefined ? u.idleDisconnectEnabled : true,
-                idleTimeoutSeconds: u.idleTimeoutSeconds ? parseInt(u.idleTimeoutSeconds, 10) : 60
+                idleTimeoutSeconds: u.idleTimeoutSeconds ? parseInt(u.idleTimeoutSeconds, 10) : 60,
+                assignedNodes: Array.isArray(u.assignedNodes) ? u.assignedNodes : ["*"]
             };
         });
         const clientUsersJson = JSON.stringify(clientUsers);
         const clientSettingsJson = JSON.stringify(siteSettings);
+        const clientClusterNodesJson = JSON.stringify(clusterNodes);
 
                 let clientDownloadCardHtml = "";
         if (siteSettings.enableClientDownload !== false) {
@@ -1199,6 +1204,10 @@ return sendHtmlResponse(res, 200, `
                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>
                                     实时访客IP监控
                                 </button>
+                                <button class="btn" style="background:#ffffff; border:1px solid var(--el-border); color:var(--el-primary); font-weight:500;" onclick="openClusterModal()">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>
+                                    集群分机管理
+                                </button>
                                 <button class="btn" style="background:#ffffff; border:1px solid var(--el-border); color:var(--el-text-main); font-weight:500;" onclick="openSettingsModal()">
                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
                                     站点与注册配置
@@ -1329,6 +1338,11 @@ return sendHtmlResponse(res, 200, `
                                 <div class="field-box">
                                     <label>站长联系直达链接 (URL)</label>
                                     <input type="text" id="set_contactUrl" placeholder="例如: https://t.me/s5gydl" value="https://t.me/s5gydl" />
+                                </div>
+                                <div class="field-box">
+                                    <label>当前主控节点名称 / 国家地区标识 (留空则根据公网IP自动识别)</label>
+                                    <input type="text" id="set_serverLocation" placeholder="例如: 🇺🇸 美西01 或 🇭🇰 香港01 (留空则自动识别)" />
+                                    <div style="font-size:11px; color:var(--el-text-secondary); margin-top:3px;">用于订阅客户端节点名称前缀，例如：🇺🇸 美西01 | Reality抗封[18802]-用户名</div>
                                 </div>
                             </div>
 
@@ -1537,6 +1551,13 @@ return sendHtmlResponse(res, 200, `
                                     </div>
                                 </div>
                             </div>
+                            <div class="field-box">
+                                <label>授权服务器节点</label>
+                                <select id="add_assigned_nodes" multiple style="width:100%; min-height:56px; padding:4px 8px; border:1px solid var(--el-border); border-radius:6px; font-size:12px;">
+                                    <option value="*" selected>全部服务器节点 (包含主控与全部在线分机)</option>
+                                </select>
+                                <div style="font-size:11px; color:var(--el-text-secondary); margin-top:3px;">按住 Ctrl 可多选指定服务器。若选择“全部”，新上线的副机也会自动同步此账号。</div>
+                            </div>
                             <div class="modal-footer">
                                 <button class="btn" style="background:#ffffff; border:1px solid var(--el-border); color:var(--el-text-regular);" onclick="closeAddModal()">取消</button>
                                 <button class="btn btn-primary" id="saveAddBtn" onclick="submitAdd()">立即创建</button>
@@ -1606,6 +1627,13 @@ return sendHtmlResponse(res, 200, `
                                         <span style="font-size:12px; color:var(--el-text-secondary);">秒</span>
                                     </div>
                                 </div>
+                            </div>
+                            <div class="field-box">
+                                <label>授权服务器节点</label>
+                                <select id="edit_assigned_nodes" multiple style="width:100%; min-height:56px; padding:4px 8px; border:1px solid var(--el-border); border-radius:6px; font-size:12px;">
+                                    <option value="*">全部服务器节点 (包含主控与全部在线分机)</option>
+                                </select>
+                                <div style="font-size:11px; color:var(--el-text-secondary); margin-top:3px;">按住 Ctrl 可多选。仅被授权的服务器会分发此用户的代理配置与订阅。</div>
                             </div>
                             <div class="modal-footer">
                                 <button class="btn" style="background:#ffffff; border:1px solid var(--el-border); color:var(--el-text-regular);" onclick="closeEditModal()">取消</button>
@@ -1712,6 +1740,180 @@ return sendHtmlResponse(res, 200, `
                             </div>
                         </div>
                     </div>
+
+                    <!-- 集群与分布式分机节点管理弹窗 -->
+                    <div class="modal-mask" id="clusterModal" style="display:none;">
+                        <div class="modal" style="max-width: 960px; width: 95%; max-height: 90vh; overflow-y: auto;">
+                            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+                                <h4 style="margin:0; display:flex; align-items:center; gap:8px;">
+                                    <span>🖥️</span> <span>服务器集群与分布式分机控制中心</span>
+                                </h4>
+                                <button class="btn" style="padding:4px 10px; font-size:12px; background:#ffffff; border:1px solid var(--el-border);" onclick="closeClusterModal()">✕ 关闭</button>
+                            </div>
+
+                            <!-- 集群概览与添加分机提示卡 -->
+                            <div style="background:#f8f9fa; border:1px solid var(--el-border); border-radius:8px; padding:14px 16px; margin-bottom:16px;">
+                                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+                                    <div>
+                                        <div style="font-weight:600; font-size:14px; color:var(--el-text-main);">
+                                            当前主控公网地址: <span id="clusterMasterUrlDisplay" style="font-family:Consolas, monospace; color:var(--el-primary);"></span>
+                                        </div>
+                                        <div style="font-size:12px; color:var(--el-text-secondary); margin-top:4px;">
+                                            集群通信密钥 (NODE_SECRET): <code id="clusterSecretDisplay" style="background:#eef1f6; padding:2px 6px; border-radius:4px; font-weight:600;"></code>
+                                        </div>
+                                    </div>
+                                    <button class="btn btn-primary" style="font-size:13px;" onclick="toggleJoinCommandBox()">
+                                        ➕ 添加副机节点 (一键接入)
+                                    </button>
+                                </div>
+
+                                <!-- 一键接入命令展开框 -->
+                                <div id="joinCommandBox" style="display:none; margin-top:14px; padding-top:14px; border-top:1px dashed var(--el-border);">
+                                    <div style="font-size:12px; font-weight:600; color:var(--el-text-main); margin-bottom:6px;">
+                                        📋 在副机 (新服务器) SSH 终端直接粘贴执行以下一键启动命令：
+                                    </div>
+                                    <div style="display:flex; gap:8px; align-items:center;">
+                                        <input type="text" id="clusterJoinCommandInput" readonly style="flex:1; font-family:Consolas, monospace; font-size:12px; padding:8px 10px; background:#ffffff; border:1px solid var(--el-border); border-radius:4px;" />
+                                        <button class="btn" style="background:var(--el-primary); color:#ffffff; white-space:nowrap; padding:8px 14px;" onclick="copyJoinCommand()">复制命令</button>
+                                    </div>
+                                    <div style="font-size:11px; color:var(--el-text-secondary); margin-top:6px;">
+                                        副机启动后将自动与主控建立安全心跳通道，在此页面可直接远程开启/关闭协议或调整端口，全自动热生效！
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 节点列表表格 -->
+                            <div style="border:1px solid var(--el-border); border-radius:6px; overflow:hidden; background:#ffffff;">
+                                <table style="width:100%; border-collapse:collapse; text-align:left; font-size:13px;">
+                                    <thead>
+                                        <tr style="background:#f5f7fa; border-bottom:1px solid var(--el-border); color:var(--el-text-regular);">
+                                            <th style="padding:10px 14px; font-weight:600;">节点名称 / 地区</th>
+                                            <th style="padding:10px 14px; font-weight:600;">角色 / 状态</th>
+                                            <th style="padding:10px 14px; font-weight:600;">公网 IP</th>
+                                            <th style="padding:10px 14px; font-weight:600;">开放协议与端口</th>
+                                            <th style="padding:10px 14px; font-weight:600;">累计流量</th>
+                                            <th style="padding:10px 14px; font-weight:600; text-align:center;">远程操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="clusterNodesTableBody">
+                                        <tr><td colspan="6" style="text-align:center; padding:20px; color:var(--el-text-secondary);">正在加载集群节点数据...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <div style="margin-top:14px; display:flex; justify-content:space-between; align-items:center;">
+                                <div style="font-size:12px; color:var(--el-text-secondary);">
+                                    💡 客户端从主控拉取订阅时，全自动聚合主控与全部在线副机的各协议节点，并附带对应国家旗帜与地区标识。
+                                </div>
+                                <button class="btn" style="background:#ffffff; border:1px solid var(--el-border); color:var(--el-text-regular);" onclick="closeClusterModal()">关闭</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 远程分机协议与端口控制弹窗 -->
+                    <div class="modal-mask" id="workerProtocolsModal" style="display:none; z-index:10001;">
+                        <div class="modal" style="max-width: 620px; width: 92%; max-height: 90vh; overflow-y: auto;">
+                            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                                <h4 id="workerProtoModalTitle" style="margin:0;">⚡ 远程配置副机协议与端口</h4>
+                                <button class="btn" style="padding:2px 8px; font-size:12px; background:#ffffff; border:1px solid var(--el-border);" onclick="closeWorkerProtocolsModal()">✕</button>
+                            </div>
+                            
+                            <div style="font-size:12px; color:var(--el-text-secondary); margin-bottom:14px; background:#ecf5ff; border:1px solid var(--el-primary-border); padding:8px 12px; border-radius:6px; line-height:1.5;">
+                                ⚡ <strong>远程一键下发</strong>：无需登录副机 SSH，在此勾选/取消协议或修改端口，保存后主控将在 5 秒内通过安全心跳下发，副机自动热重载生效！
+                            </div>
+
+                            <input type="hidden" id="wp_node_id" />
+
+                            <!-- 节点名称与地区修改 -->
+                            <div class="field-box">
+                                <label>副机节点名称 / 地区标识 (带国旗)</label>
+                                <input type="text" id="wp_node_name" placeholder="例如: 🇭🇰 香港01 或 🇯🇵 日本东京01" />
+                            </div>
+
+                            <!-- 各协议勾选与端口 -->
+                            <div style="display:flex; flex-direction:column; gap:10px; margin-top:12px;">
+                                <!-- Hy2 -->
+                                <div style="background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px; padding:10px 12px;">
+                                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                                        <span style="font-weight:600; font-size:13px; color:#2c3e50;">🚀 Hysteria 2 (UDP/QUIC 抗丢包)</span>
+                                        <label style="display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer;">
+                                            <input type="checkbox" id="wp_enable_hy2" /> 开启该协议
+                                        </label>
+                                    </div>
+                                    <div style="display:flex; gap:10px;">
+                                        <div style="flex:1;">
+                                            <label style="font-size:11px; color:var(--el-text-secondary);">主端口 (PORT_HY2)</label>
+                                            <input type="number" id="wp_port_hy2" placeholder="默认 10800" style="margin-top:2px;" />
+                                        </div>
+                                        <div style="flex:1.5;">
+                                            <label style="font-size:11px; color:var(--el-text-secondary);">端口跳跃范围 (例: 10900-10909)</label>
+                                            <input type="text" id="wp_hop_hy2" placeholder="留空则不开启跳跃" style="margin-top:2px;" />
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Reality -->
+                                <div style="background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px; padding:10px 12px;">
+                                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                                        <span style="font-weight:600; font-size:13px; color:#2c3e50;">🛡️ VLESS + Reality (TCP 强抗封锁)</span>
+                                        <label style="display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer;">
+                                            <input type="checkbox" id="wp_enable_reality" /> 开启该协议
+                                        </label>
+                                    </div>
+                                    <div>
+                                        <label style="font-size:11px; color:var(--el-text-secondary);">监听端口 (PORT_REALITY)</label>
+                                        <input type="number" id="wp_port_reality" placeholder="默认 10802" style="margin-top:2px;" />
+                                    </div>
+                                </div>
+
+                                <!-- TUIC v5 -->
+                                <div style="background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px; padding:10px 12px;">
+                                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                                        <span style="font-weight:600; font-size:13px; color:#2c3e50;">⚡ TUIC v5 (0-RTT 极低延迟)</span>
+                                        <label style="display:flex; align-items:center; gap:6px; font-size:12px; cursor:pointer;">
+                                            <input type="checkbox" id="wp_enable_tuic" /> 开启该协议
+                                        </label>
+                                    </div>
+                                    <div>
+                                        <label style="font-size:11px; color:var(--el-text-secondary);">监听端口 (PORT_TUIC)</label>
+                                        <input type="number" id="wp_port_tuic" placeholder="默认 10801" style="margin-top:2px;" />
+                                    </div>
+                                </div>
+
+                                <!-- VLESS-TCP & Trojan-TCP & SS -->
+                                <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px;">
+                                    <div style="background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px; padding:8px 10px;">
+                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                                            <span style="font-size:12px; font-weight:600;">VLESS-TCP</span>
+                                            <input type="checkbox" id="wp_enable_vless_tcp" />
+                                        </div>
+                                        <input type="number" id="wp_port_vless_tcp" placeholder="端口 10803" style="font-size:12px; padding:4px 6px;" />
+                                    </div>
+
+                                    <div style="background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px; padding:8px 10px;">
+                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                                            <span style="font-size:12px; font-weight:600;">Trojan-TCP</span>
+                                            <input type="checkbox" id="wp_enable_trojan_tcp" />
+                                        </div>
+                                        <input type="number" id="wp_port_trojan_tcp" placeholder="端口 10804" style="font-size:12px; padding:4px 6px;" />
+                                    </div>
+
+                                    <div style="background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px; padding:8px 10px;">
+                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                                            <span style="font-size:12px; font-weight:600;">Shadowsocks</span>
+                                            <input type="checkbox" id="wp_enable_ss" />
+                                        </div>
+                                        <input type="number" id="wp_port_ss" placeholder="端口 10805" style="font-size:12px; padding:4px 6px;" />
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="modal-footer" style="margin-top:16px;">
+                                <button class="btn" style="background:#ffffff; border:1px solid var(--el-border); color:var(--el-text-regular);" onclick="closeWorkerProtocolsModal()">取消</button>
+                                <button class="btn btn-primary" id="saveWorkerProtoBtn" onclick="submitWorkerProtocols()">保存并远程下发生效</button>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <script>
@@ -1719,6 +1921,9 @@ return sendHtmlResponse(res, 200, `
                     window.__CLIENT_USERS__ = ${clientUsersJson};
                     window.__SITE_SETTINGS__ = ${clientSettingsJson};
                     window.__ADMIN_TOKEN__ = ${JSON.stringify(ADMIN_TOKEN)};
+                    window.__CLUSTER_NODES__ = ${clientClusterNodesJson};
+                    window.__CLUSTER_SECRET__ = ${JSON.stringify(CLUSTER_SECRET)};
+                    window.__MASTER_LOCATION__ = ${JSON.stringify(masterLocation)};
 
                     function getAdminToken() {
                         const q = new URLSearchParams(location.search);
@@ -1918,6 +2123,9 @@ return sendHtmlResponse(res, 200, `
                         const cUrl = document.getElementById("set_contactUrl");
                         if (cUrl) cUrl.value = (s.contactUrl && !String(s.contactUrl).includes("abcai")) ? s.contactUrl : "https://t.me/s5gydl";
 
+                        const sLoc = document.getElementById("set_serverLocation");
+                        if (sLoc) sLoc.value = s.serverLocation || "";
+
                         const cd1 = document.getElementById("set_enableClientDownload_1");
                         const cd0 = document.getElementById("set_enableClientDownload_0");
                         if (cd1 && cd0) {
@@ -2011,6 +2219,7 @@ return sendHtmlResponse(res, 200, `
                         const defaultTrafficUnit = getVal("set_defaultTrafficUnit", "GB") || "GB";
                         const contactText = getVal("set_contactText", "");
                         const contactUrl = getVal("set_contactUrl", "");
+                        const serverLocation = getVal("set_serverLocation", "");
                         const cd1 = document.getElementById("set_enableClientDownload_1");
                         const enableClientDownload = cd1 ? cd1.checked : true;
 
@@ -2072,6 +2281,7 @@ return sendHtmlResponse(res, 200, `
                         if (token) reqHeaders["x-admin-token"] = token;
 
                         const reqBodyStr = JSON.stringify({
+                            serverLocation,
                             allowRegister,
                             enableClientDownload,
                             defaultDays,
@@ -2627,6 +2837,7 @@ return sendHtmlResponse(res, 200, `
                         document.getElementById("add_val").value = "50";
                         document.getElementById("add_unit").value = "GB";
                         document.getElementById("add_days").value = "30";
+                        populateAssignedNodeOptions(["*"]);
                         document.getElementById("addModal").style.display = "flex";
                     }
 
@@ -2653,12 +2864,20 @@ return sendHtmlResponse(res, 200, `
                             const idleDisconnectEnabled = document.getElementById("add_idle_enabled").value === "true";
                             const idleTimeoutSeconds = parseInt(document.getElementById("add_idle_sec").value || "60", 10);
 
+                            const addAssignedSel = document.getElementById("add_assigned_nodes");
+                            let assignedNodes = ["*"];
+                            if (addAssignedSel) {
+                                const selVals = Array.from(addAssignedSel.selectedOptions).map(o => o.value);
+                                if (selVals.length > 0) assignedNodes = selVals;
+                            }
+
                             const res = await fetch("/v3/admin/api/add", {
                                 method: "POST",
                                 headers: { "Content-Type": "application/json" },
                                 body: JSON.stringify({ 
                                     username, password, customUuid, limitVal, limitUnit, days,
-                                    maxOnlineIps, ipLimitPolicy, idleDisconnectEnabled, idleTimeoutSeconds
+                                    maxOnlineIps, ipLimitPolicy, idleDisconnectEnabled, idleTimeoutSeconds,
+                                    assignedNodes
                                 })
                             });
 
@@ -2697,6 +2916,9 @@ return sendHtmlResponse(res, 200, `
                         document.getElementById("edit_ip_policy").value = (u.ipLimitPolicy || "kick_oldest");
                         document.getElementById("edit_idle_enabled").value = String(u.idleDisconnectEnabled !== undefined ? u.idleDisconnectEnabled : true);
                         document.getElementById("edit_idle_sec").value = (u.idleTimeoutSeconds || 60);
+
+                        populateAssignedNodeOptions(u.assignedNodes || ["*"]);
+
                         document.getElementById("editModal").style.display = "flex";
                     }
 
@@ -2722,12 +2944,20 @@ return sendHtmlResponse(res, 200, `
                             const idleDisconnectEnabled = document.getElementById("edit_idle_enabled").value === "true";
                             const idleTimeoutSeconds = parseInt(document.getElementById("edit_idle_sec").value || "60", 10);
 
+                            const editAssignedSel = document.getElementById("edit_assigned_nodes");
+                            let assignedNodes = ["*"];
+                            if (editAssignedSel) {
+                                const selVals = Array.from(editAssignedSel.selectedOptions).map(o => o.value);
+                                if (selVals.length > 0) assignedNodes = selVals;
+                            }
+
                             const res = await fetch("/v3/admin/api/update", {
                                 method: "POST",
                                 headers: { "Content-Type": "application/json" },
                                 body: JSON.stringify({ 
                                     uuid, newUuid, newPassword, trafficLimitVal, trafficLimitUnit, expireDate, enabled,
-                                    maxOnlineIps, ipLimitPolicy, idleDisconnectEnabled, idleTimeoutSeconds
+                                    maxOnlineIps, ipLimitPolicy, idleDisconnectEnabled, idleTimeoutSeconds,
+                                    assignedNodes
                                 })
                             });
 
@@ -3078,16 +3308,329 @@ return sendHtmlResponse(res, 200, `
                         } catch (_) {}
                     }, 5000);
                 
+                    // ================= 集群与副机节点管理 & 远程协议控制逻辑 =================
+                    function populateAssignedNodeOptions(selectedArr) {
+                        const currSelected = selectedArr || ["*"];
+                        const nodes = window.__CLUSTER_NODES__ || [];
+                        const isAll = currSelected.indexOf("*") !== -1;
+                        let html = '<option value="*" ' + (isAll ? 'selected' : '') + '>全部服务器节点 (包含主控与全部在线分机)</option>';
+                        nodes.forEach(function(n) {
+                            const isSel = !isAll && currSelected.indexOf(n.id) !== -1;
+                            const statusLabel = n.isOnline !== false ? "🟢 在线" : "🔴 离线";
+                            html += '<option value="' + escapeHtml(n.id) + '" ' + (isSel ? 'selected' : '') + '>' + escapeHtml(n.name || n.id) + ' (' + statusLabel + ' - ' + escapeHtml(n.ip || "") + ')</option>';
+                        });
+                        const addSel = document.getElementById("add_assigned_nodes");
+                        if (addSel) addSel.innerHTML = html;
+                        const editSel = document.getElementById("edit_assigned_nodes");
+                        if (editSel) editSel.innerHTML = html;
+                    }
+
+                    async function openClusterModal() {
+                        const modal = document.getElementById("clusterModal");
+                        if (modal) modal.style.display = "flex";
+                        await refreshClusterData();
+                    }
+
+                    function closeClusterModal() {
+                        const modal = document.getElementById("clusterModal");
+                        if (modal) modal.style.display = "none";
+                    }
+
+                    async function refreshClusterData() {
+                        const token = getAdminToken();
+                        const basePrefix = location.pathname.startsWith("/v3") ? "/v3" : "";
+                        try {
+                            const res = await fetch(basePrefix + "/admin/api/cluster/nodes" + (token ? "?token=" + encodeURIComponent(token) : ""), {
+                                headers: token ? { "x-admin-token": token } : {}
+                            });
+                            if (res.ok) {
+                                const data = await res.json();
+                                window.__CLUSTER_NODES__ = data.nodes || [];
+                                window.__CLUSTER_MASTER_URL__ = data.masterUrl || location.origin;
+                                window.__CLUSTER_SECRET__ = data.secret || window.__CLUSTER_SECRET__ || "";
+                                renderClusterView(data);
+                                populateAssignedNodeOptions();
+                            }
+                        } catch (e) {
+                            console.warn("拉取集群状态异常:", e);
+                        }
+                    }
+
+                    function renderClusterView(data) {
+                        const masterUrl = data.masterUrl || location.origin;
+                        const secret = data.secret || window.__CLUSTER_SECRET__ || "未配置";
+
+                        const masterUrlEl = document.getElementById("clusterMasterUrlDisplay");
+                        if (masterUrlEl) masterUrlEl.innerText = masterUrl;
+                        const secretEl = document.getElementById("clusterSecretDisplay");
+                        if (secretEl) secretEl.innerText = secret;
+                        const joinCmdInput = document.getElementById("clusterJoinCommandInput");
+                        if (joinCmdInput) {
+                            joinCmdInput.value = data.joinCommand || ("git clone https://github.com/hc990275/nodejs.git && cd nodejs/linux && ./start-node.sh --master=" + masterUrl + " --secret=" + secret);
+                        }
+
+                        const tbody = document.getElementById("clusterNodesTableBody");
+                        if (!tbody) return;
+
+                        const nodes = data.nodes || [];
+                        if (nodes.length === 0) {
+                            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:24px; color:var(--el-text-secondary);">暂无集群节点数据</td></tr>';
+                            return;
+                        }
+
+                        tbody.innerHTML = nodes.map(function(node) {
+                            const isMaster = node.role === "master";
+                            const isOnline = node.isOnline !== false;
+                            const statusBadge = isOnline 
+                                ? '<span style="background:var(--el-success-light); color:var(--el-success); border:1px solid var(--el-success-border); padding:2px 8px; border-radius:4px; font-size:12px; font-weight:600; display:inline-flex; align-items:center; gap:4px;"><span style="width:6px; height:6px; border-radius:50%; background:var(--el-success);"></span>在线</span>'
+                                : '<span style="background:var(--el-danger-light); color:var(--el-danger); border:1px solid var(--el-danger-border); padding:2px 8px; border-radius:4px; font-size:12px; font-weight:600; display:inline-flex; align-items:center; gap:4px;"><span style="width:6px; height:6px; border-radius:50%; background:var(--el-danger);"></span>离线</span>';
+                            
+                            const roleBadge = isMaster
+                                ? '<span style="background:#eef1f6; color:#409eff; padding:2px 6px; border-radius:4px; font-size:11px; font-weight:600; margin-left:6px;">👑 主控</span>'
+                                : '<span style="background:#f4f4f5; color:#909399; padding:2px 6px; border-radius:4px; font-size:11px; margin-left:6px;">副机</span>';
+
+                            const protos = node.protocols || {};
+                            const protoTags = [];
+                            if (protos.hy2 && protos.hy2.enabled) protoTags.push('<span style="background:#f0f9eb; color:#67c23a; border:1px solid #e1f3d8; padding:1px 5px; border-radius:3px; font-size:11px;">Hy2:' + (protos.hy2.port || 10800) + '</span>');
+                            if (protos.tuic && protos.tuic.enabled) protoTags.push('<span style="background:#ecf5ff; color:#409eff; border:1px solid #d9ecff; padding:1px 5px; border-radius:3px; font-size:11px;">TUIC:' + (protos.tuic.port || 10801) + '</span>');
+                            if (protos.reality && protos.reality.enabled) protoTags.push('<span style="background:#fdf6ec; color:#e6a23c; border:1px solid #faecd8; padding:1px 5px; border-radius:3px; font-size:11px;">Reality:' + (protos.reality.port || 10802) + '</span>');
+                            if (protos.vlessTcp && protos.vlessTcp.enabled) protoTags.push('<span style="background:#f4f4f5; color:#606266; border:1px solid #dcdfe6; padding:1px 5px; border-radius:3px; font-size:11px;">VLESS:' + (protos.vlessTcp.port || 10803) + '</span>');
+                            if (protos.trojanTcp && protos.trojanTcp.enabled) protoTags.push('<span style="background:#fef0f0; color:#f56c6c; border:1px solid #fde2e2; padding:1px 5px; border-radius:3px; font-size:11px;">Trojan:' + (protos.trojanTcp.port || 10804) + '</span>');
+                            if (protos.ss && protos.ss.enabled) protoTags.push('<span style="background:#eef1f6; color:#303133; border:1px solid #dcdfe6; padding:1px 5px; border-radius:3px; font-size:11px;">SS:' + (protos.ss.port || 10805) + '</span>');
+                            const protoHtml = protoTags.length > 0 ? protoTags.join(" ") : '<span style="color:var(--el-text-secondary); font-size:11px;">未启用</span>';
+
+                            const trafficStr = formatBytesClient(node.trafficTotal || 0);
+
+                            let actionBtns = "";
+                            if (isMaster) {
+                                actionBtns = '<span style="font-size:12px; color:var(--el-text-secondary);">主控机 (在站点配置维护)</span>';
+                            } else {
+                                actionBtns = '<div style="display:flex; gap:6px; justify-content:center;">' +
+                                    '<button class="btn" style="padding:4px 8px; font-size:12px; background:var(--el-primary-light); color:var(--el-primary); border:1px solid var(--el-primary-border);" onclick="openWorkerProtocolsModal(\'' + escapeHtml(node.id) + '\')">⚡ 远程协议</button>' +
+                                    '<button class="btn" style="padding:4px 8px; font-size:12px; background:#ffffff; border:1px solid var(--el-border); color:var(--el-text-regular);" onclick="promptUpdateNodeName(\'' + escapeHtml(node.id) + '\', \'' + escapeHtml(node.name || '') + '\')">✏️ 改名</button>' +
+                                    '<button class="btn" style="padding:4px 8px; font-size:12px; background:var(--el-danger-light); color:var(--el-danger); border:1px solid var(--el-danger-border);" onclick="deleteClusterNode(\'' + escapeHtml(node.id) + '\')">🗑️ 剔除</button>' +
+                                '</div>';
+                            }
+
+                            return '<tr style="border-bottom:1px solid var(--el-border-light);">' +
+                                '<td style="padding:10px 14px; font-weight:600; color:var(--el-text-main);">' +
+                                    escapeHtml(node.name || (isMaster ? "主控节点" : node.id)) + roleBadge +
+                                    '<div style="font-size:11px; color:var(--el-text-secondary); font-weight:normal; font-family:Consolas, monospace;">ID: ' + escapeHtml(node.id) + '</div>' +
+                                '</td>' +
+                                '<td style="padding:10px 14px;">' +
+                                    statusBadge +
+                                    '<div style="font-size:11px; color:var(--el-text-secondary); margin-top:2px;">' +
+                                        (node.lastHeartbeat ? formatTimeAgo(node.lastHeartbeat) : "未知") +
+                                    '</div>' +
+                                '</td>' +
+                                '<td style="padding:10px 14px; font-family:Consolas, monospace; font-size:12px;">' +
+                                    escapeHtml(node.ip || "自动感知") +
+                                '</td>' +
+                                '<td style="padding:10px 14px;"><div style="display:flex; flex-wrap:wrap; gap:4px; align-items:center;">' +
+                                    protoHtml +
+                                '</div></td>' +
+                                '<td style="padding:10px 14px; font-weight:600; color:var(--el-text-main);">' +
+                                    trafficStr +
+                                '</td>' +
+                                '<td style="padding:10px 14px; text-align:center;">' +
+                                    actionBtns +
+                                '</td>' +
+                            '</tr>';
+                        }).join("");
+                    }
+
+                    function formatBytesClient(bytes) {
+                        if (!bytes || bytes <= 0) return "0 B";
+                        const k = 1024;
+                        const sizes = ["B", "KB", "MB", "GB", "TB"];
+                        const i = Math.floor(Math.log(bytes) / Math.log(k));
+                        return (bytes / Math.pow(k, i)).toFixed(2) + " " + sizes[i];
+                    }
+
+                    function formatTimeAgo(ts) {
+                        const diff = Math.floor((Date.now() - Number(ts)) / 1000);
+                        if (diff < 5) return "刚刚在线";
+                        if (diff < 60) return diff + " 秒前心跳";
+                        if (diff < 3600) return Math.floor(diff / 60) + " 分钟前心跳";
+                        return Math.floor(diff / 3600) + " 小时前";
+                    }
+
+                    function toggleJoinCommandBox() {
+                        const box = document.getElementById("joinCommandBox");
+                        if (box) box.style.display = box.style.display === "none" ? "block" : "none";
+                    }
+
+                    function copyJoinCommand() {
+                        const input = document.getElementById("clusterJoinCommandInput");
+                        if (!input) return;
+                        input.select();
+                        navigator.clipboard.writeText(input.value).then(function() {
+                            showToast("✅ 副机一键启动命令已复制到剪贴板！");
+                        }).catch(function() {
+                            document.execCommand("copy");
+                            showToast("✅ 已复制命令！");
+                        });
+                    }
+
+                    function openWorkerProtocolsModal(nodeId) {
+                        const node = (window.__CLUSTER_NODES__ || []).find(function(n) { return n.id === nodeId; });
+                        if (!node) return alert("未找到副机节点信息");
+
+                        document.getElementById("wp_node_id").value = nodeId;
+                        document.getElementById("wp_node_name").value = node.name || "";
+                        document.getElementById("workerProtoModalTitle").innerText = "⚡ 远程配置副机协议与端口 [" + (node.name || nodeId) + "]";
+
+                        const p = node.protocols || {};
+                        const setChk = function(id, val) { const el = document.getElementById(id); if (el) el.checked = Boolean(val); };
+                        const setVal = function(id, val) { const el = document.getElementById(id); if (el) el.value = val !== undefined && val !== null ? val : ""; };
+
+                        setChk("wp_enable_hy2", p.hy2 ? p.hy2.enabled : true);
+                        setVal("wp_port_hy2", p.hy2 ? p.hy2.port : 10800);
+                        setVal("wp_hop_hy2", p.hy2 ? (p.hy2.hopPorts || "") : "");
+
+                        setChk("wp_enable_reality", p.reality ? p.reality.enabled : true);
+                        setVal("wp_port_reality", p.reality ? p.reality.port : 10802);
+
+                        setChk("wp_enable_tuic", p.tuic ? p.tuic.enabled : true);
+                        setVal("wp_port_tuic", p.tuic ? p.tuic.port : 10801);
+
+                        setChk("wp_enable_vless_tcp", p.vlessTcp ? p.vlessTcp.enabled : false);
+                        setVal("wp_port_vless_tcp", p.vlessTcp ? p.vlessTcp.port : 10803);
+
+                        setChk("wp_enable_trojan_tcp", p.trojanTcp ? p.trojanTcp.enabled : false);
+                        setVal("wp_port_trojan_tcp", p.trojanTcp ? p.trojanTcp.port : 10804);
+
+                        setChk("wp_enable_ss", p.ss ? p.ss.enabled : false);
+                        setVal("wp_port_ss", p.ss ? p.ss.port : 10805);
+
+                        const modal = document.getElementById("workerProtocolsModal");
+                        if (modal) modal.style.display = "flex";
+                    }
+
+                    function closeWorkerProtocolsModal() {
+                        const modal = document.getElementById("workerProtocolsModal");
+                        if (modal) modal.style.display = "none";
+                    }
+
+                    async function submitWorkerProtocols() {
+                        const nodeId = document.getElementById("wp_node_id").value;
+                        const nodeName = document.getElementById("wp_node_name").value.trim();
+                        if (!nodeId) return;
+
+                        const btn = document.getElementById("saveWorkerProtoBtn");
+                        const originText = btn.innerText;
+                        btn.innerText = "下发指令中...";
+                        btn.disabled = true;
+
+                        const getChk = function(id) { const el = document.getElementById(id); return el ? Boolean(el.checked) : false; };
+                        const getInt = function(id, def) { const el = document.getElementById(id); const v = parseInt(el ? el.value : def, 10); return isNaN(v) ? def : v; };
+                        const getVal = function(id) { const el = document.getElementById(id); return el ? el.value.trim() : ""; };
+
+                        const protocols = {
+                            hy2: { enabled: getChk("wp_enable_hy2"), port: getInt("wp_port_hy2", 10800), hopPorts: getVal("wp_hop_hy2") },
+                            tuic: { enabled: getChk("wp_enable_tuic"), port: getInt("wp_port_tuic", 10801) },
+                            reality: { enabled: getChk("wp_enable_reality"), port: getInt("wp_port_reality", 10802) },
+                            vlessTcp: { enabled: getChk("wp_enable_vless_tcp"), port: getInt("wp_port_vless_tcp", 10803) },
+                            trojanTcp: { enabled: getChk("wp_enable_trojan_tcp"), port: getInt("wp_port_trojan_tcp", 10804) },
+                            ss: { enabled: getChk("wp_enable_ss"), port: getInt("wp_port_ss", 10805) }
+                        };
+
+                        const token = getAdminToken();
+                        const basePrefix = location.pathname.startsWith("/v3") ? "/v3" : "";
+
+                        try {
+                            if (nodeName) {
+                                const updateHeaders = { "Content-Type": "application/json" };
+                                if (token) updateHeaders["x-admin-token"] = token;
+                                await fetch(basePrefix + "/admin/api/cluster/node/update" + (token ? "?token=" + encodeURIComponent(token) : ""), {
+                                    method: "POST",
+                                    headers: updateHeaders,
+                                    body: JSON.stringify({ nodeId: nodeId, name: nodeName })
+                                });
+                            }
+
+                            const protoHeaders = { "Content-Type": "application/json" };
+                            if (token) protoHeaders["x-admin-token"] = token;
+                            const res = await fetch(basePrefix + "/admin/api/cluster/node/protocols" + (token ? "?token=" + encodeURIComponent(token) : ""), {
+                                method: "POST",
+                                headers: protoHeaders,
+                                body: JSON.stringify({ nodeId: nodeId, protocols: protocols })
+                            });
+
+                            const data = await res.json();
+                            if (res.ok && data.success) {
+                                showToast("✅ 副机协议与端口已保存！心跳通道将在 5 秒内下发副机自动热重载！");
+                                closeWorkerProtocolsModal();
+                                refreshClusterData();
+                            } else {
+                                alert("❌ 下发失败: " + (data.error || "未知异常"));
+                            }
+                        } catch (e) {
+                            alert("网络异常: " + e.message);
+                        } finally {
+                            btn.innerText = originText;
+                            btn.disabled = false;
+                        }
+                    }
+
+                    async function promptUpdateNodeName(nodeId, oldName) {
+                        const newName = prompt("请输入此副机节点的新名称与国家标识 (例如: 🇭🇰 香港01 或 🇯🇵 日本东京01):", oldName || "");
+                        if (newName === null) return;
+                        const token = getAdminToken();
+                        const basePrefix = location.pathname.startsWith("/v3") ? "/v3" : "";
+                        try {
+                            const reqHeaders = { "Content-Type": "application/json" };
+                            if (token) reqHeaders["x-admin-token"] = token;
+                            const res = await fetch(basePrefix + "/admin/api/cluster/node/update" + (token ? "?token=" + encodeURIComponent(token) : ""), {
+                                method: "POST",
+                                headers: reqHeaders,
+                                body: JSON.stringify({ nodeId: nodeId, name: newName.trim() })
+                            });
+                            if (res.ok) {
+                                showToast("✅ 节点名称已更新！");
+                                refreshClusterData();
+                            }
+                        } catch (e) {
+                            alert("修改异常: " + e.message);
+                        }
+                    }
+
+                    async function deleteClusterNode(nodeId) {
+                        if (!confirm("确定从集群中剔除此副机节点？\n剔除后主控将不再为该节点聚合订阅和下发心跳。")) return;
+                        const token = getAdminToken();
+                        const basePrefix = location.pathname.startsWith("/v3") ? "/v3" : "";
+                        try {
+                            const reqHeaders = { "Content-Type": "application/json" };
+                            if (token) reqHeaders["x-admin-token"] = token;
+                            const res = await fetch(basePrefix + "/admin/api/cluster/node/delete" + (token ? "?token=" + encodeURIComponent(token) : ""), {
+                                method: "POST",
+                                headers: reqHeaders,
+                                body: JSON.stringify({ nodeId: nodeId })
+                            });
+                            const data = await res.json();
+                            if (res.ok && data.success) {
+                                showToast("✅ 已成功剔除副机节点！");
+                                refreshClusterData();
+                            } else {
+                                alert("剔除失败: " + (data.error || "未知异常"));
+                            }
+                        } catch (e) {
+                            alert("异常: " + e.message);
+                        }
+                    }
+
                     // 页面加载完成后立即渲染表格与状态，读出用户数据
                     document.addEventListener("DOMContentLoaded", function() {
                         renderTable();
                         fetchVisitors(true);
+                        populateAssignedNodeOptions();
                     });
                     // 如果 DOM 已经加载完成，立即调用
                     if (document.readyState === "complete" || document.readyState === "interactive") {
                         setTimeout(function() {
                             renderTable();
                             fetchVisitors(false);
+                            populateAssignedNodeOptions();
                         }, 10);
                     }
 </script>
