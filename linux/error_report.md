@@ -448,3 +448,31 @@
   1. **支持显式允许置空参数**：为 `saveUsers(allowEmpty = false)` 增加布尔参数，仅在 `!allowEmpty` 时执行防空覆盖拦截；
   2. **清空接口显式赋权**：在 `POST /admin/api/clear-all-users` 与 Telegram 机器人的 `clearAllUsers` 指令中，显式调用 `saveUsers(true)`，顺利完成磁盘合法重置清库；
   3. **强制核心重载**：清空后调用 `safeReloadSingbox(true)` 强制刷新 Sing-box 配置，实时剥离所有客户端入站授权。
+
+---
+
+### 第四十五号：Telegram 机器人通用订阅提取通道缺失、群聊隐私隔离与自定义订阅域名全链路打通
+- **问题现象**：
+  群友或用户在 Telegram 机器人面板中点击「📦 提取我的节点订阅」后，反馈“获取不了通用订阅”。
+- **原因剖析**：
+  1. **交互层缺失专用按钮**：原面板下方按钮矩阵仅提供了「⚡ 一键导入 Clash」，未提供通用订阅（Shadowrocket 小火箭 / v2rayN / Sing-box）的直接可点击按钮。手机 Telegram 用户在长文本 Markdown 中极难长按精准复制单行代码块链接，且极易误触换行导致格式失效；
+  2. **群聊场景隐私泄露与自毁矛盾**：当用户在官方交流群内点击提取订阅时，机器人直接将包含敏感 Token 的面板大屏回复至群内，不仅泄露了用户 Token，且由于群消息 60 秒自毁机制，消息在一分钟后被自动撤回，导致用户无法复制；
+  3. **网络层公网域名未解耦**：底层 `getBaseSubUrl` 仅依赖 `OPTIMIZED_DOMAIN` 或 `ARGO_DOMAIN`，若未配置则回退到 `DIRECT_IP` 或 `127.0.0.1`。在本地测试或处于 NAT / 反向代理后的 VPS 环境下，手机端访问内网 IP 必然拉取失败。
+- **实施解决对策**：
+  1. **全套专属导入与提取矩阵**：在订阅面板中新增「🚀 一键导入小火箭」（基于 `sub://` 协议 Scheme 极速唤起 App）及「🔗 提取通用订阅 (单行秒复制)」（单独下发纯净单行链接，长按一触即复制）；同时新增「📋 提取明文节点 (免订阅直连)」，下发原始 vless/vmess/hysteria2 节点链接以满足老旧客户端需求；
+  2. **群聊私密触达保护**：当在群组中点击提取订阅时，自动转换为向该用户私发私聊消息（私聊永不删除），并在群内弹窗提醒「已私发至私聊」，若用户从未私聊过机器人则提供带有 `?start=my` 的一键直达私聊按钮；
+  3. **管理后台自定义对外订阅域名 (SUB_DOMAIN)**：在 Web 管理后台与 `.env` 中增加 `subDomain` 配置项，允许站长自定义对外域名（如 `sub.example.com`），系统所有订阅下发统一优先采用该公网域名，确保无论任何网络环境均可 100% 秒级拉取。
+
+---
+
+### 第四十六号：Hysteria 2 / QUIC 协议长连接生命周期与 SIGHUP 平滑重载不斩断 UDP Session 排查
+- **问题现象**：
+  在管理后台将用户置为“● 手动阻断”（禁用账号）后，该用户已无法拉取/更新订阅，在 v2rayN 中 VLESS / VMess / Trojan 等节点均显示连接超时（延迟 -1）；但唯独 **Hysteria 2** 节点（如 18800 端口和 18806 端口跳跃）在代理软件中依然测得延迟（显示绿色 202ms / 328ms），用户疑惑为何被阻断后仍能使用。
+- **原因剖析**：
+  1. **Sing-box SIGHUP 信号特性**：原系统在更新配置时向 Sing-box 发送 `SIGHUP` 信号以平滑热重载配置。Sing-box 收到 SIGHUP 时仅重新加载入站验证规则以拒绝**新连接**；但对于已经建立握手的 QUIC / Hysteria 2 存量 UDP 会话，Sing-box 内核并不会主动向客户端发送 `CONNECTION_CLOSE` 报文，导致内核内存中的 UDP 会话保持畅通；
+  2. **缺少核心级连接强杀流程**：在 `/admin/api/update` 禁用用户或修改 UUID 时，原代码仅执行了数据库更新，未调用断链逻辑，且未向 Sing-box 的 Clash RESTful API（`PORT_CLASH_API`）发送断开请求；
+  3. **v2rayN 测速原理差异**：v2rayN 默认测速按钮为 RTT / Tcping 探针，向 Hysteria2 的 UDP 端口发送握手探针时，若旧 session 依然存活，会直接返回握手往返延迟。
+- **实施解决对策**：
+  1. **多层全链路强行断链 (disconnectUserConnections)**：封装全局断链核心，在切断 Node.js 层 WebSocket 客户端 Socket 的同时，向 Sing-box Clash RESTful API 发送 `DELETE /connections` 强行击毙所有存量活跃连接；
+  2. **阻断时强制冷重载 Sing-box 核心进程**：在用户被管理员手动阻断（`enabled === false`）、轮换 UUID 或彻底删除时，强制触发 `safeReloadSingbox(true)`，毫秒级杀掉旧 Sing-box 进程并重新拉起，彻底销毁内存中所有的 UDP QUIC 会话缓存；
+  3. **去除无用按钮**：按照运营需求，彻底移除 Telegram 机器人欢迎面板与订阅面板中的「📖 客户端导入教程」按钮，简化交互界面。
