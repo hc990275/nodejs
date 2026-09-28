@@ -14,6 +14,8 @@
 const { renderLandingPage } = require("./views/landing");
 const { renderDashboard } = require("./views/dashboard");
 const { renderAdminPage } = require("./views/admin");
+const { initTelegramBot, stopTelegramBot, getTelegramBotInstance } = require("./telegram");
+let lastAdminLoginIp = "";
 
 const http = require("http");
 const https = require("https");
@@ -119,6 +121,12 @@ let SS_METHOD = process.env.SS_METHOD || "2022-blake3-aes-128-gcm";
 // Socks5 带认证独立代理端口 — 未配置时为 0 (禁用)
 let PORT_SOCKS5 = parseInt(process.env.PORT_SOCKS5 || "0", 10);
 let ENABLE_SOCKS5 = process.env.ENABLE_SOCKS5 !== "false";
+
+// -------------------- 1.2 Telegram 机器人注册与专属群组鉴权配置 --------------------
+let TG_BOT_TOKEN = (process.env.TG_BOT_TOKEN || "").trim();
+let TG_ADMIN_ID = (process.env.TG_ADMIN_ID || "").trim();
+let TG_REQUIRED_GROUP = (process.env.TG_REQUIRED_GROUP || "@s5gydl").trim();
+let TG_API_BASE = (process.env.TG_API_BASE || "https://api.telegram.org").replace(/\/+$/, "");
 
 // -------------------- 2. Cloudflare Argo 隧道与优选域名 --------------------
 // Cloudflare Argo 隧道 Token (留空则不开启 Argo，直接使用 DIRECT_IP 直连)
@@ -228,7 +236,7 @@ let ssSecretState = "";
 
 
 // -------------------- 5. 初始试用与站点运营默认配额 --------------------
-const DEFAULT_ALLOW_REGISTER = process.env.DEFAULT_ALLOW_REGISTER !== "false"; // 是否开放自主注册
+const DEFAULT_ALLOW_REGISTER = process.env.DEFAULT_ALLOW_REGISTER === "true"; // 是否开放网页自主注册 (默认 false 严格关闭，仅允许 Telegram 机器人注册)
 const DEFAULT_ENABLE_CLIENT_DOWNLOAD = process.env.DEFAULT_ENABLE_CLIENT_DOWNLOAD !== "false"; // 是否开启客户端下载
 const DEFAULT_DAYS = parseInt(process.env.DEFAULT_DAYS || "3", 10); // 初始试用天数
 const DEFAULT_TRAFFIC_VAL = parseInt(process.env.DEFAULT_TRAFFIC_VAL || "10", 10); // 初始流量数值
@@ -2626,7 +2634,7 @@ function handleHttpRequest(req, res) {
     // 3. 用户注册 API
     if (pathname === "/api/register" && req.method === "POST") {
         if (!siteSettings.allowRegister) {
-            return sendJsonResponse(res, 403, { error: "当前站点暂未开放自主注册，请联系站长开通！" });
+            return sendJsonResponse(res, 403, { error: "当前站点暂未开放网页自主注册，请加入官方交流群 @s5gydl 私聊 Telegram 机器人完成专属开通！" });
         }
         let body = "";
         req.on("data", (c) => { body += c; });
@@ -2905,6 +2913,24 @@ function handleHttpRequest(req, res) {
                     const adminSessionToken = crypto.randomBytes(24).toString("hex");
                     const expireTime = Date.now() + 24 * 3600 * 1000;
                     adminSessions.set(adminSessionToken, expireTime);
+
+                    // 触发管理员异地登录安全警报
+                    const clientIp = getClientIp(req);
+                    if (lastAdminLoginIp && lastAdminLoginIp !== clientIp) {
+                        lookupIpLocation(clientIp).then((loc) => {
+                            const tg = getTelegramBotInstance();
+                            if (tg) {
+                                tg.sendAdminAlert("admin_login_ip_change", {
+                                    currentIp: clientIp,
+                                    previousIp: lastAdminLoginIp,
+                                    location: loc,
+                                    userAgent: req.headers["user-agent"] || "未知设备",
+                                    adminUrl: `http://${DIRECT_IP || '127.0.0.1'}:${SERVER_PORT}/admin`
+                                });
+                            }
+                        }).catch(() => {});
+                    }
+                    lastAdminLoginIp = clientIp;
 
                     res.writeHead(200, {
                         "Content-Type": "application/json; charset=utf-8",
@@ -4357,6 +4383,7 @@ function startV3Service(internalPort = 3003, dataDir, externalIp, externalPort, 
         console.log(`[V3-Service] 管理控制台入口: http://${DIRECT_IP}:${SERVER_PORT}/admin`);
         initSingboxCore();
         initAndStartCloudflared();
+        initTelegramBotService();
     });
 
     // 关键：启动 Argo Tunnel 本地 Ingress 接收服务 (监听 8001 端口，接收 cloudflared 流量)
@@ -4371,10 +4398,152 @@ function startV3Service(internalPort = 3003, dataDir, externalIp, externalPort, 
             try { globalTunnelServer.close(); } catch (_) { }
             globalTunnelServer = null;
         }
+        stopTelegramBot();
         return originalClose(cb);
     };
 
     return serverExternal;
+}
+
+// 统一挂载初始化 Telegram 机器人全自动开通引擎
+function initTelegramBotService() {
+    if (!TG_BOT_TOKEN) {
+        console.log("[TG-Bot] 当前未配置 TG_BOT_TOKEN，Telegram 机器人自动开通服务保持待命。");
+        return;
+    }
+    try {
+        initTelegramBot({
+            botToken: TG_BOT_TOKEN,
+            adminId: TG_ADMIN_ID,
+            requiredGroup: TG_REQUIRED_GROUP,
+            apiBase: TG_API_BASE,
+            getUsers: () => usersDatabase,
+            createUser: async (data) => {
+                const cleanUser = String(data.username || "").trim();
+                const cleanPwd = String(data.password || "").trim();
+                const initDays = Math.max(0, parseInt(siteSettings.defaultDays, 10) || 3);
+                const initVal = parseFloat(siteSettings.defaultTrafficVal !== undefined ? siteSettings.defaultTrafficVal : (siteSettings.defaultTrafficGB || 10)) || 0;
+                const initUnit = String(siteSettings.defaultTrafficUnit || "GB").toUpperCase();
+                const trafficLimitBytes = convertToBytes(initVal, initUnit);
+
+                const newUser = {
+                    uuid: crypto.randomUUID(),
+                    username: cleanUser,
+                    passwordHash: hashPassword(cleanPwd),
+                    trafficLimit: trafficLimitBytes,
+                    trafficUsed: 0,
+                    expireTime: initDays > 0 ? (Date.now() + initDays * 86400000) : 0,
+                    enabled: true,
+                    maxOnlineIps: siteSettings.defaultMaxOnlineIps || 0,
+                    ipLimitPolicy: siteSettings.defaultIpLimitPolicy || "kick_oldest",
+                    idleDisconnectEnabled: siteSettings.defaultIdleDisconnectEnabled !== false,
+                    idleTimeoutSeconds: siteSettings.defaultIdleTimeoutSeconds || 60,
+                    assignedNodes: Array.isArray(siteSettings.defaultAssignedNodes) && siteSettings.defaultAssignedNodes.length > 0 ? siteSettings.defaultAssignedNodes : ["*"],
+                    telegramId: String(data.telegramId || ""),
+                    telegramUsername: data.telegramUsername || "",
+                    telegramFirstName: data.telegramFirstName || "",
+                    telegramRegisteredAt: Date.now()
+                };
+
+                usersDatabase.push(newUser);
+                saveUsers();
+                safeReloadSingbox();
+                return newUser;
+            },
+            deleteUser: (username) => {
+                const target = String(username || "").toLowerCase().trim();
+                const idx = usersDatabase.findIndex((u) => u.username && u.username.toLowerCase() === target);
+                if (idx === -1) return { success: false, error: "未找到目标用户" };
+                usersDatabase.splice(idx, 1);
+                saveUsers();
+                safeReloadSingbox();
+                return { success: true };
+            },
+            unbindUser: (target) => {
+                const clean = String(target || "").trim().toLowerCase();
+                const u = usersDatabase.find((x) => (x.username && x.username.toLowerCase() === clean) || (x.telegramId && String(x.telegramId) === clean));
+                if (!u) return { success: false, error: "未找到匹配用户" };
+                u.telegramId = "";
+                u.telegramUsername = "";
+                saveUsers();
+                return { success: true, username: u.username };
+            },
+            setUserEnabled: (uuid, enabled, reason) => {
+                const u = usersDatabase.find((x) => x.uuid === uuid);
+                if (!u) return { success: false, error: "未找到用户" };
+                u.enabled = Boolean(enabled);
+                u.disableReason = reason || "";
+                saveUsers();
+                safeReloadSingbox();
+                return { success: true };
+            },
+            disconnectUser: (uuid, reason) => {
+                try {
+                    const act = getUserActivity(uuid);
+                    if (act && Array.isArray(act.activeList)) {
+                        act.activeList.forEach((c) => {
+                            if (c.clientSocket && !c.clientSocket.destroyed) c.clientSocket.destroy();
+                            if (c.backendSocket && !c.backendSocket.destroyed) c.backendSocket.destroy();
+                        });
+                        act.activeList = [];
+                        act.activeConnections = 0;
+                    }
+                } catch (_) { }
+            },
+            checkinUser: (uuid) => {
+                const u = usersDatabase.find((x) => x.uuid === uuid);
+                if (!u) return { success: false, error: "未找到用户" };
+                const today = new Date().toISOString().slice(0, 10);
+                if (u.lastCheckinDate === today) {
+                    return { success: false, error: "already_checked_in" };
+                }
+                const addMB = Math.floor(Math.random() * 600 + 200); // 随机 200MB ~ 800MB
+                const addBytes = addMB * 1024 * 1024;
+                u.trafficLimit = (u.trafficLimit || 0) + addBytes;
+                const now = Date.now();
+                u.expireTime = Math.max(now, u.expireTime || now) + 86400000;
+                u.lastCheckinDate = today;
+                saveUsers();
+                return { success: true, addedBytes: addBytes, newLimit: u.trafficLimit, newExpire: u.expireTime };
+            },
+            getNodesSummary: () => {
+                const list = [];
+                const loc = getEffectiveServerLocation();
+                if (ENABLE_REALITY && PORT_REALITY > 0) list.push({ name: `${loc} | Reality-TCP 极速直连`, proto: "VLESS-Reality", port: PORT_REALITY, location: loc, alive: true });
+                if (ENABLE_HY2 && PORT_HY2 > 0) list.push({ name: `${loc} | Hysteria 2 暴力抗丢包`, proto: "Hy2", port: PORT_HY2, location: loc, alive: true });
+                if (ENABLE_TUIC && PORT_TUIC > 0) list.push({ name: `${loc} | TUIC v5 极低延迟`, proto: "TUIC", port: PORT_TUIC, location: loc, alive: true });
+                list.push({ name: `${loc} | VLESS-ws 隧道加速`, proto: "VLESS-ws", port: SERVER_PORT, location: loc, alive: true });
+                list.push({ name: `${loc} | VMess-ws 稳定回退`, proto: "VMess-ws", port: SERVER_PORT, location: loc, alive: true });
+                list.push({ name: `${loc} | Trojan-ws 商务伪装`, proto: "Trojan-ws", port: SERVER_PORT, location: loc, alive: true });
+                return list;
+            },
+            getSiteSettings: () => siteSettings,
+            getBaseSubUrl: (userUuid) => {
+                const hostDomain = OPTIMIZED_DOMAIN || ARGO_DOMAIN;
+                if (hostDomain) {
+                    return `https://${hostDomain}/sub?token=${userUuid}`;
+                }
+                const ip = DIRECT_IP || "127.0.0.1";
+                return `http://${ip}:${SERVER_PORT}/sub?token=${userUuid}`;
+            },
+            getSystemStats: () => {
+                let activeIpsCount = 0;
+                try {
+                    usersDatabase.forEach((u) => {
+                        const act = getUserActivity(u.uuid);
+                        if (act && act.ips) activeIpsCount += act.ips.length;
+                    });
+                } catch (_) { }
+                return {
+                    serverLocation: getEffectiveServerLocation(),
+                    activeIpsCount,
+                    singboxAlive: !!(singboxProcess && !singboxProcess.killed)
+                };
+            }
+        });
+    } catch (e) {
+        console.error("[TG-Bot] 挂载初始化失败:", e.message);
+    }
 }
 
 module.exports = {

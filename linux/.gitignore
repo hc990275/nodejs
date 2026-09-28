@@ -2,6 +2,9 @@
 .env
 .env.local
 .env.*.local
+*PRIVATE*.md
+*private*.md
+*_private.*
 
 # 忽略运行时生成与动态数据
 data/*
