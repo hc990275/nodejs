@@ -476,3 +476,28 @@
   1. **多层全链路强行断链 (disconnectUserConnections)**：封装全局断链核心，在切断 Node.js 层 WebSocket 客户端 Socket 的同时，向 Sing-box Clash RESTful API 发送 `DELETE /connections` 强行击毙所有存量活跃连接；
   2. **阻断时强制冷重载 Sing-box 核心进程**：在用户被管理员手动阻断（`enabled === false`）、轮换 UUID 或彻底删除时，强制触发 `safeReloadSingbox(true)`，毫秒级杀掉旧 Sing-box 进程并重新拉起，彻底销毁内存中所有的 UDP QUIC 会话缓存；
   3. **去除无用按钮**：按照运营需求，彻底移除 Telegram 机器人欢迎面板与订阅面板中的「📖 客户端导入教程」按钮，简化交互界面。
+
+---
+
+### 第四十七号：注册完成明文节点直出直连、群聊命令漏判与 /admin 站长控制台全矩阵大屏升级
+- **问题现象**：
+  1. 用户在 Telegram 机器人中注册开通后，返回的信息中仅包含通用订阅链接与 Clash 订阅，没有直接显示可用的明文节点代码块，小白用户或不支持订阅的客户端无法直接复制使用；
+  2. 群聊中输入 `/start`、`/my` 等各种指令时机器人无响应，命令无法正常工作；
+  3. 管理员在私聊输入 `/admin` 后，只有 4 个简单按钮（巡检、刷新、节点、广播），缺少核心控制、用户列表、在线 IP 监控等运维功能。
+- **原因剖析**：
+  1. **注册反馈信息单一**：原 `handleRegisterCommand` 仅拼装了订阅链接和两个快捷按钮，未调用 `getRawNodesText(newUser)` 将直连明文节点（如 `vless://`、`hysteria2://`）直接输出到消息卡片，也缺少「🚀 一键导入小火箭」与「📋 提取明文节点」按钮；
+  2. **群聊拦截漏词与 Markdown 特殊字符炸群**：
+     - 群聊指令拦截列表 `isIntentToStart` 仅包含了 `/start`、`/reg`，漏掉了 `/my`、`/sub`、`/nodes`、`/checkin`、`/admin`，导致发 `/my` 穿透到了私聊业务中，尝试向群内发送订阅并因群权限被 Telegram 拒绝；
+     - 群回复文本直接拼接了 `[${from.first_name}](tg://user?id=...)`，未对昵称进行 `escapeMd()` 转义。群友昵称一旦带有下划线 `_` 或星号 `*`，Telegram API 立即报 400 Bad Request（`can't parse entities`）并将消息静默抛弃；
+  3. **管理员控制台按钮缺失与无专用运维指令**：
+     - `handleAdminDashboardCommand` 仅放置了 4 个基础按钮，未挂载 Sing-box 核心进程强启、全量用户列表拉取、活跃在线 IP 监控、全员福利追加、0 流量死号扫描及清库防呆对话框等高级按钮；
+     - 宿主 `index.js` 未向 TelegramBot 实例注入 `restartSingboxCore`、`getOnlineIpsDetails`、`adminWebUrl` 等底层调度接口。
+- **实施解决对策**：
+  1. **注册即返明文节点代码块与全套导入矩阵**：在 `handleRegisterCommand` 中集成 `getRawNodesText(newUser)`，开通成功消息中直接携带可一键长按复制的明文节点代码块，并提供「⚡ 一键导入 Clash」、「🚀 一键导入小火箭」、「📋 提取所有明文节点」、「🔗 提取通用订阅链接」等完整按键矩阵；
+  2. **群聊安全防呆全覆盖与精准场景跳转**：
+     - 将群聊触发词全面扩充至 `/start`、`/my`、`/sub`、`/nodes`、`/checkin`、`/admin`、`/help` 以及中文“开通”、“我的”、“订阅”、“节点”、“签到”、“后台”等；
+     - 用户昵称全面经过 `escapeMd()` 转义，并在底层 `sendMessage` 中强化 Markdown 解析异常自动纯文本降级机制；
+     - 根据群友触发的命令精准生成私聊直达按钮（如输入 `/my` 生成 `?start=my`，输入 `/checkin` 生成 `?start=checkin`），群内消息 60 秒后自动撤回自毁，且绝不穿透至群聊造成隐私泄露；
+  3. **升级 5 排 10 键 /admin 站长超级控制台与专属指令集**：
+     - 控制台新增：`🔄 强启 Sing-box 核心`、`📊 查看最新用户列表`、`🔍 立即全员在群巡检`、`🌐 在线活跃 IP 监控`、`📡 节点矩阵与大屏`、`📢 全员广播群发推送`、`🖥️ 打开 Web 管理后台`、`🎁 全员发放 5GB 流量`、`🧹 清理 0 流量空账号`、`⚠️ 一键重置清空全库`；
+     - 命令行同步支持特权命令：`/restart`、`/users`、`/ips`、`/grantall`、`/audit`、`/deluser`、`/unbind`、`/clearall confirm`、`/cleartg confirm`、`/broadcast`。
