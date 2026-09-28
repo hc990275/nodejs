@@ -44,9 +44,17 @@ const totalUsers = usersDatabase.length;
             const dateStr = formatExpireDate(u.expireTime);
             const parsedLimit = parseBytesToInput(u.trafficLimit);
 
-            const reqHost = req.headers['x-forwarded-host'] || req.headers.host || `${DIRECT_IP}:${SERVER_PORT}`;
-            const reqProto = req.headers['x-forwarded-proto'] || (req.connection && req.connection.encrypted ? 'https' : 'http');
-            const baseSubUrl = `${reqProto}://${reqHost}/sub?token=${u.uuid}`;
+            let baseSubUrl = "";
+            const customSubDomain = (siteSettings && (siteSettings.subDomain || siteSettings.publicHost) ? (siteSettings.subDomain || siteSettings.publicHost) : "").trim();
+            if (customSubDomain) {
+                const cleanDomain = customSubDomain.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+                const proto = (cleanDomain.includes(":") && !cleanDomain.endsWith(":443")) ? "http" : "https";
+                baseSubUrl = `${proto}://${cleanDomain}/sub?token=${u.uuid}`;
+            } else {
+                const reqHost = req.headers['x-forwarded-host'] || req.headers.host || `${DIRECT_IP}:${SERVER_PORT}`;
+                const reqProto = req.headers['x-forwarded-proto'] || (req.connection && req.connection.encrypted ? 'https' : 'http');
+                baseSubUrl = `${reqProto}://${reqHost}/sub?token=${u.uuid}`;
+            }
             const clashSubUrl = `${baseSubUrl}&type=clash`;
             const surgeSubUrl = `${baseSubUrl}&type=surge`;
 
@@ -1321,7 +1329,7 @@ return sendHtmlResponse(res, 200, `
                                 <div class="form-responsive-row" style="display:flex; gap:12px;">
                                     <div class="field-box" style="flex:1;">
                                         <label>注册试用天数 (天)</label>
-                                        <input type="number" id="set_defaultDays" placeholder="例如: 3" value="3" min="0" />
+                                        <input type="number" id="set_defaultDays" placeholder="例如: 365" value="365" min="0" />
                                     </div>
                                     <div class="field-box" style="flex:1.2;">
                                         <label>注册初始流量配额</label>
@@ -1329,15 +1337,15 @@ return sendHtmlResponse(res, 200, `
                                             <input type="number" id="set_defaultTrafficVal" step="0.1" placeholder="例如: 10" value="10" min="0" style="flex:2;" />
                                             <select id="set_defaultTrafficUnit" style="flex:1; border:1px solid var(--el-border); border-radius:6px; padding:0 8px; background:#ffffff; font-size:13px; color:var(--el-text-main);">
                                                 <option value="MB">MB</option>
-                                                <option value="GB" selected>GB</option>
-                                                <option value="TB">TB</option>
+                                                <option value="GB">GB</option>
+                                                <option value="TB" selected>TB</option>
                                             </select>
                                         </div>
                                     </div>
                                 </div>
                                 <div class="field-box">
                                     <label>站长联系方式展示文案</label>
-                                    <input type="text" id="set_contactText" placeholder="例如: Telegram: @robberer" value="Telegram: @robberer" />
+                                    <input type="text" id="set_contactText" placeholder="例如: Telegram: @s5gydl" value="Telegram: @s5gydl" />
                                 </div>
                                 <div class="field-box">
                                     <label>站长联系直达链接 (URL)</label>
@@ -1509,7 +1517,7 @@ return sendHtmlResponse(res, 200, `
                                         </div>
                                         <div class="field-box" style="margin-bottom:0;">
                                             <label style="font-size:11px;">结束端口</label>
-                                            <input type="number" id="assign_port_end" placeholder="如: 18850" min="1" max="65535" value="18850" />
+                                            <input type="number" id="assign_port_end" placeholder="如: 18817" min="1" max="65535" value="18817" />
                                         </div>
                                     </div>
                                     <div class="field-box" style="margin-bottom:8px;">
@@ -2052,12 +2060,12 @@ return sendHtmlResponse(res, 200, `
                     // 协议勾选与默认推荐端口联动绑定
                     function initProtoPortBinds() {
                         const binds = [
-                            { chk: "env_ENABLE_HY2", port: "env_PORT_HY2", def: 10800 },
-                            { chk: "env_ENABLE_TUIC", port: "env_PORT_TUIC", def: 10801 },
-                            { chk: "env_ENABLE_REALITY", port: "env_PORT_REALITY", def: 10802 },
-                            { chk: "env_ENABLE_VLESS_TCP", port: "env_PORT_VLESS_TCP", def: 10803 },
-                            { chk: "env_ENABLE_TROJAN_TCP", port: "env_PORT_TROJAN_TCP", def: 10804 },
-                            { chk: "env_ENABLE_SS", port: "env_PORT_SS", def: 10805 }
+                            { chk: "env_ENABLE_HY2", port: "env_PORT_HY2", def: 18800 },
+                            { chk: "env_ENABLE_TUIC", port: "env_PORT_TUIC", def: 18801 },
+                            { chk: "env_ENABLE_REALITY", port: "env_PORT_REALITY", def: 18802 },
+                            { chk: "env_ENABLE_VLESS_TCP", port: "env_PORT_VLESS_TCP", def: 18803 },
+                            { chk: "env_ENABLE_TROJAN_TCP", port: "env_PORT_TROJAN_TCP", def: 18804 },
+                            { chk: "env_ENABLE_SS", port: "env_PORT_SS", def: 18805 }
                         ];
                         binds.forEach(b => {
                             const chkEl = document.getElementById(b.chk);
@@ -2202,17 +2210,17 @@ return sendHtmlResponse(res, 200, `
                             else reg0.checked = true;
                         }
                         const dInput = document.getElementById("set_defaultDays");
-                        if (dInput) dInput.value = s.defaultDays !== undefined ? s.defaultDays : 3;
+                        if (dInput) dInput.value = s.defaultDays !== undefined ? s.defaultDays : 365;
 
                         const tVal = s.defaultTrafficVal !== undefined ? s.defaultTrafficVal : (s.defaultTrafficGB !== undefined ? s.defaultTrafficGB : 10);
-                        const tUnit = s.defaultTrafficUnit || "GB";
+                        const tUnit = s.defaultTrafficUnit || "TB";
                         const tValInput = document.getElementById("set_defaultTrafficVal");
                         if (tValInput) tValInput.value = tVal;
                         const tUnitSelect = document.getElementById("set_defaultTrafficUnit");
                         if (tUnitSelect) tUnitSelect.value = tUnit;
 
                         const cText = document.getElementById("set_contactText");
-                        if (cText) cText.value = (s.contactText && !String(s.contactText).includes("abcai")) ? s.contactText : "Telegram: @robberer";
+                        if (cText) cText.value = (s.contactText && !String(s.contactText).includes("abcai")) ? s.contactText : "Telegram: @s5gydl";
 
                         const cUrl = document.getElementById("set_contactUrl");
                         if (cUrl) cUrl.value = (s.contactUrl && !String(s.contactUrl).includes("abcai")) ? s.contactUrl : "https://t.me/s5gydl";
@@ -2222,7 +2230,7 @@ return sendHtmlResponse(res, 200, `
                         if (tgTokenInput) tgTokenInput.value = s.tgBotToken || env.TG_BOT_TOKEN || "";
 
                         const tgAdminInput = document.getElementById("set_tgAdminId");
-                        if (tgAdminInput) tgAdminInput.value = s.tgAdminId || env.TG_ADMIN_ID || "";
+                        if (tgAdminInput) tgAdminInput.value = s.tgAdminId || env.TG_ADMIN_ID || "5153827615";
 
                         const tgGroupInput = document.getElementById("set_tgRequiredGroup");
                         if (tgGroupInput) tgGroupInput.value = s.tgRequiredGroup || env.TG_REQUIRED_GROUP || "@s5gydl";
@@ -2231,7 +2239,7 @@ return sendHtmlResponse(res, 200, `
                         if (tgApiInput) tgApiInput.value = s.tgApiBase || env.TG_API_BASE || "https://api.telegram.org";
 
                         const subDomainInput = document.getElementById("set_subDomain");
-                        if (subDomainInput) subDomainInput.value = s.subDomain || env.SUB_DOMAIN || "";
+                        if (subDomainInput) subDomainInput.value = s.subDomain || env.SUB_DOMAIN || "db.995677.xyz";
 
                         const sLoc = document.getElementById("set_serverLocation");
                         if (sLoc) sLoc.value = s.serverLocation || "";
@@ -2252,35 +2260,41 @@ return sendHtmlResponse(res, 200, `
                             else cd0.checked = true;
                         }
 
-                        // 填充协议与端口配置 (端口有效或显式为 true 时勾选)
+                        // 填充协议与端口配置 (图2默认全部填写 18800-18805 并默认勾选开启)
                         const setCheck = (id, val) => { const el = document.getElementById(id); if (el) el.checked = Boolean(val); };
                         const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = (val !== undefined && val !== null && val !== 0 && val !== "0") ? val : ""; };
 
-                        const isHy2On = env.ENABLE_HY2 === true || (env.ENABLE_HY2 !== false && Boolean(env.PORT_HY2 && env.PORT_HY2 > 0));
+                        const hy2Port = (env.PORT_HY2 && parseInt(env.PORT_HY2, 10) > 0) ? parseInt(env.PORT_HY2, 10) : 18800;
+                        const isHy2On = env.ENABLE_HY2 !== false;
                         setCheck("env_ENABLE_HY2", isHy2On);
-                        setVal("env_PORT_HY2", env.PORT_HY2);
-                        setVal("env_HY2_HOP_PORTS", env.HY2_HOP_PORTS || "");
+                        setVal("env_PORT_HY2", hy2Port);
+                        setVal("env_HY2_HOP_PORTS", env.HY2_HOP_PORTS || "18806-18817");
 
-                        const isTuicOn = env.ENABLE_TUIC === true || (env.ENABLE_TUIC !== false && Boolean(env.PORT_TUIC && env.PORT_TUIC > 0));
+                        const tuicPort = (env.PORT_TUIC && parseInt(env.PORT_TUIC, 10) > 0) ? parseInt(env.PORT_TUIC, 10) : 18801;
+                        const isTuicOn = env.ENABLE_TUIC !== false;
                         setCheck("env_ENABLE_TUIC", isTuicOn);
-                        setVal("env_PORT_TUIC", env.PORT_TUIC);
+                        setVal("env_PORT_TUIC", tuicPort);
 
-                        const isRealityOn = env.ENABLE_REALITY === true || (env.ENABLE_REALITY !== false && Boolean(env.PORT_REALITY && env.PORT_REALITY > 0));
+                        const realityPort = (env.PORT_REALITY && parseInt(env.PORT_REALITY, 10) > 0) ? parseInt(env.PORT_REALITY, 10) : 18802;
+                        const isRealityOn = env.ENABLE_REALITY !== false;
                         setCheck("env_ENABLE_REALITY", isRealityOn);
-                        setVal("env_PORT_REALITY", env.PORT_REALITY);
-                        setVal("env_REALITY_DEST", env.REALITY_DEST || "addons.mozilla.org");
+                        setVal("env_PORT_REALITY", realityPort);
+                        setVal("env_REALITY_DEST", env.REALITY_DEST || "www.apple.com");
 
-                        const isVlessTcpOn = env.ENABLE_VLESS_TCP === true || (env.ENABLE_VLESS_TCP !== false && Boolean(env.PORT_VLESS_TCP && env.PORT_VLESS_TCP > 0));
+                        const vlessTcpPort = (env.PORT_VLESS_TCP && parseInt(env.PORT_VLESS_TCP, 10) > 0) ? parseInt(env.PORT_VLESS_TCP, 10) : 18803;
+                        const isVlessTcpOn = env.ENABLE_VLESS_TCP !== false;
                         setCheck("env_ENABLE_VLESS_TCP", isVlessTcpOn);
-                        setVal("env_PORT_VLESS_TCP", env.PORT_VLESS_TCP);
+                        setVal("env_PORT_VLESS_TCP", vlessTcpPort);
 
-                        const isTrojanTcpOn = env.ENABLE_TROJAN_TCP === true || (env.ENABLE_TROJAN_TCP !== false && Boolean(env.PORT_TROJAN_TCP && env.PORT_TROJAN_TCP > 0));
+                        const trojanTcpPort = (env.PORT_TROJAN_TCP && parseInt(env.PORT_TROJAN_TCP, 10) > 0) ? parseInt(env.PORT_TROJAN_TCP, 10) : 18804;
+                        const isTrojanTcpOn = env.ENABLE_TROJAN_TCP !== false;
                         setCheck("env_ENABLE_TROJAN_TCP", isTrojanTcpOn);
-                        setVal("env_PORT_TROJAN_TCP", env.PORT_TROJAN_TCP);
+                        setVal("env_PORT_TROJAN_TCP", trojanTcpPort);
 
-                        const isSsOn = env.ENABLE_SS === true || (env.ENABLE_SS !== false && Boolean(env.PORT_SS && env.PORT_SS > 0));
+                        const ssPort = (env.PORT_SS && parseInt(env.PORT_SS, 10) > 0) ? parseInt(env.PORT_SS, 10) : 18805;
+                        const isSsOn = env.ENABLE_SS !== false;
                         setCheck("env_ENABLE_SS", isSsOn);
-                        setVal("env_PORT_SS", env.PORT_SS);
+                        setVal("env_PORT_SS", ssPort);
 
                         setVal("env_DIRECT_IP", env.DIRECT_IP || "");
 
@@ -2333,9 +2347,9 @@ return sendHtmlResponse(res, 200, `
 
                         const reg1 = document.getElementById("set_allowRegister_1");
                         const allowRegister = reg1 ? reg1.checked : false;
-                        const defaultDays = getInt("set_defaultDays", 3);
+                        const defaultDays = getInt("set_defaultDays", 365);
                         const defaultTrafficVal = parseFloat(getVal("set_defaultTrafficVal", "10")) || 10;
-                        const defaultTrafficUnit = getVal("set_defaultTrafficUnit", "GB") || "GB";
+                        const defaultTrafficUnit = getVal("set_defaultTrafficUnit", "TB") || "TB";
                         const contactText = getVal("set_contactText", "");
                         const contactUrl = getVal("set_contactUrl", "");
                         const serverLocation = getVal("set_serverLocation", "");

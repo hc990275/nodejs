@@ -64,13 +64,13 @@ if [ "$CFG_MODE" != "2" ] && [ "$1" != "--full" ]; then
     ask CFG_SERVER_PORT "主监听端口 SERVER_PORT (翼龙面板填分配端口，普通VPS填 19900 或 8080)" optional "19900"
     ask CFG_ADMIN_TOKEN "管理员密码 ADMIN_TOKEN (留空=系统自动生成随机高强度密码)" optional ""
     CFG_SERVER_IP=""
-    CFG_PORT_HY2=""
-    CFG_HY2_HOP=""
-    CFG_PORT_TUIC=""
-    CFG_PORT_REALITY=""
-    CFG_PORT_VLESS_TCP=""
-    CFG_PORT_TROJAN_TCP=""
-    CFG_PORT_SS=""
+    CFG_PORT_HY2="18800"
+    CFG_HY2_HOP="18806-18817"
+    CFG_PORT_TUIC="18801"
+    CFG_PORT_REALITY="18802"
+    CFG_PORT_VLESS_TCP="18803"
+    CFG_PORT_TROJAN_TCP="18804"
+    CFG_PORT_SS="18805"
     CFG_PORT_SOCKS5=""
     CFG_ARGO_TOKEN=""
     CFG_ARGO_DOMAIN=""
@@ -193,11 +193,25 @@ ARGO_TOKEN=${CFG_ARGO_TOKEN}
 ARGO_DOMAIN=${CFG_ARGO_DOMAIN}
 OPTIMIZED_DOMAIN=
 
-# ── 第 9 组：系统自适应 ──
+# ── 第 9 组：系统自适应与运营默认配额 ──
 LINUX_AUTO_INSTALL=true
+DEFAULT_ALLOW_REGISTER=false
+DEFAULT_DAYS=365
+DEFAULT_TRAFFIC_VAL=10
+DEFAULT_TRAFFIC_UNIT=TB
+TG_ADMIN_ID=5153827615
+TG_REQUIRED_GROUP=@s5gydl
+TG_API_BASE=https://api.telegram.org
+SUB_DOMAIN=db.995677.xyz
 __ENVEOF__
 
-echo "${GREEN}  ✓ .env 已写入${NC}"
+# 同步初始化系统级持久化数据目录，确保即便仓库重置也能秒级恢复用户库
+mkdir -p /etc/v3-airport/data /var/lib/v3-airport/data /root/.v3_airport_data 2>/dev/null || true
+if [ -f "$WORK_DIR/data/v3_users.json" ]; then
+    cp -n "$WORK_DIR/data/v3_users.json" /etc/v3-airport/data/ 2>/dev/null || true
+fi
+
+echo "${GREEN}  ✓ .env 已写入并激活系统级防丢持久化${NC}"
 echo ""
 
 # ── 配置汇总 ──────────────────────────────────────────────────────────────────

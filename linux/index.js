@@ -84,37 +84,36 @@ if (!ADMIN_TOKEN) {
     console.log("[Security] 提示：未在 .env 中设置 ADMIN_TOKEN，已自动生成本次管理Token: " + ADMIN_TOKEN);
 }
 
-// -------------------- 1.1 独立多协议多端口配置 (全部从 .env 读取，未填则禁用) --------------------
-// Hysteria 2 (Hy2, 基于 UDP/QUIC 暴力抗丢包) — 未配置时为 0 (禁用)
-let PORT_HY2 = parseInt(process.env.PORT_HY2 || "0", 10);
+// -------------------- 1.1 独立多协议多端口配置 (图2默认全部填写与开启) --------------------
+// Hysteria 2 (Hy2, 基于 UDP/QUIC 暴力抗丢包) — 默认 18800，默认开启
+let PORT_HY2 = parseInt(process.env.PORT_HY2 || "18800", 10);
 let ENABLE_HY2 = process.env.ENABLE_HY2 !== "false";
 
-// 10900 - 10909: Hysteria 2 专属端口跳跃配置 (防运营商大流量 UDP QoS 限速)
+// Hysteria 2 专属端口跳跃配置 (防运营商大流量 UDP QoS 限速) — 默认 18806-18817，默认开启
 let ENABLE_HY2_HOP = process.env.ENABLE_HY2_HOP !== "false";
-let HY2_HOP_PORTS = process.env.HY2_HOP_PORTS || "";
+let HY2_HOP_PORTS = process.env.HY2_HOP_PORTS || "18806-18817";
 let HY2_HOP_INTERVAL = process.env.HY2_HOP_INTERVAL || "30s";
 
-
-// TUIC v5 (基于 UDP/QUIC 0-RTT 极低延迟) — 未配置时为 0 (禁用)
-let PORT_TUIC = parseInt(process.env.PORT_TUIC || "0", 10);
+// TUIC v5 (基于 UDP/QUIC 0-RTT 极低延迟) — 默认 18801，默认开启
+let PORT_TUIC = parseInt(process.env.PORT_TUIC || "18801", 10);
 let ENABLE_TUIC = process.env.ENABLE_TUIC !== "false";
 
-// VLESS-Reality (基于 TCP/TLS 偷跑官方大站证书，抗审查防封锁顶级) — 未配置时为 0 (禁用)
-let PORT_REALITY = parseInt(process.env.PORT_REALITY || "0", 10);
+// VLESS-Reality (基于 TCP/TLS 偷跑官方大站证书，抗审查防封锁顶级) — 默认 18802，默认开启
+let PORT_REALITY = parseInt(process.env.PORT_REALITY || "18802", 10);
 let ENABLE_REALITY = process.env.ENABLE_REALITY !== "false";
 let REALITY_DEST = process.env.REALITY_DEST || "www.apple.com";
 let REALITY_PORT = parseInt(process.env.REALITY_PORT || "443", 10);
 
-// VLESS-TCP 原生纯直连 (无 WS 封装开销，延迟极低) — 未配置时为 0 (禁用)
-let PORT_VLESS_TCP = parseInt(process.env.PORT_VLESS_TCP || "0", 10);
+// VLESS-TCP 原生纯直连 (无 WS 封装开销，延迟极低) — 默认 18803，默认开启
+let PORT_VLESS_TCP = parseInt(process.env.PORT_VLESS_TCP || "18803", 10);
 let ENABLE_VLESS_TCP = process.env.ENABLE_VLESS_TCP !== "false";
 
-// Trojan-TCP 原生纯直连 — 未配置时为 0 (禁用)
-let PORT_TROJAN_TCP = parseInt(process.env.PORT_TROJAN_TCP || "0", 10);
+// Trojan-TCP 原生纯直连 — 默认 18804，默认开启
+let PORT_TROJAN_TCP = parseInt(process.env.PORT_TROJAN_TCP || "18804", 10);
 let ENABLE_TROJAN_TCP = process.env.ENABLE_TROJAN_TCP !== "false";
 
-// Shadowsocks 2022 AEAD 单端口 — 未配置时为 0 (禁用)
-let PORT_SS = parseInt(process.env.PORT_SS || "0", 10);
+// Shadowsocks 2022 AEAD 单端口 — 默认 18805，默认开启
+let PORT_SS = parseInt(process.env.PORT_SS || "18805", 10);
 let ENABLE_SS = process.env.ENABLE_SS !== "false";
 let SS_METHOD = process.env.SS_METHOD || "2022-blake3-aes-128-gcm";
 
@@ -122,11 +121,12 @@ let SS_METHOD = process.env.SS_METHOD || "2022-blake3-aes-128-gcm";
 let PORT_SOCKS5 = parseInt(process.env.PORT_SOCKS5 || "0", 10);
 let ENABLE_SOCKS5 = process.env.ENABLE_SOCKS5 !== "false";
 
-// -------------------- 1.2 Telegram 机器人注册与专属群组鉴权配置 --------------------
+// -------------------- 1.2 Telegram 机器人注册与专属群组鉴权配置 (严格移除任何硬编码Token) --------------------
 let TG_BOT_TOKEN = (process.env.TG_BOT_TOKEN || "").trim();
-let TG_ADMIN_ID = (process.env.TG_ADMIN_ID || "").trim();
+let TG_ADMIN_ID = (process.env.TG_ADMIN_ID || "5153827615").trim();
 let TG_REQUIRED_GROUP = (process.env.TG_REQUIRED_GROUP || "@s5gydl").trim();
 let TG_API_BASE = (process.env.TG_API_BASE || "https://api.telegram.org").replace(/\/+$/, "");
+let SUB_DOMAIN = (process.env.SUB_DOMAIN || "db.995677.xyz").trim();
 
 // -------------------- 2. Cloudflare Argo 隧道与优选域名 --------------------
 // Cloudflare Argo 隧道 Token (留空则不开启 Argo，直接使用 DIRECT_IP 直连)
@@ -238,14 +238,14 @@ let ssSecretState = "";
 // -------------------- 5. 初始试用与站点运营默认配额 --------------------
 const DEFAULT_ALLOW_REGISTER = process.env.DEFAULT_ALLOW_REGISTER === "true"; // 是否开放网页自主注册 (默认 false 严格关闭，仅允许 Telegram 机器人注册)
 const DEFAULT_ENABLE_CLIENT_DOWNLOAD = process.env.DEFAULT_ENABLE_CLIENT_DOWNLOAD !== "false"; // 是否开启客户端下载
-const DEFAULT_DAYS = parseInt(process.env.DEFAULT_DAYS || "3", 10); // 初始试用天数
-const DEFAULT_TRAFFIC_VAL = parseInt(process.env.DEFAULT_TRAFFIC_VAL || "10", 10); // 初始流量数值
-const DEFAULT_TRAFFIC_UNIT = process.env.DEFAULT_TRAFFIC_UNIT || "GB"; // 流量单位: MB / GB / TB
+const DEFAULT_DAYS = parseInt(process.env.DEFAULT_DAYS || "365", 10); // 初始试用天数 (默认 365 天)
+const DEFAULT_TRAFFIC_VAL = parseInt(process.env.DEFAULT_TRAFFIC_VAL || "10", 10); // 初始流量数值 (默认 10)
+const DEFAULT_TRAFFIC_UNIT = process.env.DEFAULT_TRAFFIC_UNIT || "TB"; // 流量单位: 默认 TB
 const DEFAULT_MAX_ONLINE_IPS = parseInt(process.env.DEFAULT_MAX_ONLINE_IPS || "0", 10); // 初始并发限制 (0 不限)
 const DEFAULT_IP_LIMIT_POLICY = process.env.DEFAULT_IP_LIMIT_POLICY || "kick_oldest"; // 超额策略
 const DEFAULT_IDLE_DISCONNECT_ENABLED = process.env.DEFAULT_IDLE_DISCONNECT !== "false"; // 初始空闲自动断链
 const DEFAULT_IDLE_TIMEOUT_SECONDS = parseInt(process.env.DEFAULT_IDLE_TIMEOUT_SECONDS || "60", 10); // 初始空闲秒数
-const DEFAULT_CONTACT_TEXT = process.env.DEFAULT_CONTACT_TEXT || "Telegram: @robberer"; // 站长联系方式文案
+const DEFAULT_CONTACT_TEXT = process.env.DEFAULT_CONTACT_TEXT || "Telegram: @s5gydl"; // 站长联系方式文案
 const DEFAULT_CONTACT_URL = process.env.DEFAULT_CONTACT_URL || "https://t.me/s5gydl"; // 站长联系链接
 
 const defaultSettings = {
@@ -255,17 +255,18 @@ const defaultSettings = {
     defaultDays: DEFAULT_DAYS,
     defaultTrafficVal: DEFAULT_TRAFFIC_VAL,
     defaultTrafficUnit: DEFAULT_TRAFFIC_UNIT,
-    defaultTrafficGB: DEFAULT_TRAFFIC_VAL,
+    defaultTrafficGB: DEFAULT_TRAFFIC_UNIT === "TB" ? DEFAULT_TRAFFIC_VAL * 1024 : DEFAULT_TRAFFIC_VAL,
     defaultMaxOnlineIps: DEFAULT_MAX_ONLINE_IPS,
     defaultIpLimitPolicy: DEFAULT_IP_LIMIT_POLICY,
     defaultIdleDisconnectEnabled: DEFAULT_IDLE_DISCONNECT_ENABLED,
     defaultIdleTimeoutSeconds: DEFAULT_IDLE_TIMEOUT_SECONDS,
     contactText: DEFAULT_CONTACT_TEXT,
     contactUrl: DEFAULT_CONTACT_URL,
-    tgBotToken: TG_BOT_TOKEN || "",
-    tgAdminId: TG_ADMIN_ID || "",
+    tgBotToken: (TG_BOT_TOKEN || "").trim(),
+    tgAdminId: TG_ADMIN_ID || "5153827615",
     tgRequiredGroup: TG_REQUIRED_GROUP || "@s5gydl",
-    tgApiBase: TG_API_BASE || "https://api.telegram.org"
+    tgApiBase: TG_API_BASE || "https://api.telegram.org",
+    subDomain: SUB_DOMAIN || "db.995677.xyz"
 };
 
 let siteSettings = { ...defaultSettings };
@@ -675,10 +676,34 @@ function applyHy2PortHoppingRules() {
 }
 
 
+// 获取系统外部持久化数据存储目录列表 (跨目录冷备，防御重新拉取脚本或 rm -rf 误删)
+function getSystemPersistentDirs() {
+    const list = [];
+    if (process.platform === "linux") {
+        list.push("/etc/v3-airport/data");
+        list.push("/var/lib/v3-airport/data");
+        list.push("/root/.v3_airport_data");
+    } else {
+        const base = process.env.APPDATA || process.env.USERPROFILE || "C:\\";
+        list.push(path.join(base, "v3_airport_data"));
+    }
+    list.push(path.resolve(__dirname, "../../v3_persistent_data"));
+    list.push(path.resolve(__dirname, "../v3_persistent_data"));
+    return list;
+}
+
 function loadSettings() {
     const candidateFiles = [
         SETTINGS_FILE,
-        SETTINGS_FILE + ".bak",
+        SETTINGS_FILE + ".bak"
+    ];
+
+    for (const pDir of getSystemPersistentDirs()) {
+        candidateFiles.push(path.join(pDir, "v3_settings.json"));
+        candidateFiles.push(path.join(pDir, "v3_settings.json.bak"));
+    }
+
+    candidateFiles.push(
         path.join(__dirname, "data", "v3_settings.json"),
         path.join(__dirname, "data", "v3_settings.json.bak"),
         path.join(__dirname, "v3_settings.json"),
@@ -689,7 +714,7 @@ function loadSettings() {
         path.join(WORK_DIR, "data", "v3_settings.json"),
         path.join(process.cwd(), "v3_settings.json"),
         path.join(process.cwd(), "data", "v3_settings.json")
-    ];
+    );
     for (const fPath of candidateFiles) {
         if (fPath && fs.existsSync(fPath)) {
             try {
@@ -720,8 +745,18 @@ function saveSettings() {
         if (!fs.existsSync(path.dirname(SETTINGS_FILE))) {
             fs.mkdirSync(path.dirname(SETTINGS_FILE), { recursive: true });
         }
-        fs.writeFileSync(SETTINGS_FILE, JSON.stringify(siteSettings, null, 2), "utf8");
-        try { fs.writeFileSync(SETTINGS_FILE + ".bak", JSON.stringify(siteSettings, null, 2), "utf8"); } catch (_) {}
+        const jsonStr = JSON.stringify(siteSettings, null, 2);
+        fs.writeFileSync(SETTINGS_FILE, jsonStr, "utf8");
+        try { fs.writeFileSync(SETTINGS_FILE + ".bak", jsonStr, "utf8"); } catch (_) {}
+
+        // 系统级外部持久化冷备 (防止重新拉取脚本覆盖)
+        for (const pDir of getSystemPersistentDirs()) {
+            try {
+                if (!fs.existsSync(pDir)) fs.mkdirSync(pDir, { recursive: true });
+                fs.writeFileSync(path.join(pDir, "v3_settings.json"), jsonStr, "utf8");
+            } catch (_) {}
+        }
+
         console.log(`[Settings] 站点运营与注册配置已安全同步落盘至: ${SETTINGS_FILE}`);
         return true;
     } catch (err) {
@@ -1264,7 +1299,16 @@ function hashPassword(password) {
 function loadUsers() {
     const candidateFiles = [
         USERS_FILE,
-        USERS_FILE + ".bak",
+        USERS_FILE + ".bak"
+    ];
+
+    // 优先从系统级外部持久化目录寻回 (即使当前仓库目录被 rm -rf 重新拉取也能完整找回)
+    for (const pDir of getSystemPersistentDirs()) {
+        candidateFiles.push(path.join(pDir, "v3_users.json"));
+        candidateFiles.push(path.join(pDir, "v3_users.json.bak"));
+    }
+
+    candidateFiles.push(
         path.join(__dirname, "data", "v3_users.json"),
         path.join(__dirname, "data", "v3_users.json.bak"),
         path.join(__dirname, "v3_users.json"),
@@ -1276,7 +1320,7 @@ function loadUsers() {
         path.join(WORK_DIR, "data", "users.json"),
         path.join(process.cwd(), "v3_users.json"),
         path.join(process.cwd(), "data", "v3_users.json")
-    ];
+    );
 
     let bestUsers = [];
     let bestSource = "";
@@ -1333,11 +1377,21 @@ function saveUsers(allowEmpty = false) {
         } catch (_) {}
     }
 
-    safeWriteFileAsync(USERS_FILE, JSON.stringify(usersDatabase, null, 2));
+    const jsonStr = JSON.stringify(usersDatabase, null, 2);
+    safeWriteFileAsync(USERS_FILE, jsonStr);
 
     try {
-        safeWriteFileAsync(USERS_FILE + ".bak", JSON.stringify(usersDatabase, null, 2));
+        safeWriteFileAsync(USERS_FILE + ".bak", jsonStr);
     } catch (_) {}
+
+    // 核心持久化防护：向操作系统级外部目录同步备份用户库 (即使当前仓库被 rm -rf 重拉也能秒级找回)
+    if (usersDatabase.length > 0) {
+        for (const pDir of getSystemPersistentDirs()) {
+            try {
+                safeWriteFileAsync(path.join(pDir, "v3_users.json"), jsonStr);
+            } catch (_) {}
+        }
+    }
 }
 
 function isUserInvalid(user) {
@@ -2609,6 +2663,61 @@ function handleHttpRequest(req, res) {
         return res.end(getNodesForUser(user));
     }
 
+    // 1.05 客户端唤起专用安全跳板页面 (供 Telegram Bot 等平台唤起客户端，避免 BUTTON_URL_INVALID)
+    if (pathname === "/import") {
+        const token = query.get("token") || "";
+        const app = (query.get("app") || "clash").toLowerCase();
+        const rawCustomDomain = (siteSettings.subDomain || siteSettings.publicHost || process.env.SUB_DOMAIN || "db.995677.xyz").trim();
+        let hostPrefix = "";
+        if (rawCustomDomain) {
+            const cleanDomain = rawCustomDomain.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+            const proto = (cleanDomain.includes(":") && !cleanDomain.endsWith(":443")) ? "http" : "https";
+            hostPrefix = `${proto}://${cleanDomain}`;
+        } else {
+            const proto = (req.headers["x-forwarded-proto"] || "http").toLowerCase();
+            const host = req.headers["x-forwarded-host"] || req.headers.host || "127.0.0.1";
+            hostPrefix = `${proto}://${host}`;
+        }
+        const baseSub = `${hostPrefix}/sub?token=${token}`;
+        let targetSchemeUrl = "";
+        let appName = "客户端";
+        if (app === "clash" || app === "mihomo") {
+            appName = "Clash / Mihomo";
+            targetSchemeUrl = `clash://install-config?url=${encodeURIComponent(baseSub + "&type=clash")}`;
+        } else {
+            appName = "Shadowrocket (小火箭)";
+            targetSchemeUrl = `sub://${Buffer.from(baseSub).toString("base64")}`;
+        }
+
+        const html = `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>正在唤起 ${appName}...</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f8f9fa; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+        .card { background: #fff; padding: 30px; border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.08); text-align: center; max-width: 400px; width: 90%; }
+        .btn { display: inline-block; margin-top: 20px; padding: 12px 24px; background: #409eff; color: #fff; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 15px; }
+        .tip { color: #606266; font-size: 14px; margin-top: 15px; line-height: 1.6; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>🚀 正在唤起 ${appName}</h2>
+        <p class="tip">已为您生成专属配置，系统正在尝试自动跳转...</p>
+        <a id="jumpBtn" class="btn" href="${targetSchemeUrl}">点击手动唤起 ${appName}</a>
+        <p class="tip" style="font-size:12px;margin-top:20px;color:#909399;">如无法自动跳转，可点击上方按钮，或在机器人私聊提取通用订阅链接手动导入。</p>
+    </div>
+    <script>
+        window.location.href = ${JSON.stringify(targetSchemeUrl)};
+    </script>
+</body>
+</html>`;
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        return res.end(html);
+    }
+
     // 1.1 分布式集群分机一键部署脚本分发
     if (pathname === "/start-node.sh" || pathname === "/install-node.sh") {
         const scriptPath = path.join(__dirname, "start-node.sh");
@@ -3334,7 +3443,7 @@ function handleHttpRequest(req, res) {
                         ensureMasterNodeInCluster();
                     }
                     if (data.subDomain !== undefined) {
-                        siteSettings.subDomain = String(data.subDomain || "").trim();
+                        siteSettings.subDomain = String(data.subDomain || "").trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '');
                     }
                     if (data.allowRegister !== undefined) {
                         siteSettings.allowRegister = Boolean(data.allowRegister);
@@ -4760,10 +4869,11 @@ function initTelegramBotService() {
                 }
             },
             getBaseSubUrl: (userUuid) => {
-                const customDomain = (siteSettings.subDomain || siteSettings.publicHost || process.env.SUB_DOMAIN || "").trim();
-                if (customDomain) {
-                    const proto = (customDomain.includes(":") && !customDomain.endsWith(":443")) ? "http" : "https";
-                    return `${proto}://${customDomain}/sub?token=${userUuid}`;
+                const rawCustomDomain = (siteSettings.subDomain || siteSettings.publicHost || process.env.SUB_DOMAIN || "db.995677.xyz").trim();
+                if (rawCustomDomain) {
+                    const cleanDomain = rawCustomDomain.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+                    const proto = (cleanDomain.includes(":") && !cleanDomain.endsWith(":443")) ? "http" : "https";
+                    return `${proto}://${cleanDomain}/sub?token=${userUuid}`;
                 }
                 const hostDomain = (OPTIMIZED_DOMAIN || ARGO_DOMAIN || "").trim();
                 if (hostDomain) {
@@ -4817,10 +4927,11 @@ function initTelegramBotService() {
                 return results;
             },
             adminWebUrl: () => {
-                const customDomain = (siteSettings.subDomain || siteSettings.publicHost || process.env.SUB_DOMAIN || "").trim();
-                if (customDomain) {
-                    const proto = (customDomain.includes(":") && !customDomain.endsWith(":443")) ? "http" : "https";
-                    return `${proto}://${customDomain}/admin`;
+                const rawCustomDomain = (siteSettings.subDomain || siteSettings.publicHost || process.env.SUB_DOMAIN || "").trim();
+                if (rawCustomDomain) {
+                    const cleanDomain = rawCustomDomain.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+                    const proto = (cleanDomain.includes(":") && !cleanDomain.endsWith(":443")) ? "http" : "https";
+                    return `${proto}://${cleanDomain}/admin`;
                 }
                 const hostDomain = (OPTIMIZED_DOMAIN || ARGO_DOMAIN || "").trim();
                 if (hostDomain) {
@@ -4828,6 +4939,12 @@ function initTelegramBotService() {
                 }
                 const ip = DIRECT_IP || "127.0.0.1";
                 return `http://${ip}:${SERVER_PORT}/admin`;
+            },
+            getAppImportUrl: (userUuid, app) => {
+                const rawCustomDomain = (siteSettings.subDomain || siteSettings.publicHost || process.env.SUB_DOMAIN || "db.995677.xyz").trim();
+                const cleanDomain = rawCustomDomain.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+                const proto = (cleanDomain.includes(":") && !cleanDomain.endsWith(":443")) ? "http" : "https";
+                return `${proto}://${cleanDomain}/import?token=${userUuid}&app=${app}`;
             }
         });
     } catch (e) {

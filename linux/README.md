@@ -36,24 +36,29 @@
 
 ## ⚡ 一键拉取 + 交互式配置向导（推荐）
 
-在任意全新 Linux 服务器终端中直接粘贴执行下方这一行命令，即可自动拉取代码，然后进入**交互式配置向导**逐项填写端口和密码，最后自动安装启动服务：
+在任意 Linux 服务器终端中直接粘贴执行下方这一行命令，即可自动拉取最新代码，自动无损继承历史数据与配置，最后平滑安装或重启服务：
 
 ```bash
-cd ~ && (command -v git >/dev/null 2>&1 || (apt-get update -y && apt-get install -y git || apk add --no-cache git || dnf install -y git)) && rm -rf /root/v3-airport && git clone https://github.com/hc990275/nodejs.git /root/v3-airport && cd /root/v3-airport/linux && chmod +x setup.sh install_service.sh start.sh && ./setup.sh
+cd ~ && (command -v git >/dev/null 2>&1 || (apt-get update -y && apt-get install -y git || apk add --no-cache git || dnf install -y git)) && ( [ -d "/root/v3-airport" ] && ( cd /root/v3-airport && git pull ) || git clone https://github.com/hc990275/nodejs.git /root/v3-airport ) && cd /root/v3-airport/linux && chmod +x setup.sh install_service.sh start.sh && ./setup.sh
 ```
 
-向导会逐步询问：
-- 主端口（必填）、管理员密码（必填）
-- 各协议端口（留空 = 禁用该协议）
-- Argo 隧道 Token（可选）
+> [!TIP]
+> **日常无损一键平滑热更新（推荐，数据与配置 100% 完好无损）：**
+> ```bash
+> cd /root/v3-airport/linux && git pull && systemctl restart v3
+> ```
 
-全部回答完毕后自动写入 `.env` 并安装为系统服务（支持 systemd 和 OpenRC）。
+向导会逐步引导确认：
+- 主端口、管理员密码
+- 各协议端口（默认自动预填 18800-18805，HOP 18806-18817 全部开启）
+- Telegram 机器人与专属群组联动
+- 用户库采用系统级跨目录冷备保护（保存在 `/etc/v3-airport/data` 与 `/var/lib/v3-airport/data`），即使重新部署或重拉脚本也绝对不会丢失用户！
 
 ---
 
 ## 🚀 部署与运维指南
 
-### 方式一：一键服务部署（推荐）
+### 方式一：一键服务部署与无损重启（推荐）
 
 ```bash
 cd /root/v3-airport/linux
@@ -64,7 +69,7 @@ chmod +x start.sh install_service.sh
 **systemd 常用管理指令（Ubuntu / Debian / CentOS）：**
 ```bash
 systemctl status v3        # 查看状态
-systemctl restart v3       # 重启服务
+systemctl restart v3       # 重启服务 (无损热加载)
 systemctl stop v3          # 停止服务
 journalctl -u v3 -f -n 50  # 实时日志
 ```
