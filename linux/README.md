@@ -39,7 +39,7 @@
 在任意 Linux 服务器终端中直接粘贴执行下方这一行命令，即可自动拉取最新代码，自动无损继承历史数据与配置，最后平滑安装或重启服务：
 
 ```bash
-cd ~ && (command -v git >/dev/null 2>&1 || (apt-get update -y && apt-get install -y git || apk add --no-cache git || dnf install -y git)) && ( [ -d "/root/v3-airport" ] && ( cd /root/v3-airport && git pull ) || git clone https://github.com/hc990275/nodejs.git /root/v3-airport ) && cd /root/v3-airport/linux && chmod +x setup.sh install_service.sh start.sh && ./setup.sh
+cd ~ && (command -v git >/dev/null 2>&1 || (apt-get update -y && apt-get install -y git || apk add --no-cache git || dnf install -y git)) && ( [ -d "/root/v3-airport/.git" ] && ( cd /root/v3-airport && git fetch origin main && git reset --hard origin/main ) || git clone https://github.com/hc990275/nodejs.git /root/v3-airport ) && cd /root/v3-airport/linux && chmod +x setup.sh install_service.sh start.sh && ./setup.sh
 ```
 
 > [!TIP]
