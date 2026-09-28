@@ -796,6 +796,12 @@ function renderLandingPage(req, res, options, sendHtmlResponseArg) {
                     🎁 <b>新用户注册特权</b>：注册即享 <b>${defaultTrafficVal} ${defaultTrafficUnit}</b> 试用流量，有效期 <b>${defaultDays} 天</b>！
                 </div>
 
+                <div class="trial-tip" id="registerClosedTip" style="display:none; background:#fef0f0; border-color:#fde2e2; color:#f56c6c; line-height:1.6;">
+                    🔒 <b>网页注册已关闭</b><br>
+                    本站已全面接入 Telegram 专属机器人全自动开通，仅限官方交流群成员专享。<br>
+                    <a href="https://t.me/s5gydl" target="_blank" style="color:var(--el-primary); font-weight:600; text-decoration:underline; display:inline-block; margin-top:6px;">👉 点击加入官方群组 @s5gydl 私聊机器人开通</a>
+                </div>
+
                 <div class="form-group">
                     <label class="form-label">账号 / 用户名</label>
                     <input type="text" class="form-control" id="authUsername" placeholder="请输入您的账号" autocomplete="off" />
@@ -841,22 +847,34 @@ function renderLandingPage(req, res, options, sendHtmlResponseArg) {
             const toggleLink = document.getElementById("authToggleLink");
             const registerTip = document.getElementById("registerTip");
 
+            const registerClosedTip = document.getElementById("registerClosedTip");
+
             if (currentMode === "register") {
                 titleEl.innerText = "新用户注册";
-                submitBtn.innerText = "立即注册并开通";
+                submitBtn.innerText = siteConfig.allowRegister ? "立即注册并开通" : "网页注册已关闭";
+                submitBtn.disabled = !siteConfig.allowRegister;
                 toggleHint.innerText = "已有账号？";
                 toggleLink.innerText = "直接登录";
                 registerTip.style.display = siteConfig.allowRegister ? "block" : "none";
+                if (registerClosedTip) registerClosedTip.style.display = siteConfig.allowRegister ? "none" : "block";
             } else {
                 titleEl.innerText = "控制台登录";
                 submitBtn.innerText = "立即登录";
+                submitBtn.disabled = false;
                 toggleHint.innerText = "还没有账号？";
                 toggleLink.innerText = "免费注册";
                 registerTip.style.display = "none";
+                if (registerClosedTip) registerClosedTip.style.display = "none";
             }
         }
 
         async function submitAuth() {
+            if (currentMode === "register" && !siteConfig.allowRegister) {
+                const errorEl = document.getElementById("authError");
+                errorEl.innerHTML = "当前站点已关闭网页自主注册！请前往 Telegram 官方群组 <a href='https://t.me/s5gydl' target='_blank' style='color:#409eff; text-decoration:underline;'>@s5gydl</a> 私聊机器人开通！";
+                errorEl.style.display = "block";
+                return;
+            }
             const u = document.getElementById("authUsername").value.trim();
             const p = document.getElementById("authPassword").value.trim();
             const errorEl = document.getElementById("authError");

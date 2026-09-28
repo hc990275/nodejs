@@ -375,3 +375,21 @@
   1. **摒弃字面量 `\n` 转义**：字符串换行全面采用 `String.fromCharCode(10)` 或由数组 `join(String.fromCharCode(10))` 实现，彻底避免服务端求值影响；
   2. **事件与参数 Dataset 解耦**：警告信息查看全部通过 `data-node-id` 绑定独立函数 `showNodePortWarnings`，杜绝内联 `onclick` 拼接转义符；
   3. **新增客户端 AST 语法自动化守门**：通过 Node 运行提取生成 HTML 中的 `<script>` 并做 `new Function()` AST 语法解析测试，确保 0 语法缺陷发往客户端。
+
+---
+
+### 第四十号：Telegram 机器人专属开通集成、官方群 @s5gydl 成员鉴权与防刷单号限制
+- **问题现象**：
+  1. 默认开放网页端自主注册容易引发爬虫或非本群人员恶意批量注册、刷取试用流量资源；
+  2. 需要通过 Telegram 机器人为群成员发放专属福利，但必须限制只有本群 `@s5gydl` 成员才能开通，且必须防止同一个人反复注册刷流量；
+  3. 原生 Node.js 无额外 npm 依赖环境下，调用 Telegram Bot API 进行长轮询时若遇网络超时或 409 冲突，若未妥善捕获将导致主进程异常退出。
+- **原因剖析**：
+  1. 历史配置中 `DEFAULT_ALLOW_REGISTER` 默认为 true；
+  2. 原系统仅支持账号密码注册，未持久化 Telegram 关联信息与唯一性约束；
+  3. Telegram Bot API `getChatMember` 要求机器人必须具有该群访问权限（群为公开群且机器人必须被拉入群中），且长轮询连接可能因网络超时或 409 产生异常。
+- **实施解决对策**：
+  1. **注册闭环与权限收紧**：将 `DEFAULT_ALLOW_REGISTER` 默认值设为 `false`，网页端前台增加友好导流提示卡片，将流量引流至群组与机器人；
+  2. **专属群组身份鉴权**：在 `telegram.js` 模块中通过 `getChatMember` 实时核验用户的群身份（状态为 creator/administrator/member/restricted 即通过，left/kicked 拒绝并附带加群链接）；
+  3. **一客一号防重锁**：在 `usersDatabase` 中持久化记录 `telegramId`，注册时强校验同一 TG ID 仅限注册 1 个账号，已绑定账号发送 `/my` 可随时查询；
+  4. **原生无依赖高可用 Long-Polling**：纯 Node.js `https` 模块实现长轮询，完善超时控制与异常指数退避重试，永不断线，零内存消耗。
+
