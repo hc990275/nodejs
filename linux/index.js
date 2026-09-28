@@ -1662,19 +1662,6 @@ function safeReloadSingbox(force = false) {
         return;
     }
 
-    // 平滑热重载：若非强制重启且进程存活，在 Linux 下优先使用 SIGHUP 平滑热加载新配置
-    if (!force && existingProcess && !existingProcess.killed && process.platform !== "win32") {
-        try {
-            console.log("[Core] 检测到配置变动，正在向 Sing-box (PID " + existingProcess.pid + ") 发送 SIGHUP 信号平滑热加载...");
-            existingProcess.kill("SIGHUP");
-            singboxProcess = existingProcess;
-            isReloading = false;
-            return;
-        } catch (err) {
-            console.warn("[Core] SIGHUP 平滑热重载失败，回退到进程重启流程:", err.message);
-        }
-    }
-
     if (existingProcess) {
         try {
             existingProcess.removeAllListeners();
@@ -3874,7 +3861,7 @@ function handleHttpRequest(req, res) {
                     disconnectUserConnections(effectiveUuid, "admin_disabled");
                     safeReloadSingbox(true);
                 } else {
-                    safeReloadSingbox(false);
+                    safeReloadSingbox(true);
                 }
 
                 res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
@@ -4430,6 +4417,21 @@ function handleUpgradeRequest(req, clientSocket, head) {
     backendSocket.once("error", handleClose);
 }
 
+function closeSingboxConnection(connId) {
+    if (!connId) return;
+    try {
+        const delReq = http.request({
+            hostname: "127.0.0.1",
+            port: PORT_CLASH_API,
+            path: `/connections/${encodeURIComponent(connId)}`,
+            method: "DELETE",
+            timeout: 2500
+        }, (res) => { res.resume(); });
+        delReq.on("error", () => {});
+        delReq.end();
+    } catch (_) {}
+}
+
 // 【需求 3】：空闲超时断链与僵尸死连接自动回收守护 (每 10 秒巡检一次)
 setInterval(() => {
     const now = Date.now();
@@ -4444,12 +4446,9 @@ setInterval(() => {
         const connsToClose = [];
 
         act.activeList.forEach((conn) => {
-            // 如果是 Sing-box 核心协议连接，生命周期由 pollSingboxClashApiTraffic 维护
-            if (conn.isSingbox) return;
-
             // 状态 1：套接字在系统底层已经 destroyed 或关闭（僵尸死连接）
-            const isDead = (conn.clientSocket && conn.clientSocket.destroyed) ||
-                (conn.backendSocket && conn.backendSocket.destroyed);
+            const isDead = (!conn.isSingbox && ((conn.clientSocket && conn.clientSocket.destroyed) ||
+                (conn.backendSocket && conn.backendSocket.destroyed)));
 
             // 状态 2：超过指定时长无数据交互（空闲超时）
             const isIdle = isIdleEnabled && conn.lastActivityAt && (now - conn.lastActivityAt > timeoutMs);
@@ -4463,7 +4462,12 @@ setInterval(() => {
             if (isIdle) {
                 console.log(`[Idle-Guard] 用户 [${u.username}] 的连接 (${conn.ip} / ${conn.proto}) 超过 ${timeoutSec} 秒无网络数据流动，执行空闲超时断链。`);
             }
-            if (typeof conn.closeHandler === "function") {
+            if (conn.isSingbox) {
+                closeSingboxConnection(conn.id);
+                const idx = act.activeList.findIndex((c) => c.id === conn.id);
+                if (idx !== -1) act.activeList.splice(idx, 1);
+                act.activeConnections = act.activeList.length;
+            } else if (typeof conn.closeHandler === "function") {
                 conn.closeHandler();
             } else {
                 try {
@@ -4479,7 +4483,7 @@ setInterval(() => {
 }, 10000);
 
 // 【方案一核心引擎】：Sing-box 原生 Clash API 流量统计与全协议在线感知轮询 (每 5 秒一次)
-const activeConnTrafficMap = new Map(); // id -> { lastBytes, lastSeen }
+const activeConnTrafficMap = new Map(); // id -> { lastBytes, lastDataAt, lastSeen }
 
 function pollSingboxClashApiTraffic() {
     const req = http.get(`http://127.0.0.1:${PORT_CLASH_API}/connections`, { timeout: 3500 }, (res) => {
@@ -4546,7 +4550,9 @@ function pollSingboxClashApiTraffic() {
                     const prevBytes = prev ? prev.lastBytes : 0;
                     const delta = totalBytes - prevBytes;
 
+                    let lastDataAt = prev ? (prev.lastDataAt || connStart) : connStart;
                     if (delta > 0) {
+                        lastDataAt = now;
                         matchedUser.trafficUsed = (matchedUser.trafficUsed || 0) + delta;
                         workerNodeTotalTraffic = (workerNodeTotalTraffic || 0) + delta;
                         hasTrafficChanges = true;
@@ -4558,7 +4564,19 @@ function pollSingboxClashApiTraffic() {
                         }
                     }
 
-                    // 4. 实时刷新用户全协议在线感知与活跃连接列表
+                    // 5. 空闲自动断连判定与内核级直接切断 (防僵尸死占用)
+                    const isIdleEnabled = matchedUser.idleDisconnectEnabled !== undefined ? Boolean(matchedUser.idleDisconnectEnabled) : true;
+                    const timeoutSec = matchedUser.idleTimeoutSeconds ? parseInt(matchedUser.idleTimeoutSeconds, 10) : 60;
+                    const timeoutMs = timeoutSec * 1000;
+
+                    if (isIdleEnabled && (now - lastDataAt > timeoutMs)) {
+                        console.log(`[Idle-Guard] 用户 [${matchedUser.username}] 的 Sing-box 连接 (${c.id} / ${protoName} / ${clientIp}) 超过 ${timeoutSec} 秒无网络数据流动，向内核发送切断！`);
+                        closeSingboxConnection(c.id);
+                        activeConnTrafficMap.delete(c.id);
+                        continue;
+                    }
+
+                    // 6. 实时刷新用户全协议在线感知与活跃连接列表
                     const userAct = getUserActivity(matchedUser.uuid);
                     if (userAct) {
                         userAct.lastSeenAt = now;
@@ -4581,11 +4599,11 @@ function pollSingboxClashApiTraffic() {
                                 proto: protoName,
                                 serverNode: (NODE_ROLE === "worker" ? (process.env.NODE_NAME || SERVER_LOCATION || getEffectiveServerLocation()) : `${getEffectiveServerLocation()} (主控)`),
                                 connectedAt: connStart,
-                                lastActivityAt: now,
+                                lastActivityAt: lastDataAt,
                                 isSingbox: true
                             });
                         } else {
-                            existing.lastActivityAt = now;
+                            existing.lastActivityAt = lastDataAt;
                             if (!existing.serverNode) {
                                 existing.serverNode = (NODE_ROLE === "worker" ? (process.env.NODE_NAME || SERVER_LOCATION || getEffectiveServerLocation()) : `${getEffectiveServerLocation()} (主控)`);
                             }
@@ -4596,10 +4614,10 @@ function pollSingboxClashApiTraffic() {
                         userAct.activeConnections = userAct.activeList.length;
                     }
 
-                    activeConnTrafficMap.set(c.id, { lastBytes: totalBytes, lastSeen: now });
+                    activeConnTrafficMap.set(c.id, { lastBytes: totalBytes, lastDataAt, lastSeen: now });
                 }
 
-                // 5. 垃圾回收：清理已经关闭或超时的断开连接并同步更新活跃列表
+                // 7. 垃圾回收：清理已经关闭或超时的断开连接并同步更新活跃列表
                 for (const [id, rec] of activeConnTrafficMap.entries()) {
                     if (!currentConnIds.has(id) || (now - rec.lastSeen > 30000)) {
                         activeConnTrafficMap.delete(id);
@@ -4791,14 +4809,12 @@ function initTelegramBotService() {
                 const u = usersDatabase.find((x) => x.uuid === uuid);
                 if (!u) return { success: false, error: "未找到用户" };
                 u.enabled = Boolean(enabled);
-                u.disableReason = reason || "";
+                u.disableReason = enabled ? "" : (reason || "");
                 saveUsers();
                 if (!u.enabled) {
                     disconnectUserConnections(uuid, reason);
-                    safeReloadSingbox(true);
-                } else {
-                    safeReloadSingbox(false);
                 }
+                safeReloadSingbox(true);
                 return { success: true };
             },
             disconnectUser: (uuid, reason) => {
