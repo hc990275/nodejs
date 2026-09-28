@@ -1305,12 +1305,12 @@ return sendHtmlResponse(res, 200, `
                                     <label>开放游客自主注册</label>
                                     <div style="display:flex; gap:16px; margin-top:8px; padding:8px 12px; background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px; flex-wrap:wrap;">
                                         <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
-                                            <input type="radio" name="set_allowRegister" value="1" id="set_allowRegister_1" />
-                                            <span style="color:var(--el-success); font-weight:600;">允许自主注册</span>
+                                            <input type="radio" name="set_allowRegister" value="0" id="set_allowRegister_0" />
+                                            <span style="color:var(--el-danger); font-weight:600;">关闭网页注册 (默认推荐，仅限 Telegram 机器人注册)</span>
                                         </label>
                                         <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
-                                            <input type="radio" name="set_allowRegister" value="0" id="set_allowRegister_0" />
-                                            <span style="color:var(--el-danger); font-weight:600;">关闭注册 (仅站长添加)</span>
+                                            <input type="radio" name="set_allowRegister" value="1" id="set_allowRegister_1" />
+                                            <span style="color:var(--el-success); font-weight:600;">允许网页自主注册</span>
                                         </label>
                                     </div>
                                 </div>
@@ -2125,7 +2125,7 @@ return sendHtmlResponse(res, 200, `
                         const reg1 = document.getElementById("set_allowRegister_1");
                         const reg0 = document.getElementById("set_allowRegister_0");
                         if (reg1 && reg0) {
-                            if (s.allowRegister !== false) reg1.checked = true;
+                            if (s.allowRegister === true) reg1.checked = true;
                             else reg0.checked = true;
                         }
                         const dInput = document.getElementById("set_defaultDays");
@@ -2243,7 +2243,7 @@ return sendHtmlResponse(res, 200, `
                         };
 
                         const reg1 = document.getElementById("set_allowRegister_1");
-                        const allowRegister = reg1 ? reg1.checked : true;
+                        const allowRegister = reg1 ? reg1.checked : false;
                         const defaultDays = getInt("set_defaultDays", 3);
                         const defaultTrafficVal = parseFloat(getVal("set_defaultTrafficVal", "10")) || 10;
                         const defaultTrafficUnit = getVal("set_defaultTrafficUnit", "GB") || "GB";
