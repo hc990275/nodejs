@@ -179,16 +179,18 @@ class TelegramBotManager {
                 });
             }
 
-            // 🌟 群聊消息 1 分钟 (60 秒) 自动撤回自毁机制 (私聊消息永不删除)
-            if (sent && sent.ok && sent.result && sent.result.chat) {
-                const chatType = sent.result.chat.type;
-                const isGroup = chatType === "group" || chatType === "supergroup" || chatType === "channel" || Number(chatId) < 0;
-                const delaySec = autoDeleteSeconds !== undefined ? autoDeleteSeconds : (isGroup ? 60 : 0);
-                if (delaySec > 0) {
-                    setTimeout(() => {
-                        this.deleteMessage(sent.result.chat.id, sent.result.message_id).catch(() => {});
-                    }, delaySec * 1000);
-                }
+            // 群聊中机器人发送的消息 60 秒后自动撤回自毁 (保持群版面清爽)；私聊消息永不删除；用户消息绝对不删
+            const isGroup = sent && sent.result && sent.result.chat && (
+                sent.result.chat.type === "group" ||
+                sent.result.chat.type === "supergroup" ||
+                sent.result.chat.type === "channel" ||
+                Number(chatId) < 0
+            );
+            const delaySec = autoDeleteSeconds !== undefined ? autoDeleteSeconds : (isGroup ? 60 : 0);
+            if (sent && sent.ok && sent.result && sent.result.chat && delaySec > 0) {
+                setTimeout(() => {
+                    this.deleteMessage(sent.result.chat.id, sent.result.message_id).catch(() => {});
+                }, delaySec * 1000);
             }
 
             return sent;
@@ -425,12 +427,13 @@ class TelegramBotManager {
             }
             // 2. 用户重新入群 -> 自动秒级恢复账号权限
             else if (["member", "administrator", "creator", "restricted"].includes(newStatus)) {
-                if (!boundUser.enabled && boundUser.disableReason === "退群自动停用") {
+                if (!boundUser.enabled && boundUser.disableReason !== "管理员手动禁用") {
                     console.log(`[TG-Audit] 🟢 监听到用户 [${boundUser.username}] 重新加入群组 ${this.requiredGroup}，自动激活恢复权限！`);
                     if (this.setUserEnabled) {
                         this.setUserEnabled(boundUser.uuid, true, "进群自动恢复");
                     }
 
+                    // 私信通知用户本人
                     this.sendMessage(targetTgId,
                         `🎉 *欢迎回群！节点权限已自动恢复*
 
@@ -442,6 +445,16 @@ class TelegramBotManager {
                             inline_keyboard: [[{ text: "📦 查看我的订阅 (/my)", callback_data: "cmd_my" }]]
                         }
                     }).catch(() => { });
+
+                    // 同步发送通知给管理员，确保图2状态闭环
+                    if (this.adminId) {
+                        this.sendMessage(this.adminId,
+                            `🎉 *群员回群触发解封通知*
+• 用户账号: \`${boundUser.username}\`
+• Telegram ID: \`${targetTgId}\`
+• 动作: 重新加入群组 ${this.requiredGroup}
+• 处理: 账号已解除冻结，Sing-box 配置已同步热重载，节点加速服务全面恢复正常！`).catch(() => { });
+                    }
                 }
             }
         } catch (e) {
@@ -485,10 +498,31 @@ class TelegramBotManager {
                     disabledCount++;
                 }
                 // 2. 在群内，但此前因退群被停用 -> 恢复
-                else if (check.inGroup && !u.enabled && u.disableReason === "退群自动停用") {
+                else if (check.inGroup && !u.enabled && u.disableReason !== "管理员手动禁用") {
                     console.log(`[TG-Audit-Cron] 巡检查出用户 [${u.username}] 已回群，自动恢复权限`);
                     if (this.setUserEnabled) this.setUserEnabled(u.uuid, true, "进群自动恢复");
                     restoredCount++;
+
+                    this.sendMessage(u.telegramId,
+                        `🎉 *检测到您已在群内，节点权限已自动恢复*
+
+系统检测到您当前已在官方交流群 ${this.requiredGroup}。
+您的账号 \`${u.username}\` 现已重新激活，所有高速节点恢复正常使用！
+
+💡 发送 \`/my\` 可刷新并提取最新订阅链接。`, {
+                        reply_markup: {
+                            inline_keyboard: [[{ text: "📦 查看我的订阅 (/my)", callback_data: "cmd_my" }]]
+                        }
+                    }).catch(() => { });
+
+                    if (this.adminId) {
+                        this.sendMessage(this.adminId,
+                            `🎉 *群员回群触发解封通知 (后台巡检恢复)*
+• 用户账号: \`${u.username}\`
+• Telegram ID: \`${u.telegramId}\`
+• 状态: 确认已在群组 ${this.requiredGroup}
+• 处理: 账号已解除冻结，Sing-box 配置已同步热重载，节点加速服务全面恢复正常！`).catch(() => { });
+                    }
                 }
                 await new Promise((r) => setTimeout(r, 120)); // 平滑流控
             }
@@ -616,12 +650,7 @@ class TelegramBotManager {
                     ]
                 } : undefined;
 
-                if (msg.message_id) {
-                    setTimeout(() => {
-                        this.deleteMessage(chat.id, msg.message_id).catch(() => {});
-                    }, 60000);
-                }
-
+                // 用户发的信息绝对不删除，完整保留群员发言与聊天记录
                 await this.sendMessage(chat.id, replyMsg, {
                     reply_to_message_id: msg.message_id,
                     reply_markup: keyboard,
