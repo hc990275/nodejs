@@ -107,20 +107,49 @@ class TelegramBotManager {
     }
 
     /**
-     * 发送文本消息
+     * 发送文本消息 (所有发往群聊的消息均会在 1 分钟后自动定时删除，防止刷屏)
      */
     async sendMessage(chatId, text, extra = {}) {
         try {
+            const { autoDeleteSeconds, ...restExtra } = extra;
             const data = {
                 chat_id: chatId,
                 text: text,
-                parse_mode: extra.parse_mode !== undefined ? extra.parse_mode : "Markdown",
-                disable_web_page_preview: extra.disable_web_page_preview !== undefined ? extra.disable_web_page_preview : true,
-                ...extra
+                parse_mode: restExtra.parse_mode !== undefined ? restExtra.parse_mode : "Markdown",
+                disable_web_page_preview: restExtra.disable_web_page_preview !== undefined ? restExtra.disable_web_page_preview : true,
+                ...restExtra
             };
-            return await this.request("sendMessage", data);
+            const sent = await this.request("sendMessage", data);
+
+            // 🌟 群聊消息 1 分钟 (60 秒) 自动撤回自毁机制 (私聊消息永不删除)
+            if (sent && sent.ok && sent.result && sent.result.chat) {
+                const chatType = sent.result.chat.type;
+                const isGroup = chatType === "group" || chatType === "supergroup" || chatType === "channel" || Number(chatId) < 0;
+                const delaySec = autoDeleteSeconds !== undefined ? autoDeleteSeconds : (isGroup ? 60 : 0);
+                if (delaySec > 0) {
+                    setTimeout(() => {
+                        this.deleteMessage(sent.result.chat.id, sent.result.message_id).catch(() => {});
+                    }, delaySec * 1000);
+                }
+            }
+
+            return sent;
         } catch (e) {
             console.warn(`[TG-Bot] 发送消息给 [${chatId}] 异常:`, e.message);
+            return null;
+        }
+    }
+
+    /**
+     * 自动删除指定消息 (deleteMessage)
+     */
+    async deleteMessage(chatId, messageId) {
+        try {
+            return await this.request("deleteMessage", {
+                chat_id: chatId,
+                message_id: messageId
+            });
+        } catch (_) {
             return null;
         }
     }
@@ -312,8 +341,8 @@ class TelegramBotManager {
 
                     // 私信通知用户
                     const groupLink = this.requiredGroup.startsWith("@") ? `https://t.me/${this.requiredGroup.slice(1)}` : "https://t.me/s5gydl";
-                    this.sendMessage(targetTgId, 
-`⚠️ *节点加速服务已暂停通知*
+                    this.sendMessage(targetTgId,
+                        `⚠️ *节点加速服务已暂停通知*
 
 检测到您已退出官方交流群 [${this.requiredGroup}](${groupLink})。
 根据群专属运营策略，您的节点账号 \`${boundUser.username}\` 已自动冻结断网。
@@ -323,19 +352,19 @@ class TelegramBotManager {
                         reply_markup: {
                             inline_keyboard: [[{ text: `👉 重新加入群组 ${this.requiredGroup}`, url: groupLink }]]
                         }
-                    }).catch(() => {});
+                    }).catch(() => { });
 
                     // 通知管理员
                     if (this.adminId) {
-                        this.sendMessage(this.adminId, 
-`⚠️ *群员退群触发停用通知*
+                        this.sendMessage(this.adminId,
+                            `⚠️ *群员退群触发停用通知*
 • 用户账号: \`${boundUser.username}\`
 • Telegram ID: \`${targetTgId}\`
 • 动作: 退出群组 ${this.requiredGroup}
-• 处理: 账号已立即设为禁用，存量连接已切断，Sing-box 配置已同步剔除。`).catch(() => {});
+• 处理: 账号已立即设为禁用，存量连接已切断，Sing-box 配置已同步剔除。`).catch(() => { });
                     }
                 }
-            } 
+            }
             // 2. 用户重新入群 -> 自动秒级恢复账号权限
             else if (["member", "administrator", "creator", "restricted"].includes(newStatus)) {
                 if (!boundUser.enabled && boundUser.disableReason === "退群自动停用") {
@@ -344,8 +373,8 @@ class TelegramBotManager {
                         this.setUserEnabled(boundUser.uuid, true, "进群自动恢复");
                     }
 
-                    this.sendMessage(targetTgId, 
-`🎉 *欢迎回群！节点权限已自动恢复*
+                    this.sendMessage(targetTgId,
+                        `🎉 *欢迎回群！节点权限已自动恢复*
 
 系统检测到您已重新加入官方群组 ${this.requiredGroup}。
 您的账号 \`${boundUser.username}\` 现已重新激活，所有高速节点恢复正常使用！
@@ -354,7 +383,7 @@ class TelegramBotManager {
                         reply_markup: {
                             inline_keyboard: [[{ text: "📦 查看我的订阅 (/my)", callback_data: "cmd_my" }]]
                         }
-                    }).catch(() => {});
+                    }).catch(() => { });
                 }
             }
         } catch (e) {
@@ -428,8 +457,8 @@ class TelegramBotManager {
 
         if (alertType === "admin_login_ip_change") {
             title = "🚨 【管理员后台异地登录安全警报】";
-            content = 
-`${title}
+            content =
+                `${title}
 • 登录时间: \`${nowStr}\`
 • 登录账号: \`管理员 (ADMIN_TOKEN)\`
 • 当前登录 IP: \`${payload.currentIp || "未知"}\` (${payload.location || "归属地解析中"})
@@ -439,8 +468,8 @@ class TelegramBotManager {
 ⚠️ *若非您本人操作，可能管理凭据已泄露！请立即登录服务器更换 ADMIN_TOKEN 并核查防火墙日志！*`;
         } else if (alertType === "user_abnormal_concurrent_ip") {
             title = "⚠️ 【用户异常跨地域并发告警】";
-            content = 
-`${title}
+            content =
+                `${title}
 • 告警时间: \`${nowStr}\`
 • 用户名称: \`${payload.username}\` (TG: @${payload.tgUsername || "无"})
 • 异常原因: \`检测到短时间内跨省/跨国异地 IP 连接，疑似账号外借共享\`
@@ -449,8 +478,8 @@ class TelegramBotManager {
 • 采取策略: \`${payload.policyTaken || "记录并监控"}\``;
         } else if (alertType === "system_singbox_down") {
             title = "🔴 【Sing-box 核心异常崩溃告警】";
-            content = 
-`${title}
+            content =
+                `${title}
 • 告警时间: \`${nowStr}\`
 • 节点位置: \`${payload.serverLocation || "本地"}\`
 • 状态: 核心进程发生意外中断，守护引擎已自动触发重启自愈。`;
@@ -469,9 +498,37 @@ class TelegramBotManager {
      * 处理消息交互
      */
     async handleMessage(msg) {
-        const text = (msg.text || "").trim();
         const from = msg.from;
         const chat = msg.chat;
+        if (!chat) return;
+
+        // 🌟 核心功能：监听新成员进群事件 (new_chat_members) 自动弹卡片引导直达私聊
+        if (msg.new_chat_members && Array.isArray(msg.new_chat_members) && msg.new_chat_members.length > 0) {
+            const botUser = this.botInfo ? this.botInfo.username : "";
+            for (const newMember of msg.new_chat_members) {
+                if (newMember.is_bot) continue; // 过滤机器人
+                const memberName = this.escapeMd(newMember.first_name || "新朋友");
+                const welcomeCard = 
+`🎉 *热烈欢迎 ${memberName} 加入官方交流群！*
+
+🚀 *群员专享福利*：
+本群为所有正式群成员提供全协议极速专线节点服务。
+每人限领 1 个专属账号，退群自动失效断网，回群自动秒级恢复！
+
+👉 *请点击下方按钮进入私聊，轻按屏幕正下方的【START / 开始】即可秒级免费开通！*`;
+
+                const keyboard = botUser ? {
+                    inline_keyboard: [
+                        [{ text: "🚀 点击一键开通高速节点", url: `https://t.me/${botUser}?start=start` }]
+                    ]
+                } : undefined;
+
+                await this.sendMessage(chat.id, welcomeCard, { reply_markup: keyboard });
+            }
+            return;
+        }
+
+        const text = (msg.text || "").trim();
         if (!from || !text) return;
 
         const isPrivate = chat.type === "private";
@@ -485,19 +542,29 @@ class TelegramBotManager {
         }
         const cmd = fullCmd.toLowerCase();
 
-        // 群聊安全防呆
-        if (!isPrivate && (cmd === "/reg" || cmd === "/register")) {
+        // 群聊安全防呆与一键跳转引导
+        if (!isPrivate) {
             const botUser = this.botInfo ? this.botInfo.username : "";
-            const replyMsg = `⚠️ [${from.first_name || "用户"}](tg://user?id=${from.id}) 为防止密码在公开群聊中泄露，请点击下方按钮【与我私聊】发送注册指令！`;
-            const keyboard = botUser ? {
-                inline_keyboard: [
-                    [{ text: "🤖 私聊机器人立即注册", url: `https://t.me/${botUser}?start=register` }]
-                ]
-            } : undefined;
-            return await this.sendMessage(chat.id, replyMsg, {
-                reply_to_message_id: msg.message_id,
-                reply_markup: keyboard
-            });
+            const isIntentToStart = ["/start", "/reg", "/register", "开通", "注册", "节点", "订阅"].includes(cmd) ||
+                ["开通", "注册", "节点", "订阅", "签到"].includes(text);
+            if (isIntentToStart) {
+                const replyMsg = `👋 [${from.first_name || "朋友"}](tg://user?id=${from.id})，为保护您的订阅与账号隐私，请点击下方按钮进入私聊！\n👉 进入后轻点屏幕正下方的【START / 开始】即可完成开通！`;
+                const keyboard = botUser ? {
+                    inline_keyboard: [
+                        [{ text: "🚀 点击直达私聊并发送开始", url: `https://t.me/${botUser}?start=start` }]
+                    ]
+                } : undefined;
+                // 顺带将群友在群内发送的触发消息也在 60 秒后自动清理 (需管理员删除权限)
+                if (msg.message_id) {
+                    setTimeout(() => {
+                        this.deleteMessage(chat.id, msg.message_id).catch(() => {});
+                    }, 60000);
+                }
+                return await this.sendMessage(chat.id, replyMsg, {
+                    reply_to_message_id: msg.message_id,
+                    reply_markup: keyboard
+                });
+            }
         }
 
         if (cmd === "/start") {
@@ -533,6 +600,12 @@ class TelegramBotManager {
             if (cmd === "/deluser") {
                 return await this.handleAdminDelUserCommand(chat.id, argsStr);
             }
+            if (cmd === "/clearall") {
+                return await this.handleAdminClearAllCommand(chat.id, argsStr, "all");
+            }
+            if (cmd === "/cleartg") {
+                return await this.handleAdminClearAllCommand(chat.id, argsStr, "tg_only");
+            }
             if (cmd === "/broadcast") {
                 return await this.handleAdminBroadcastCommand(chat.id, argsStr);
             }
@@ -548,8 +621,8 @@ class TelegramBotManager {
         const allUsers = this.getUsers();
         const user = allUsers.find((u) => u.telegramId && String(u.telegramId).trim() === String(from.id));
 
-        const welcomeText = 
-`🚀 *欢迎使用极速云全球多协议网络加速中枢！*
+        const welcomeText =
+            `🚀 *欢迎使用极速云全球多协议网络加速中枢！*
 
 你好，*${this.escapeMd(from.first_name || "朋友")}*！
 本服务为官方交流群专属福利，已实现全协议智能调度与机器人全自动开通。
@@ -567,21 +640,24 @@ _例如：\`/reg test888 12345678\` (留空密码将自动生成随机密码)_
 
 💡 *当前状态*：${user ? `已开通账号 (\`${user.username}\`)` : "未开通，请发送 /reg 注册"}`;
 
-        // 6 宫格高质感按钮矩阵
-        const keyboard = {
-            inline_keyboard: [
-                [{ text: `👉 加入官方交流群 ${groupName}`, url: groupLink }],
-                [
-                    { text: "📦 我的订阅与流量", callback_data: "cmd_my" },
-                    { text: "🎁 每日签到领流量", callback_data: "cmd_checkin" }
-                ],
-                [
-                    { text: "🌐 节点矩阵状态", callback_data: "cmd_nodes" },
-                    { text: "📖 客户端配置教程", callback_data: "cmd_client_guide" }
-                ],
-                [{ text: "💬 联系群主/客服支持", url: groupLink }]
-            ]
-        };
+        // 现代高质感按钮矩阵
+        const inlineRows = [];
+        if (!user) {
+            inlineRows.push([{ text: "🚀 一键极速开通节点 (无需输入)", callback_data: "cmd_quick_reg" }]);
+        } else {
+            inlineRows.push([{ text: "📦 提取我的节点订阅", callback_data: "cmd_my" }]);
+        }
+        inlineRows.push([{ text: `👉 官方交流群 ${groupName}`, url: groupLink }]);
+        inlineRows.push([
+            { text: "🎁 每日签到打卡", callback_data: "cmd_checkin" },
+            { text: "🌐 节点矩阵状态", callback_data: "cmd_nodes" }
+        ]);
+        inlineRows.push([
+            { text: "📖 客户端导入教程", callback_data: "cmd_client_guide" },
+            { text: "💬 联系客服支持", url: groupLink }
+        ]);
+
+        const keyboard = { inline_keyboard: inlineRows };
 
         return await this.sendMessage(chatId, welcomeText, { reply_markup: keyboard });
     }
@@ -616,8 +692,8 @@ _例如：\`/reg test888 12345678\` (留空密码将自动生成随机密码)_
         const addTrafficMB = (res.addedBytes / (1024 * 1024)).toFixed(0);
         const totalGB = (res.newLimit / (1024 * 1024 * 1024)).toFixed(2);
 
-        const checkinMsg = 
-`🎉 *每日签到成功！*
+        const checkinMsg =
+            `🎉 *每日签到成功！*
 
 • 🎁 本次签到奖励: \`+${addTrafficMB} MB\` 高速流量
 • ⏳ 有效期限顺延: \`+1 天\` (至 ${new Date(res.newExpire).toLocaleDateString("zh-CN")})
@@ -664,8 +740,8 @@ _例如：\`/reg test888 12345678\` (留空密码将自动生成随机密码)_
         const baseSubUrl = (user && this.getBaseSubUrl) ? this.getBaseSubUrl(user.uuid) : "";
         const clashSubUrl = baseSubUrl ? `${baseSubUrl}&type=clash` : "";
 
-        const guideText = 
-`📖 *主流代理客户端保姆级导入指南*
+        const guideText =
+            `📖 *主流代理客户端保姆级导入指南*
 
 1️⃣ *Clash / Mihomo (推荐)*：
 点击下方“一键导入 Clash”按钮，客户端将全自动添加配置并更新节点列表。
@@ -703,8 +779,8 @@ _例如：\`/reg test888 12345678\` (留空密码将自动生成随机密码)_
         const rssMB = (memUsage.rss / (1024 * 1024)).toFixed(1);
         const heapUsedMB = (memUsage.heapUsed / (1024 * 1024)).toFixed(1);
 
-        const statusMsg = 
-`👑 *极速云站长智能管理控制中心*
+        const statusMsg =
+            `👑 *极速云站长智能管理控制中心*
 
 • 🌐 宿主公网: \`${stats.serverLocation || "自适应"}\`
 • 🔌 活跃在线 IP: \`${stats.activeIpsCount || 0} 个\`
@@ -752,8 +828,8 @@ _例如：\`/reg test888 12345678\` (留空密码将自动生成随机密码)_
         let cleanPwd = parts[1] ? parts[1].trim() : "";
 
         if (!cleanUser) {
-            return await this.sendMessage(chatId, 
-`⚠️ *注册指令格式说明*
+            return await this.sendMessage(chatId,
+                `⚠️ *注册指令格式说明*
 
 请指定您心仪的账号名称，格式如下：
 \`/reg <用户名> [密码]\`
@@ -780,8 +856,8 @@ _提示：用户名必须为 3-32 位字母、数字或下划线。_`);
         // 1. 严格校验群组 @s5gydl 成员身份
         const groupCheck = await this.verifyUserInRequiredGroup(senderId);
         if (!groupCheck.inGroup) {
-            return await this.sendMessage(chatId, 
-`🚫 *抱歉，您暂未取得注册资格！*
+            return await this.sendMessage(chatId,
+                `🚫 *抱歉，您暂未取得注册资格！*
 
 本节点加速中枢仅限官方交流群 [${groupName}](${groupLink}) 的正式成员专享免费注册。
 
@@ -798,8 +874,8 @@ _提示：用户名必须为 3-32 位字母、数字或下划线。_`);
         const allUsers = this.getUsers();
         const existingTgUser = allUsers.find((u) => u.telegramId && String(u.telegramId).trim() === senderId);
         if (existingTgUser) {
-            return await this.sendMessage(chatId, 
-`⚠️ *注册受限：每个 Telegram 仅限拥有 1 个节点账号！*
+            return await this.sendMessage(chatId,
+                `⚠️ *注册受限：每个 Telegram 仅限拥有 1 个节点账号！*
 
 您当前已绑定的账号为：\`${existingTgUser.username}\`
 
@@ -836,8 +912,8 @@ _提示：用户名必须为 3-32 位字母、数字或下划线。_`);
             const traffic = `${siteSettings.defaultTrafficVal || 10} ${siteSettings.defaultTrafficUnit || "GB"}`;
             const expireDateStr = newUser.expireTime ? new Date(newUser.expireTime).toLocaleDateString("zh-CN") : "长期有效";
 
-            const successMsg = 
-`🎉 *恭喜！专属节点账号注册成功！*
+            const successMsg =
+                `🎉 *恭喜！专属节点账号注册成功！*
 
 👤 *登录账号*：\`${cleanUser}\`
 🔑 *登录密码*：\`${cleanPwd}\`
@@ -870,14 +946,14 @@ _提示：用户名必须为 3-32 位字母、数字或下划线。_`);
             await this.sendMessage(chatId, successMsg, { reply_markup: keyboard });
 
             if (this.adminId && this.adminId !== senderId) {
-                const adminNotice = 
-`🔔 *新用户通过 Telegram 注册成功*
+                const adminNotice =
+                    `🔔 *新用户通过 Telegram 注册成功*
 • 用户账号: \`${cleanUser}\`
 • Telegram ID: \`${senderId}\`
 • TG 用户名: @${from.username || "无"} (${this.escapeMd(from.first_name || "")})
 • 认证来源群: ${groupName} (已通过)
 • 配额: ${traffic} / ${days}天`;
-                this.sendMessage(this.adminId, adminNotice).catch(() => {});
+                this.sendMessage(this.adminId, adminNotice).catch(() => { });
             }
 
         } catch (e) {
@@ -895,8 +971,8 @@ _提示：用户名必须为 3-32 位字母、数字或下划线。_`);
         const user = allUsers.find((u) => u.telegramId && String(u.telegramId).trim() === senderId);
 
         if (!user) {
-            return await this.sendMessage(chatId, 
-`⚠️ *未查询到已绑定的节点账号*
+            return await this.sendMessage(chatId,
+                `⚠️ *未查询到已绑定的节点账号*
 
 您当前尚未在系统中注册开通服务。
 👉 发送指令：\`/reg <用户名> [密码]\` 即可立即免费开通！`, {
@@ -916,8 +992,8 @@ _提示：用户名必须为 3-32 位字母、数字或下划线。_`);
         const expireStr = user.expireTime ? (user.expireTime < Date.now() ? "⚠️ 已过期" : new Date(user.expireTime).toLocaleDateString("zh-CN")) : "长期有效";
         const statusStr = user.enabled ? "🟢 正常可用" : `🔴 暂停中 (${user.disableReason || "已被禁用"})`;
 
-        const infoText = 
-`👤 *我的节点账号状态面板*
+        const infoText =
+            `👤 *我的节点账号状态面板*
 
 • 账号名称: \`${user.username}\`
 • 服务状态: ${statusStr}
@@ -951,8 +1027,8 @@ _提示：用户名必须为 3-32 位字母、数字或下划线。_`);
      * /help 帮助说明
      */
     async handleHelpCommand(chatId, from, isAdmin) {
-        let helpText = 
-`📖 *Telegram 机器人功能指令大全*
+        let helpText =
+            `📖 *Telegram 机器人功能指令大全*
 
 🔹 *用户基础指令*：
 • \`/start\` - 唤醒机器人并展示 6 宫格交互式面板
@@ -963,8 +1039,8 @@ _提示：用户名必须为 3-32 位字母、数字或下划线。_`);
 • \`/help\` - 显示本帮助菜单`;
 
         if (isAdmin) {
-            helpText += 
-`\n\n👑 *站长/管理员特权指令*：
+            helpText +=
+                `\n\n👑 *站长/管理员特权指令*：
 • \`/admin\` 或 \`/status\` - 打开可视化站长控制台大屏
 • \`/audit\` - 立即手动触发全员在群状态深度巡检扫描
 • \`/unbind <用户名或TG_ID>\` - 解除用户的 Telegram 账号绑定
@@ -1008,6 +1084,47 @@ _提示：用户名必须为 3-32 位字母、数字或下划线。_`);
     }
 
     /**
+     * 管理员一键清空用户账号 (/clearall /cleartg)
+     */
+    async handleAdminClearAllCommand(chatId, argsStr, mode = "all") {
+        const confirmFlag = (argsStr || "").trim().toLowerCase();
+        const isTgOnly = mode === "tg_only";
+        const modeDesc = isTgOnly ? "所有通过 Telegram 绑定的用户" : "系统全部用户账号 (彻底清库)";
+        const cmdName = isTgOnly ? "/cleartg" : "/clearall";
+
+        if (confirmFlag !== "confirm") {
+            const warnText = 
+`⚠️ *【高危清空操作二次确认】*
+
+您正在申请一键清空：*${modeDesc}*
+• 动作：彻底删除对应用户数据、切断存量在线网络连接，并实时热重载 Sing-box 核心配置！
+• 注意：此操作*完全不可逆*！
+
+👉 *如果您确认立即清空，请点击下方确认按钮或私聊发送*：
+\`${cmdName} confirm\``;
+
+            return await this.sendMessage(chatId, warnText, {
+                reply_markup: {
+                    inline_keyboard: [
+                        [{ text: `⚠️ 确认彻底清空 (${isTgOnly ? "仅清空TG用户" : "清空全部用户"})`, callback_data: `admin_clear_${mode}` }]
+                    ]
+                }
+            });
+        }
+
+        if (!this.clearAllUsers) {
+            return await this.sendMessage(chatId, "❌ 系统未挂载清空用户核心接口。");
+        }
+
+        const res = this.clearAllUsers(mode);
+        return await this.sendMessage(chatId, 
+`🗑️ *一键清空执行完成！*
+• 清空范围: *${modeDesc}*
+• 共清理账号数: \`${res.clearedCount || 0} 个\`
+• 存量连接已切断，Sing-box 核心配置已同步实时清空！`);
+    }
+
+    /**
      * 管理员 /broadcast 群发通知
      */
     async handleAdminBroadcastCommand(chatId, content) {
@@ -1045,6 +1162,10 @@ _提示：用户名必须为 3-32 位字母、数字或下划线。_`);
 
         if (data === "cmd_my") {
             await this.handleMySubscriptionCommand(msg.chat.id, from);
+        } else if (data === "cmd_quick_reg") {
+            const rawName = from.username ? from.username.replace(/[^a-zA-Z0-9_]/g, "").slice(0, 16) : ("u" + String(from.id).slice(-6));
+            const finalUser = (rawName && rawName.length >= 3) ? rawName : ("u" + String(from.id).slice(-8));
+            await this.handleRegisterCommand(msg.chat.id, from, finalUser);
         } else if (data === "cmd_start") {
             await this.handleStartCommand(msg.chat.id, from);
         } else if (data === "cmd_checkin") {
@@ -1064,6 +1185,11 @@ _提示：用户名必须为 3-32 位字母、数字或下划线。_`);
         } else if (data === "admin_broadcast_tip") {
             if (this.adminId && String(from.id) === this.adminId) {
                 await this.sendMessage(msg.chat.id, "💡 请直接在私聊输入：\`/broadcast 想要发送的内容\` 即可执行全员群发！");
+            }
+        } else if (data === "admin_clear_all" || data === "admin_clear_tg_only") {
+            if (this.adminId && String(from.id) === this.adminId) {
+                const mode = data === "admin_clear_tg_only" ? "tg_only" : "all";
+                await this.handleAdminClearAllCommand(msg.chat.id, "confirm", mode);
             }
         }
     }
