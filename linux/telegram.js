@@ -36,6 +36,10 @@ class TelegramBotManager {
         this.getSystemStats = options.getSystemStats || (() => ({}));
         this.getNodesSummary = options.getNodesSummary || (() => []);
         this.getRawNodesText = options.getRawNodesText || null;
+        this.restartSingboxCore = options.restartSingboxCore || null;
+        this.getUserActivity = options.getUserActivity || null;
+        this.getOnlineIpsDetails = options.getOnlineIpsDetails || null;
+        this.adminWebUrl = options.adminWebUrl || null;
 
         this.botInfo = null;
         this.isRunning = false;
@@ -120,7 +124,15 @@ class TelegramBotManager {
                 disable_web_page_preview: restExtra.disable_web_page_preview !== undefined ? restExtra.disable_web_page_preview : true,
                 ...restExtra
             };
-            const sent = await this.request("sendMessage", data);
+            let sent = await this.request("sendMessage", data);
+
+            // 🌟 核心容错：若 Telegram 因 Markdown 实体解析报错，自动剥离 parse_mode 降级为纯文本重发，杜绝吞消息
+            if (sent && !sent.ok && sent.description && (sent.description.includes("can't parse entities") || sent.description.includes("entity"))) {
+                console.warn(`[TG-Bot] Markdown 解析失败 (${sent.description})，自动降级为纯文本重试下发...`);
+                const fallbackData = { ...data };
+                delete fallbackData.parse_mode;
+                sent = await this.request("sendMessage", fallbackData);
+            }
 
             // 🌟 群聊消息 1 分钟 (60 秒) 自动撤回自毁机制 (私聊消息永不删除)
             if (sent && sent.ok && sent.result && sent.result.chat) {
@@ -546,26 +558,56 @@ class TelegramBotManager {
         // 群聊安全防呆与一键跳转引导
         if (!isPrivate) {
             const botUser = this.botInfo ? this.botInfo.username : "";
-            const isIntentToStart = ["/start", "/reg", "/register", "开通", "注册", "节点", "订阅"].includes(cmd) ||
-                ["开通", "注册", "节点", "订阅", "签到"].includes(text);
-            if (isIntentToStart) {
-                const replyMsg = `👋 [${from.first_name || "朋友"}](tg://user?id=${from.id})，为保护您的订阅与账号隐私，请点击下方按钮进入私聊！\n👉 进入后轻点屏幕正下方的【START / 开始】即可完成开通！`;
+            const isIntent = [
+                "/start", "/reg", "/register", "/my", "/sub", "/nodes", "/checkin", "/qiandao", "/admin", "/help",
+                "/restart", "/users", "/ips", "开通", "注册", "节点", "订阅", "签到", "我的", "帮助", "后台"
+            ].includes(cmd) || [
+                "/start", "/reg", "/register", "/my", "/sub", "/nodes", "/checkin", "/qiandao", "/admin", "/help",
+                "开通", "注册", "节点", "订阅", "签到", "我的", "帮助", "后台"
+            ].some((kw) => text.includes(kw));
+
+            if (isIntent) {
+                let btnText = "🚀 点击直达私聊并激活节点";
+                let jumpParam = "start";
+
+                if (cmd === "/my" || cmd === "/sub" || text.includes("订阅") || text.includes("我的")) {
+                    btnText = "📦 点击私聊查看我的订阅 (/my)";
+                    jumpParam = "my";
+                } else if (cmd === "/nodes" || text.includes("节点")) {
+                    btnText = "🌐 点击私聊查看节点矩阵 (/nodes)";
+                    jumpParam = "nodes";
+                } else if (cmd === "/checkin" || cmd === "/qiandao" || text.includes("签到")) {
+                    btnText = "🎁 点击私聊打卡签到领流量 (/checkin)";
+                    jumpParam = "checkin";
+                } else if (cmd === "/admin" || cmd === "/status" || text.includes("后台")) {
+                    if (isAdmin) {
+                        btnText = "👑 点击私聊进入站长控制台 (/admin)";
+                        jumpParam = "admin";
+                    }
+                }
+
+                const safeName = this.escapeMd(from.first_name || from.username || "朋友");
+                const replyMsg = `👋 [${safeName}](tg://user?id=${from.id})，为保护您的订阅与账号隐私，请点击下方按钮进入私聊！\n👉 进入后轻点屏幕正下方的【START / 开始】即可完成开通或查询！`;
                 const keyboard = botUser ? {
                     inline_keyboard: [
-                        [{ text: "🚀 点击直达私聊并发送开始", url: `https://t.me/${botUser}?start=start` }]
+                        [{ text: btnText, url: `https://t.me/${botUser}?start=${jumpParam}` }]
                     ]
                 } : undefined;
-                // 顺带将群友在群内发送的触发消息也在 60 秒后自动清理 (需管理员删除权限)
+
+                // 顺带将群友在群内发送的触发消息也在 60 秒后自动清理 (需机器人具备群管理删除消息权限)
                 if (msg.message_id) {
                     setTimeout(() => {
                         this.deleteMessage(chat.id, msg.message_id).catch(() => {});
                     }, 60000);
                 }
+
                 return await this.sendMessage(chat.id, replyMsg, {
                     reply_to_message_id: msg.message_id,
                     reply_markup: keyboard
                 });
             }
+            // 群聊中非以上触发词的其他消息，不予处理（防止干扰群聊正常交流）
+            return;
         }
 
         if (cmd === "/start") {
@@ -575,6 +617,12 @@ class TelegramBotManager {
             }
             if (cleanArg === "raw" || cleanArg === "nodes") {
                 return await this.handleExtractRawNodesCommand(chat.id, from);
+            }
+            if (cleanArg === "admin" && isAdmin) {
+                return await this.handleAdminDashboardCommand(chat.id);
+            }
+            if (cleanArg === "checkin") {
+                return await this.handleCheckinCommand(chat.id, from);
             }
             return await this.handleStartCommand(chat.id, from);
         }
@@ -598,6 +646,18 @@ class TelegramBotManager {
         if (isAdmin) {
             if (cmd === "/status" || cmd === "/admin") {
                 return await this.handleAdminDashboardCommand(chat.id);
+            }
+            if (cmd === "/restart") {
+                return await this.handleAdminRestartCoreCommand(chat.id);
+            }
+            if (cmd === "/users") {
+                return await this.handleAdminListUsersCommand(chat.id);
+            }
+            if (cmd === "/ips") {
+                return await this.handleAdminOnlineIpsCommand(chat.id);
+            }
+            if (cmd === "/grantall") {
+                return await this.handleAdminGrantAllCommand(chat.id);
             }
             if (cmd === "/audit") {
                 return await this.handleAdminAuditCommand(chat.id);
@@ -807,20 +867,200 @@ _例如：\`/reg test888 12345678\` (留空密码将自动生成随机密码)_
 • ⏱️ 系统已运行: \`${Math.floor(process.uptime() / 60)} 分钟\`
 • 🛡️ Sing-box 核心: \`${stats.singboxAlive ? "🟢 正常运行中" : "🔴 异常未运行"}\``;
 
+        const webUrl = typeof this.adminWebUrl === "function" ? this.adminWebUrl() : (this.adminWebUrl || "");
         const keyboard = {
             inline_keyboard: [
                 [
-                    { text: "🔍 立即全员在群巡检", callback_data: "admin_audit" },
-                    { text: "🔄 刷新系统监控", callback_data: "admin_refresh" }
+                    { text: "🔄 强启 Sing-box 核心", callback_data: "admin_restart_core" },
+                    { text: "📊 查看最新用户列表", callback_data: "admin_list_users" }
                 ],
                 [
-                    { text: "🌐 查看节点大屏", callback_data: "cmd_nodes" },
-                    { text: "📢 全员广播通知", callback_data: "admin_broadcast_tip" }
+                    { text: "🔍 立即全员在群巡检", callback_data: "admin_audit" },
+                    { text: "🌐 在线活跃 IP 监控", callback_data: "admin_online_ips" }
+                ],
+                [
+                    { text: "📡 节点矩阵与大屏", callback_data: "cmd_nodes" },
+                    { text: "📢 全员广播群发推送", callback_data: "admin_broadcast_tip" }
+                ],
+                [
+                    webUrl ? { text: "🖥️ 打开 Web 管理后台", url: webUrl } : { text: "🖥️ Web 后台地址", callback_data: "admin_web_tip" },
+                    { text: "🎁 全员发放 5GB 流量", callback_data: "admin_grant_all_5g" }
+                ],
+                [
+                    { text: "🧹 清理 0 流量空账号", callback_data: "admin_clean_inactive" },
+                    { text: "⚠️ 一键重置清空全库", callback_data: "admin_clear_dialog" }
+                ],
+                [
+                    { text: "🔄 刷新系统监控大屏", callback_data: "admin_refresh" }
                 ]
             ]
         };
 
         return await this.sendMessage(chatId, statusMsg, { reply_markup: keyboard });
+    }
+
+    /**
+     * 强启 Sing-box 核心指令 (/restart)
+     */
+    async handleAdminRestartCoreCommand(chatId) {
+        if (!this.restartSingboxCore) {
+            return await this.sendMessage(chatId, "⚠️ 系统未挂载 Sing-box 核心控制引擎。");
+        }
+        await this.sendMessage(chatId, "⏳ 正在强制重启 Sing-box 核心进程并重载全量规则...");
+        const res = this.restartSingboxCore();
+        if (res.success) {
+            return await this.sendMessage(chatId,
+                `✅ *Sing-box 核心强启与重载成功！*
+                
+• 🚀 核心状态: \`🟢 正在平稳运行\`
+• 🆔 最新进程 PID: \`${res.pid || "已接管"}\`
+• ⏱️ 重启时间: \`${res.time || new Date().toLocaleTimeString("zh-CN")}\``,
+                {
+                    reply_markup: {
+                        inline_keyboard: [[{ text: "👑 返回管理主屏", callback_data: "admin_refresh" }]]
+                    }
+                }
+            );
+        } else {
+            return await this.sendMessage(chatId, `❌ 核心重启失败: ${res.error || "未知异常"}`);
+        }
+    }
+
+    /**
+     * 查看最新用户列表指令 (/users)
+     */
+    async handleAdminListUsersCommand(chatId) {
+        const allUsers = this.getUsers();
+        if (!allUsers || allUsers.length === 0) {
+            return await this.sendMessage(chatId, "ℹ️ 当前用户库为空，暂无注册用户。", {
+                reply_markup: { inline_keyboard: [[{ text: "⬅️ 返回后台主屏", callback_data: "admin_refresh" }]] }
+            });
+        }
+        const latestUsers = [...allUsers].reverse().slice(0, 10);
+        let text = `📊 *最新注册用户速览 (共 ${allUsers.length} 人，展示最新 10 人)*\n\n`;
+        latestUsers.forEach((u, i) => {
+            const status = u.enabled ? "🟢" : "🔴";
+            const tgStr = u.telegramId ? `[TG:${u.telegramUsername ? "@" + u.telegramUsername : u.telegramId}]` : "[未绑定TG]";
+            const usedMB = ((u.trafficUsed || 0) / (1024 * 1024)).toFixed(1);
+            const limitMB = ((u.trafficLimit || 0) / (1024 * 1024)).toFixed(0);
+            const expireStr = u.expireTime ? new Date(u.expireTime).toLocaleDateString("zh-CN") : "长期";
+            text += `${i + 1}. ${status} \`${u.username}\` ${tgStr}\n   • 流量: \`${usedMB}/${limitMB} MB\` | 到期: \`${expireStr}\`\n`;
+        });
+        text += `\n💡 提示: 发送 \`/deluser <用户名>\` 可精准删除，发送 \`/unbind <用户名或TG-ID>\` 可解绑。`;
+        return await this.sendMessage(chatId, text, {
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        { text: "🔄 刷新用户列表", callback_data: "admin_list_users" },
+                        { text: "⬅️ 返回后台主屏", callback_data: "admin_refresh" }
+                    ]
+                ]
+            }
+        });
+    }
+
+    /**
+     * 查看活跃在线 IP 监控 (/ips)
+     */
+    async handleAdminOnlineIpsCommand(chatId) {
+        const details = this.getOnlineIpsDetails ? this.getOnlineIpsDetails() : [];
+        if (!details || details.length === 0) {
+            return await this.sendMessage(chatId, "🔌 *当前活跃在线 IP 监控*\n\n当前暂无活跃客户端长连接或所有用户处于休眠状态。", {
+                reply_markup: {
+                    inline_keyboard: [
+                        [
+                            { text: "🔄 刷新在线监控", callback_data: "admin_online_ips" },
+                            { text: "⬅️ 返回后台主屏", callback_data: "admin_refresh" }
+                        ]
+                    ]
+                }
+            });
+        }
+        let text = `🔌 *当前活跃在线 IP 监控 (共 ${details.length} 个活跃账号)*\n\n`;
+        details.slice(0, 15).forEach((item, idx) => {
+            text += `${idx + 1}. 👤 \`${item.username}\` (活跃连接: ${item.activeConnections})\n`;
+            item.ips.forEach((ip) => {
+                text += `   • IP: \`${ip}\`\n`;
+            });
+        });
+        return await this.sendMessage(chatId, text, {
+            reply_markup: {
+                inline_keyboard: [
+                    [
+                        { text: "🔄 刷新在线监控", callback_data: "admin_online_ips" },
+                        { text: "⬅️ 返回后台主屏", callback_data: "admin_refresh" }
+                    ]
+                ]
+            }
+        });
+    }
+
+    /**
+     * 全员发放 5GB 流量补贴 (/grantall)
+     */
+    async handleAdminGrantAllCommand(chatId) {
+        const allUsers = this.getUsers();
+        if (!allUsers || allUsers.length === 0) {
+            return await this.sendMessage(chatId, "⚠️ 当前没有注册用户可发放补贴。");
+        }
+        const addBytes = 5 * 1024 * 1024 * 1024;
+        const addDaysMs = 7 * 86400000;
+        const now = Date.now();
+        let count = 0;
+        allUsers.forEach((u) => {
+            if (u.enabled) {
+                u.trafficLimit = (u.trafficLimit || 0) + addBytes;
+                u.expireTime = Math.max(now, u.expireTime || now) + addDaysMs;
+                count++;
+            }
+        });
+        return await this.sendMessage(chatId, `🎉 *全员福利发放完毕！*\n\n已成功为全部 \`${count}\` 位正常启用的用户追加：\n• 🎁 每人免费追加: \`5 GB\` 流量\n• ⏳ 有效期统一顺延: \`7 天\``, {
+            reply_markup: {
+                inline_keyboard: [[{ text: "⬅️ 返回后台主屏", callback_data: "admin_refresh" }]]
+            }
+        });
+    }
+
+    /**
+     * 清理 0 流量空账号诊断
+     */
+    async handleAdminCleanInactiveCommand(chatId) {
+        const allUsers = this.getUsers();
+        const now = Date.now();
+        const inactiveUsers = allUsers.filter((u) => {
+            const isExpired = u.expireTime && u.expireTime < now - 3 * 86400000;
+            const noTraffic = (u.trafficUsed || 0) === 0;
+            return isExpired && noTraffic;
+        });
+        if (inactiveUsers.length === 0) {
+            return await this.sendMessage(chatId, "✅ 经系统智能分析，当前未检测到长期过期且 0 流量的废弃账号，数据库非常健康！", {
+                reply_markup: { inline_keyboard: [[{ text: "⬅️ 返回后台主屏", callback_data: "admin_refresh" }]] }
+            });
+        }
+        return await this.sendMessage(chatId, `🧹 *废弃死号排查报告*\n\n共扫描出 \`${inactiveUsers.length}\` 个长期过期且 0 流量账号。\n如需彻底清理，可发送命令：\n\`/deluser <用户名>\` 或进行一键清理。`, {
+            reply_markup: { inline_keyboard: [[{ text: "⬅️ 返回后台主屏", callback_data: "admin_refresh" }]] }
+        });
+    }
+
+    /**
+     * 一键清空全库防呆确认弹窗
+     */
+    async handleAdminClearDialog(chatId) {
+        const text = `⚠️ *危险操作确认：一键清空用户数据*
+        
+请选择清空模式：
+1. 【清空所有账号】：重置整个用户库 (包含 Web 与 TG 注册的所有账号)
+2. 【仅清空 TG 账号】：仅清理通过 Telegram 注册绑定的账号，保留纯 Web 手动创建账号
+        
+⚠️ 此操作不可撤销，请谨慎点击！`;
+        const keyboard = {
+            inline_keyboard: [
+                [{ text: "💥 确认清空全部账号 (模式:全部)", callback_data: "admin_clear_all" }],
+                [{ text: "👥 仅清空 Telegram 绑定的账号", callback_data: "admin_clear_tg_only" }],
+                [{ text: "❌ 取消并返回后台大屏", callback_data: "admin_refresh" }]
+            ]
+        };
+        return await this.sendMessage(chatId, text, { reply_markup: keyboard });
     }
 
     /**
@@ -929,6 +1169,11 @@ _提示：用户名必须为 3-32 位字母、数字或下划线。_`);
             const traffic = `${siteSettings.defaultTrafficVal || 10} ${siteSettings.defaultTrafficUnit || "GB"}`;
             const expireDateStr = newUser.expireTime ? new Date(newUser.expireTime).toLocaleDateString("zh-CN") : "长期有效";
 
+            const rawNodes = this.getRawNodesText ? this.getRawNodesText(newUser) : "";
+            const rawNodesBlock = rawNodes && rawNodes.trim()
+                ? `\n\n══════════════════════\n📋 *专属直连节点 (长按代码块直接复制导入)*：\n\`\`\`text\n${rawNodes.trim()}\n\`\`\``
+                : "";
+
             const successMsg =
                 `🎉 *恭喜！专属节点账号注册成功！*
 
@@ -936,28 +1181,37 @@ _提示：用户名必须为 3-32 位字母、数字或下划线。_`);
 🔑 *登录密码*：\`${cleanPwd}\`
 ⏳ *有效期限*：\`${days} 天 (至 ${expireDateStr})\`
 📦 *流量配额*：\`${traffic}\`
-👥 *认证群组*：\`${groupName}\` (已核验)
+👥 *认证群组*：\`${groupName}\` (已核验)${rawNodesBlock}
 
 ══════════════════════
 🔗 *通用订阅链接 (小火箭 / v2rayN / Sing-box)*：
 \`${baseSubUrl}\`
 
-🚀 *Clash / Mihomo 专属订阅*：
+⚡ *Clash / Mihomo 专属订阅*：
 \`${clashSubUrl}\`
 ══════════════════════
 
-💡 *温馨提示*：
+💡 *极速上手*：
+• 复制上方代码块内的明文节点链接，直接粘贴至客户端即可使用！
 • 随时发送 \`/my\` 可重新提取订阅链接与查询流量；
 • 每天发送 \`/checkin\` 可额外领取免费流量并延长有效期！`;
 
+            const rocketUrl = baseSubUrl ? `sub://${Buffer.from(baseSubUrl).toString("base64")}` : "";
             const keyboard = {
                 inline_keyboard: [
-                    clashSubUrl ? [{ text: "⚡ 一键导入 Clash", url: `clash://install-config?url=${encodeURIComponent(clashSubUrl)}` }] : [],
+                    [
+                        clashSubUrl ? { text: "⚡ 一键导入 Clash", url: `clash://install-config?url=${encodeURIComponent(clashSubUrl)}` } : null,
+                        rocketUrl ? { text: "🚀 一键导入小火箭", url: rocketUrl } : null
+                    ].filter(Boolean),
+                    [
+                        { text: "📋 提取所有明文节点", callback_data: "cmd_copy_raw_nodes" },
+                        { text: "🔗 提取通用订阅链接", callback_data: "cmd_copy_sub" }
+                    ],
                     [
                         { text: "🎁 每日签到领流量", callback_data: "cmd_checkin" },
                         { text: "📦 我的订阅面板", callback_data: "cmd_my" }
                     ]
-                ].filter((row) => row.length > 0)
+                ]
             };
 
             await this.sendMessage(chatId, successMsg, { reply_markup: keyboard });
@@ -1152,10 +1406,16 @@ ${rawNodes.trim()}
         if (isAdmin) {
             helpText +=
                 `\n\n👑 *站长/管理员特权指令*：
-• \`/admin\` 或 \`/status\` - 打开可视化站长控制台大屏
+• \`/admin\` 或 \`/status\` - 打开可视化站长控制台全功能大屏
+• \`/restart\` - 强制重启 Sing-box 核心进程并重载全量规则
+• \`/users\` - 快速列出最新注册用户及其流量与状态
+• \`/ips\` - 查看当前活跃在线客户端 IP 与账号连接
+• \`/grantall\` - 为全员正常用户发放 5GB 流量并顺延 7 天
 • \`/audit\` - 立即手动触发全员在群状态深度巡检扫描
 • \`/unbind <用户名或TG_ID>\` - 解除用户的 Telegram 账号绑定
 • \`/deluser <用户名>\` - 从系统数据库中彻底删除用户
+• \`/clearall confirm\` - 一键清空全库数据并断开全量连接
+• \`/cleartg confirm\` - 仅清空 Telegram 绑定的账号
 • \`/broadcast <通知内容>\` - 向所有绑定了 Telegram 的用户推送群发通知`;
         }
 
@@ -1344,6 +1604,35 @@ ${rawNodes.trim()}
             await this.handleNodesCommand(msg.chat.id);
         } else if (data === "cmd_client_guide") {
             await this.handleClientGuide(msg.chat.id, from);
+        } else if (data === "admin_restart_core") {
+            if (this.adminId && String(from.id) === this.adminId) {
+                await this.handleAdminRestartCoreCommand(msg.chat.id);
+            }
+        } else if (data === "admin_list_users") {
+            if (this.adminId && String(from.id) === this.adminId) {
+                await this.handleAdminListUsersCommand(msg.chat.id);
+            }
+        } else if (data === "admin_online_ips") {
+            if (this.adminId && String(from.id) === this.adminId) {
+                await this.handleAdminOnlineIpsCommand(msg.chat.id);
+            }
+        } else if (data === "admin_grant_all_5g") {
+            if (this.adminId && String(from.id) === this.adminId) {
+                await this.handleAdminGrantAllCommand(msg.chat.id);
+            }
+        } else if (data === "admin_clean_inactive") {
+            if (this.adminId && String(from.id) === this.adminId) {
+                await this.handleAdminCleanInactiveCommand(msg.chat.id);
+            }
+        } else if (data === "admin_clear_dialog") {
+            if (this.adminId && String(from.id) === this.adminId) {
+                await this.handleAdminClearDialog(msg.chat.id);
+            }
+        } else if (data === "admin_web_tip") {
+            if (this.adminId && String(from.id) === this.adminId) {
+                const webUrl = typeof this.adminWebUrl === "function" ? this.adminWebUrl() : (this.adminWebUrl || "");
+                await this.sendMessage(msg.chat.id, `🖥️ *Web 后台管理地址*\n\n\`${webUrl || "请查看服务器 IP:端口/admin"}\``);
+            }
         } else if (data === "admin_audit") {
             if (this.adminId && String(from.id) === this.adminId) {
                 await this.handleAdminAuditCommand(msg.chat.id);
