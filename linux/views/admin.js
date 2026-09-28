@@ -1212,6 +1212,10 @@ return sendHtmlResponse(res, 200, `
                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
                                     站点与注册配置
                                 </button>
+                                <button class="btn" style="background:#ffffff; border:1px solid #fbc4c4; color:#f56c6c; font-weight:500;" onclick="openClearAllModal()" title="一键批量或全量清空用户">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                                    一键清空用户
+                                </button>
                                 <button class="btn btn-primary" onclick="openAddModal()">
                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                                     新增用户授权
@@ -1338,6 +1342,38 @@ return sendHtmlResponse(res, 200, `
                                 <div class="field-box">
                                     <label>站长联系直达链接 (URL)</label>
                                     <input type="text" id="set_contactUrl" placeholder="例如: https://t.me/s5gydl" value="https://t.me/s5gydl" />
+                                </div>
+
+                                <!-- Telegram 机器人专属配置与官方群联动卡片 -->
+                                <div style="margin-top:16px; margin-bottom:16px; border:1px solid var(--el-border); background:#ffffff; border-radius:8px; padding:14px;">
+                                    <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #ebeef5; padding-bottom:8px; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+                                        <span style="font-weight:700; font-size:14px; color:var(--el-text-main);">🤖 Telegram 机器人专属注册与官方群联动</span>
+                                        <button type="button" class="btn btn-default btn-sm" onclick="testTgBotConnection()" id="btnTestTg" style="font-size:12px; padding:4px 10px;">
+                                            🔌 探测机器人连通性
+                                        </button>
+                                    </div>
+                                    <div id="tgTestResultBox" style="display:none; margin-bottom:12px; padding:8px 12px; border-radius:6px; font-size:12px; line-height:1.5;"></div>
+                                    <div class="field-box">
+                                        <label>Telegram 机器人 Bot Token (通过 @BotFather 获取)</label>
+                                        <input type="text" id="set_tgBotToken" placeholder="例如: 1234567890:AAH_example_bot_token_xxx" autocomplete="off" />
+                                        <div style="font-size:11px; color:var(--el-text-secondary); margin-top:3px;">保存后系统将自动启动 Telegram 机器人，群员即可通过私聊全自动开通节点。</div>
+                                    </div>
+                                    <div class="form-responsive-row" style="display:flex; gap:12px;">
+                                        <div class="field-box" style="flex:1;">
+                                            <label>站长 / 管理员 Telegram 数字 ID</label>
+                                            <input type="text" id="set_tgAdminId" placeholder="例如: 123456789" autocomplete="off" />
+                                            <div style="font-size:11px; color:var(--el-text-secondary); margin-top:3px;">用于接收新用户开通提醒、异地登录警报及执行管理员指令</div>
+                                        </div>
+                                        <div class="field-box" style="flex:1;">
+                                            <label>限定专属注册群组</label>
+                                            <input type="text" id="set_tgRequiredGroup" placeholder="例如: @s5gydl" value="@s5gydl" autocomplete="off" />
+                                            <div style="font-size:11px; color:var(--el-text-secondary); margin-top:3px;">仅限该群正式成员才可注册，用户退群自动停用断网</div>
+                                        </div>
+                                    </div>
+                                    <div class="field-box">
+                                        <label>Telegram API 请求地址 (选填，默认官方)</label>
+                                        <input type="text" id="set_tgApiBase" placeholder="https://api.telegram.org (国内无梯机器可填自建反代)" value="https://api.telegram.org" autocomplete="off" />
+                                    </div>
                                 </div>
                                 <div class="field-box">
                                     <label>当前主控节点名称 / 国家地区标识 (留空则根据公网IP自动识别)</label>
@@ -1505,6 +1541,38 @@ return sendHtmlResponse(res, 200, `
                             <div class="modal-footer" style="margin-top:16px;">
                                 <button class="btn" style="background:#ffffff; border:1px solid var(--el-border); color:var(--el-text-regular);" onclick="closeSettingsModal()">取消</button>
                                 <button class="btn btn-primary" id="saveSettingsBtn" onclick="saveSiteSettings()">保存所有配置</button>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- 一键清空用户账号模态框 -->
+                    <div class="modal-mask" id="clearAllModal">
+                        <div class="modal" style="max-width:480px;">
+                            <div style="display:flex; align-items:center; gap:8px; margin-bottom:12px; color:var(--el-danger);">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+                                <h4 style="margin:0; color:var(--el-danger); font-size:16px;">一键清空用户账号</h4>
+                            </div>
+                            <div style="font-size:13px; color:var(--el-text-regular); margin-bottom:14px; line-height:1.6;">
+                                请选择清空操作的作用范围。执行后将彻底清除所选用户、切断存量连接，并热重载 Sing-box 核心：
+                            </div>
+                            <div style="background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px; padding:12px; margin-bottom:16px;">
+                                <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer; margin-bottom:10px;">
+                                    <input type="radio" name="clear_mode_radio" value="tg_only" checked style="margin-top:3px;" />
+                                    <div>
+                                        <div style="font-weight:600; font-size:13px; color:var(--el-text-main);">仅清空 Telegram 绑定的用户 (推荐)</div>
+                                        <div style="font-size:11px; color:var(--el-text-secondary); margin-top:2px;">仅删除由 TG 机器人注册的群成员，保留站长在后台手动添加的管理员或测试账号</div>
+                                    </div>
+                                </label>
+                                <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer;">
+                                    <input type="radio" name="clear_mode_radio" value="all" style="margin-top:3px;" />
+                                    <div>
+                                        <div style="font-weight:600; font-size:13px; color:var(--el-danger);">清空系统全量用户 (彻底重置清库)</div>
+                                        <div style="font-size:11px; color:var(--el-text-secondary); margin-top:2px;">清空数据库中所有账号，重置为零用户状态 (不可撤销)</div>
+                                    </div>
+                                </label>
+                            </div>
+                            <div class="modal-footer">
+                                <button class="btn" style="background:#ffffff; border:1px solid var(--el-border); color:var(--el-text-regular);" onclick="closeClearAllModal()">取消</button>
+                                <button class="btn" style="background:var(--el-danger); color:#fff; border:none;" id="confirmClearAllBtn" onclick="confirmExecuteClearAll()">确认立即清空</button>
                             </div>
                         </div>
                     </div>
@@ -2144,6 +2212,19 @@ return sendHtmlResponse(res, 200, `
                         const cUrl = document.getElementById("set_contactUrl");
                         if (cUrl) cUrl.value = (s.contactUrl && !String(s.contactUrl).includes("abcai")) ? s.contactUrl : "https://t.me/s5gydl";
 
+                        // 回显 Telegram 机器人配置
+                        const tgTokenInput = document.getElementById("set_tgBotToken");
+                        if (tgTokenInput) tgTokenInput.value = s.tgBotToken || env.TG_BOT_TOKEN || "";
+
+                        const tgAdminInput = document.getElementById("set_tgAdminId");
+                        if (tgAdminInput) tgAdminInput.value = s.tgAdminId || env.TG_ADMIN_ID || "";
+
+                        const tgGroupInput = document.getElementById("set_tgRequiredGroup");
+                        if (tgGroupInput) tgGroupInput.value = s.tgRequiredGroup || env.TG_REQUIRED_GROUP || "@s5gydl";
+
+                        const tgApiInput = document.getElementById("set_tgApiBase");
+                        if (tgApiInput) tgApiInput.value = s.tgApiBase || env.TG_API_BASE || "https://api.telegram.org";
+
                         const sLoc = document.getElementById("set_serverLocation");
                         if (sLoc) sLoc.value = s.serverLocation || "";
 
@@ -2250,6 +2331,13 @@ return sendHtmlResponse(res, 200, `
                         const contactText = getVal("set_contactText", "");
                         const contactUrl = getVal("set_contactUrl", "");
                         const serverLocation = getVal("set_serverLocation", "");
+
+                        // 提取 Telegram 机器人运营参数
+                        const tgBotToken = getVal("set_tgBotToken", "");
+                        const tgAdminId = getVal("set_tgAdminId", "");
+                        const tgRequiredGroup = getVal("set_tgRequiredGroup", "@s5gydl");
+                        const tgApiBase = getVal("set_tgApiBase", "https://api.telegram.org");
+
                         const cd1 = document.getElementById("set_enableClientDownload_1");
                         const enableClientDownload = cd1 ? cd1.checked : true;
                         const defMasterRadio = document.getElementById("set_defaultAssignedNodes_master");
@@ -2322,6 +2410,10 @@ return sendHtmlResponse(res, 200, `
                             defaultAssignedNodes,
                             contactText,
                             contactUrl,
+                            tgBotToken,
+                            tgAdminId,
+                            tgRequiredGroup,
+                            tgApiBase,
                             envSettings
                         });
 
@@ -2371,6 +2463,61 @@ return sendHtmlResponse(res, 200, `
                             }
                         }
                     }
+
+                    // 🔌 前端一键测试 Telegram 机器人连通性
+                    window.testTgBotConnection = async function() {
+                        const tokenEl = document.getElementById("set_tgBotToken");
+                        const apiBaseEl = document.getElementById("set_tgApiBase");
+                        const groupEl = document.getElementById("set_tgRequiredGroup");
+                        const box = document.getElementById("tgTestResultBox");
+                        const btn = document.getElementById("btnTestTg");
+
+                        const token = tokenEl ? tokenEl.value.trim() : "";
+                        const apiBase = apiBaseEl ? apiBaseEl.value.trim() : "https://api.telegram.org";
+                        const group = groupEl ? groupEl.value.trim() : "@s5gydl";
+
+                        if (!token) {
+                            alert("请先填写 Telegram 机器人 Bot Token 后再进行测试！");
+                            return;
+                        }
+
+                        if (btn) {
+                            btn.disabled = true;
+                            btn.innerText = "正在探测中...";
+                        }
+                        box.style.display = "block";
+                        box.style.background = "#edf2fc";
+                        box.style.color = "#909399";
+                        box.innerHTML = "正在联机探测 Telegram API 与群组状态，请稍候...";
+
+                        try {
+                            const reqHeaders = { "Content-Type": "application/json" };
+                            const res = await fetch((location.pathname.startsWith("/v3") ? "/v3" : "") + "/admin/api/tg/test", {
+                                method: "POST",
+                                headers: reqHeaders,
+                                body: JSON.stringify({ token, apiBase, group })
+                            });
+                            const data = await res.json();
+                            if (data.ok) {
+                                box.style.background = "#f0f9eb";
+                                box.style.color = "#67c23a";
+                                box.innerHTML = "✅ <b>联机成功！</b><br>• 机器人名称: <b>" + (data.bot.first_name || "") + "</b> (@" + (data.bot.username || "") + ")<br>• 群组权限检测: " + (data.groupCheck || "已就绪");
+                            } else {
+                                box.style.background = "#fef0f0";
+                                box.style.color = "#f56c6c";
+                                box.innerHTML = "❌ <b>联机失败</b>: " + (data.error || "无法与 Telegram 通信");
+                            }
+                        } catch (err) {
+                            box.style.background = "#fef0f0";
+                            box.style.color = "#f56c6c";
+                            box.innerText = "网络请求失败: " + err.message;
+                        } finally {
+                            if (btn) {
+                                btn.disabled = false;
+                                btn.innerText = "🔌 探测机器人连通性";
+                            }
+                        }
+                    };
 
                     // 分页与排序全局状态
                     let allUsers = Array.isArray(window.__CLIENT_USERS__) ? window.__CLIENT_USERS__ : [];
@@ -2893,6 +3040,62 @@ return sendHtmlResponse(res, 200, `
 
                     function closeAddModal() {
                         document.getElementById("addModal").style.display = "none";
+                    }
+
+                    function openClearAllModal() {
+                        const modal = document.getElementById("clearAllModal");
+                        if (modal) modal.style.display = "flex";
+                    }
+
+                    function closeClearAllModal() {
+                        const modal = document.getElementById("clearAllModal");
+                        if (modal) modal.style.display = "none";
+                    }
+
+                    async function confirmExecuteClearAll() {
+                        const radios = document.getElementsByName("clear_mode_radio");
+                        let selectedMode = "tg_only";
+                        for (let i = 0; i < radios.length; i++) {
+                            if (radios[i].checked) {
+                                selectedMode = radios[i].value;
+                                break;
+                            }
+                        }
+
+                        const modeText = selectedMode === "tg_only" ? "仅清空 Telegram 绑定的用户" : "彻底清空系统全部用户";
+                        const confirmMsg = "⚠️ 最终危险确认：\\n\\n您即将执行【" + modeText + "】！\\n数据一经删除将不可恢复，所有受影响的在线连接将被瞬间切断！\\n\\n确定要继续执行吗？";
+                        if (!confirm(confirmMsg)) {
+                            return;
+                        }
+
+                        const btn = document.getElementById("confirmClearAllBtn");
+                        if (btn) {
+                            btn.innerText = "正在清空执行中...";
+                            btn.disabled = true;
+                        }
+
+                        try {
+                            const res = await fetch((location.pathname.startsWith("/v3") ? "/v3" : "") + "/admin/api/clear-all-users", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ mode: selectedMode })
+                            });
+                            const data = await res.json();
+                            if (res.ok && data.success) {
+                                alert("✅ 清空成功！共清理了 " + (data.clearedCount || 0) + " 个用户账号。");
+                                closeClearAllModal();
+                                location.reload();
+                            } else {
+                                alert("❌ 清空失败: " + (data.error || "未知异常"));
+                            }
+                        } catch (err) {
+                            alert("网络请求异常: " + err.message);
+                        } finally {
+                            if (btn) {
+                                btn.innerText = "确认立即清空";
+                                btn.disabled = false;
+                            }
+                        }
                     }
 
                     async function submitAdd() {

@@ -261,7 +261,11 @@ const defaultSettings = {
     defaultIdleDisconnectEnabled: DEFAULT_IDLE_DISCONNECT_ENABLED,
     defaultIdleTimeoutSeconds: DEFAULT_IDLE_TIMEOUT_SECONDS,
     contactText: DEFAULT_CONTACT_TEXT,
-    contactUrl: DEFAULT_CONTACT_URL
+    contactUrl: DEFAULT_CONTACT_URL,
+    tgBotToken: TG_BOT_TOKEN || "",
+    tgAdminId: TG_ADMIN_ID || "",
+    tgRequiredGroup: TG_REQUIRED_GROUP || "@s5gydl",
+    tgApiBase: TG_API_BASE || "https://api.telegram.org"
 };
 
 let siteSettings = { ...defaultSettings };
@@ -1283,11 +1287,11 @@ function loadUsers() {
     }
 }
 
-function saveUsers() {
+function saveUsers(allowEmpty = false) {
     if (!Array.isArray(usersDatabase)) usersDatabase = [];
 
-    // 防空擦除安全哨兵：若当前内存用户为空，但磁盘文件已有有效用户数据，严禁覆盖！
-    if (usersDatabase.length === 0 && fs.existsSync(USERS_FILE)) {
+    // 防空擦除安全哨兵：若当前内存用户为空，且未显式指定允许清空 (allowEmpty)，严禁覆盖并自动自愈！
+    if (!allowEmpty && usersDatabase.length === 0 && fs.existsSync(USERS_FILE)) {
         try {
             const diskContent = fs.readFileSync(USERS_FILE, "utf8").trim();
             if (diskContent && diskContent.length > 20) {
@@ -1303,11 +1307,9 @@ function saveUsers() {
 
     safeWriteFileAsync(USERS_FILE, JSON.stringify(usersDatabase, null, 2));
 
-    if (usersDatabase.length > 0) {
-        try {
-            safeWriteFileAsync(USERS_FILE + ".bak", JSON.stringify(usersDatabase, null, 2));
-        } catch (_) {}
-    }
+    try {
+        safeWriteFileAsync(USERS_FILE + ".bak", JSON.stringify(usersDatabase, null, 2));
+    } catch (_) {}
 }
 
 function isUserInvalid(user) {
@@ -3282,7 +3284,11 @@ function handleHttpRequest(req, res) {
                     SS_METHOD,
                     ENABLE_SOCKS5,
                     PORT_SOCKS5
-                }
+                },
+                tgBotToken: siteSettings.tgBotToken || TG_BOT_TOKEN || "",
+                tgAdminId: siteSettings.tgAdminId || TG_ADMIN_ID || "",
+                tgRequiredGroup: siteSettings.tgRequiredGroup || TG_REQUIRED_GROUP || "@s5gydl",
+                tgApiBase: siteSettings.tgApiBase || TG_API_BASE || "https://api.telegram.org"
             });
         }
 
@@ -3325,6 +3331,24 @@ function handleHttpRequest(req, res) {
                     }
                     if (data.defaultAssignedNodes !== undefined) {
                         siteSettings.defaultAssignedNodes = Array.isArray(data.defaultAssignedNodes) ? data.defaultAssignedNodes : ["*"];
+                    }
+
+                    // Telegram 机器人运营参数持久化
+                    if (data.tgBotToken !== undefined) {
+                        siteSettings.tgBotToken = String(data.tgBotToken || "").trim();
+                        TG_BOT_TOKEN = siteSettings.tgBotToken;
+                    }
+                    if (data.tgAdminId !== undefined) {
+                        siteSettings.tgAdminId = String(data.tgAdminId || "").trim();
+                        TG_ADMIN_ID = siteSettings.tgAdminId;
+                    }
+                    if (data.tgRequiredGroup !== undefined) {
+                        siteSettings.tgRequiredGroup = String(data.tgRequiredGroup || "").trim();
+                        TG_REQUIRED_GROUP = siteSettings.tgRequiredGroup;
+                    }
+                    if (data.tgApiBase !== undefined) {
+                        siteSettings.tgApiBase = String(data.tgApiBase || "").trim();
+                        TG_API_BASE = siteSettings.tgApiBase;
                     }
 
                     // 准备 .env 持久化更新字典与端口探针告警记录
@@ -3469,9 +3493,17 @@ function handleHttpRequest(req, res) {
                     saveSettings();
 
                     // 2. 如果存在环境变量或协议端口变更，原子写入 .env 文件
+                    if (siteSettings.tgBotToken) envUpdates.TG_BOT_TOKEN = siteSettings.tgBotToken;
+                    if (siteSettings.tgAdminId) envUpdates.TG_ADMIN_ID = siteSettings.tgAdminId;
+                    if (siteSettings.tgRequiredGroup) envUpdates.TG_REQUIRED_GROUP = siteSettings.tgRequiredGroup;
+                    if (siteSettings.tgApiBase) envUpdates.TG_API_BASE = siteSettings.tgApiBase;
+
                     if (Object.keys(envUpdates).length > 0) {
                         updateEnvFile(envUpdates);
                     }
+
+                    // 3. 立即热唤醒 / 重载 Telegram 机器人引擎
+                    initTelegramBotService();
 
                     console.log("[Settings] 站点运营与协议变量配置保存成功并已落盘生效");
 
@@ -3519,6 +3551,97 @@ function handleHttpRequest(req, res) {
                     return;
                 } catch (e) {
                     return sendJsonResponse(res, 500, { error: "保存站点配置失败: " + e.message });
+                }
+            });
+            return;
+        }
+
+        // Telegram 机器人连通性与权限实时探测接口
+        if (pathname === "/admin/api/tg/test" && req.method === "POST") {
+            let body = "";
+            req.on("data", (c) => { body += c; });
+            req.on("end", async () => {
+                try {
+                    const data = JSON.parse(body || "{}");
+                    const testToken = String(data.token || siteSettings.tgBotToken || TG_BOT_TOKEN || "").trim();
+                    const testApiBase = String(data.apiBase || siteSettings.tgApiBase || TG_API_BASE || "https://api.telegram.org").trim().replace(/\/+$/, "");
+                    const testGroup = String(data.group || siteSettings.tgRequiredGroup || TG_REQUIRED_GROUP || "@s5gydl").trim();
+
+                    if (!testToken) {
+                        return sendJsonResponse(res, 400, { ok: false, error: "请先输入 Telegram 机器人 Token 后再测试！" });
+                    }
+
+                    // 1. 调用 getMe 探测连通性
+                    const meRes = await new Promise((resolve) => {
+                        try {
+                            const targetUrl = new URL(`${testApiBase}/bot${testToken}/getMe`);
+                            const isHttps = targetUrl.protocol === "https:";
+                            const client = isHttps ? https : http;
+                            const r = client.get(targetUrl, { timeout: 10000 }, (resp) => {
+                                let d = "";
+                                resp.on("data", (chunk) => { d += chunk; });
+                                resp.on("end", () => {
+                                    try { resolve(JSON.parse(d || "{}")); } catch (e) { resolve({ ok: false, description: "响应非 JSON: " + e.message }); }
+                                });
+                            });
+                            r.on("error", (e) => resolve({ ok: false, description: e.message }));
+                            r.on("timeout", () => { r.destroy(); resolve({ ok: false, description: "连接 Telegram API 超时，请检查网络或配置反代地址" }); });
+                        } catch (errUrl) {
+                            resolve({ ok: false, description: errUrl.message });
+                        }
+                    });
+
+                    if (!meRes || !meRes.ok) {
+                        return sendJsonResponse(res, 200, { ok: false, error: (meRes && meRes.description) || "无法与 Telegram 建立通信" });
+                    }
+
+                    // 2. 检测群组识别
+                    let groupCheckResult = "已识别机器人";
+                    if (testGroup) {
+                        const cleanGrp = testGroup.startsWith("@") || /^-?\d+$/.test(testGroup) ? testGroup : "@" + testGroup;
+                        const grpRes = await new Promise((resolve) => {
+                            try {
+                                const payloadStr = JSON.stringify({ chat_id: cleanGrp });
+                                const targetUrl = new URL(`${testApiBase}/bot${testToken}/getChat`);
+                                const isHttps = targetUrl.protocol === "https:";
+                                const client = isHttps ? https : http;
+                                const r = client.request({
+                                    hostname: targetUrl.hostname,
+                                    port: targetUrl.port || (isHttps ? 443 : 80),
+                                    path: targetUrl.pathname,
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payloadStr) },
+                                    timeout: 10000
+                                }, (resp) => {
+                                    let d = "";
+                                    resp.on("data", (chunk) => { d += chunk; });
+                                    resp.on("end", () => {
+                                        try { resolve(JSON.parse(d || "{}")); } catch (e) { resolve({ ok: false, description: e.message }); }
+                                    });
+                                });
+                                r.on("error", (e) => resolve({ ok: false, description: e.message }));
+                                r.on("timeout", () => { r.destroy(); resolve({ ok: false, description: "超时" }); });
+                                r.write(payloadStr);
+                                r.end();
+                            } catch (e2) {
+                                resolve({ ok: false, description: e2.message });
+                            }
+                        });
+
+                        if (grpRes && grpRes.ok) {
+                            groupCheckResult = `已成功识别群组：${grpRes.result.title || cleanGrp} (类型: ${grpRes.result.type})`;
+                        } else {
+                            groupCheckResult = `⚠️ 提醒：机器人未加入群组 ${cleanGrp} 或权限不足 (${(grpRes && grpRes.description) || "群组未找到"})`;
+                        }
+                    }
+
+                    return sendJsonResponse(res, 200, {
+                        ok: true,
+                        bot: meRes.result,
+                        groupCheck: groupCheckResult
+                    });
+                } catch (e) {
+                    return sendJsonResponse(res, 500, { ok: false, error: e.message });
                 }
             });
             return;
@@ -3670,6 +3793,48 @@ function handleHttpRequest(req, res) {
                 safeReloadSingbox();
                 res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
                 res.end(JSON.stringify({ success: true }));
+            });
+            return;
+        }
+
+        // 一键清空所有用户 (支持全清或仅清空 Telegram 绑定的用户)
+        if (pathname === "/admin/api/clear-all-users" && req.method === "POST") {
+            let body = "";
+            req.on("data", (c) => { body += c; });
+            req.on("end", () => {
+                try {
+                    const { mode } = JSON.parse(body || "{}");
+                    let toClear = [];
+                    if (mode === "tg_only") {
+                        toClear = usersDatabase.filter((u) => u.telegramId && String(u.telegramId).trim() !== "");
+                        usersDatabase = usersDatabase.filter((u) => !u.telegramId || String(u.telegramId).trim() === "");
+                    } else {
+                        toClear = [...usersDatabase];
+                        usersDatabase = [];
+                    }
+                    toClear.forEach((u) => {
+                        userActivityMap.delete(u.uuid);
+                        try {
+                            const act = getUserActivity(u.uuid);
+                            if (act && Array.isArray(act.activeList)) {
+                                act.activeList.forEach((c) => {
+                                    if (c.clientSocket && !c.clientSocket.destroyed) c.clientSocket.destroy();
+                                    if (c.backendSocket && !c.backendSocket.destroyed) c.backendSocket.destroy();
+                                });
+                                act.activeList = [];
+                                act.activeConnections = 0;
+                            }
+                        } catch (_) { }
+                    });
+                    saveUsers(true);
+                    safeReloadSingbox(true);
+                    console.log(`[Admin-API] 已一键清空用户数据 (模式: ${mode || "all"})，共清理 ${toClear.length} 个账号`);
+                    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+                    res.end(JSON.stringify({ success: true, clearedCount: toClear.length }));
+                } catch (errClear) {
+                    res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+                    res.end(JSON.stringify({ success: false, error: errClear.message }));
+                }
             });
             return;
         }
@@ -4407,16 +4572,21 @@ function startV3Service(internalPort = 3003, dataDir, externalIp, externalPort, 
 
 // 统一挂载初始化 Telegram 机器人全自动开通引擎
 function initTelegramBotService() {
-    if (!TG_BOT_TOKEN) {
-        console.log("[TG-Bot] 当前未配置 TG_BOT_TOKEN，Telegram 机器人自动开通服务保持待命。");
+    const effectiveToken = (siteSettings.tgBotToken || TG_BOT_TOKEN || process.env.TG_BOT_TOKEN || "").trim();
+    const effectiveAdminId = (siteSettings.tgAdminId || TG_ADMIN_ID || process.env.TG_ADMIN_ID || "").trim();
+    const effectiveGroup = (siteSettings.tgRequiredGroup || TG_REQUIRED_GROUP || process.env.TG_REQUIRED_GROUP || "@s5gydl").trim();
+    const effectiveApiBase = (siteSettings.tgApiBase || TG_API_BASE || process.env.TG_API_BASE || "https://api.telegram.org").replace(/\/+$/, "");
+
+    if (!effectiveToken) {
+        console.log("[TG-Bot] 当前未配置 TG_BOT_TOKEN，可在管理后台 [/admin] 中直接配置并一键激活 Telegram 机器人。");
         return;
     }
     try {
         initTelegramBot({
-            botToken: TG_BOT_TOKEN,
-            adminId: TG_ADMIN_ID,
-            requiredGroup: TG_REQUIRED_GROUP,
-            apiBase: TG_API_BASE,
+            botToken: effectiveToken,
+            adminId: effectiveAdminId,
+            requiredGroup: effectiveGroup,
+            apiBase: effectiveApiBase,
             getUsers: () => usersDatabase,
             createUser: async (data) => {
                 const cleanUser = String(data.username || "").trim();
@@ -4489,6 +4659,34 @@ function initTelegramBotService() {
                         act.activeConnections = 0;
                     }
                 } catch (_) { }
+            },
+            clearAllUsers: (mode = "all") => {
+                let toClear = [];
+                if (mode === "tg_only") {
+                    toClear = usersDatabase.filter((u) => u.telegramId && String(u.telegramId).trim() !== "");
+                    usersDatabase = usersDatabase.filter((u) => !u.telegramId || String(u.telegramId).trim() === "");
+                } else {
+                    toClear = [...usersDatabase];
+                    usersDatabase = [];
+                }
+                toClear.forEach((u) => {
+                    userActivityMap.delete(u.uuid);
+                    try {
+                        const act = getUserActivity(u.uuid);
+                        if (act && Array.isArray(act.activeList)) {
+                            act.activeList.forEach((c) => {
+                                if (c.clientSocket && !c.clientSocket.destroyed) c.clientSocket.destroy();
+                                if (c.backendSocket && !c.backendSocket.destroyed) c.backendSocket.destroy();
+                            });
+                            act.activeList = [];
+                            act.activeConnections = 0;
+                        }
+                    } catch (_) { }
+                });
+                saveUsers(true);
+                safeReloadSingbox(true);
+                console.log(`[TG-Admin] 已通过 Telegram 指令清空用户数据 (模式: ${mode})，共清理 ${toClear.length} 个账号`);
+                return { success: true, clearedCount: toClear.length };
             },
             checkinUser: (uuid) => {
                 const u = usersDatabase.find((x) => x.uuid === uuid);
