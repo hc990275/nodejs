@@ -19,9 +19,9 @@ function renderLandingPage(req, res, options, sendHtmlResponseArg) {
     const basePrefix = isV3Prefix ? "/v3" : "";
     const contactText = siteSettings.contactText || "Telegram: @robberer";
     const contactUrl = siteSettings.contactUrl || "https://t.me/s5gydl";
-    const defaultDays = siteSettings.defaultDays !== undefined ? siteSettings.defaultDays : 3;
+    const defaultDays = siteSettings.defaultDays !== undefined ? siteSettings.defaultDays : 365;
     const defaultTrafficVal = siteSettings.defaultTrafficVal !== undefined ? siteSettings.defaultTrafficVal : (siteSettings.defaultTrafficGB || 10);
-    const defaultTrafficUnit = siteSettings.defaultTrafficUnit || "GB";
+    const defaultTrafficUnit = siteSettings.defaultTrafficUnit || "TB";
     const allowRegister = siteSettings.allowRegister !== false;
 
     // 从 siteSettings 读取各协议端口（index.js 调用时注入，未配置为 0）
