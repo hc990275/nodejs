@@ -205,11 +205,18 @@ class TelegramBotManager {
      */
     async deleteMessage(chatId, messageId) {
         try {
-            return await this.request("deleteMessage", {
+            const res = await this.request("deleteMessage", {
                 chat_id: chatId,
                 message_id: messageId
             });
-        } catch (_) {
+            if (res && res.ok) {
+                console.log(`[TG-Bot] 群聊消息已定时安全撤回自毁 (Chat: ${chatId}, Msg: ${messageId})`);
+            } else {
+                console.warn(`[TG-Bot] 撤回群消息失败 (Chat: ${chatId}, Msg: ${messageId}):`, res ? res.description : "未知错误");
+            }
+            return res;
+        } catch (err) {
+            console.warn(`[TG-Bot] 撤回群消息网络异常:`, err.message);
             return null;
         }
     }
@@ -650,11 +657,12 @@ class TelegramBotManager {
                     ]
                 } : undefined;
 
-                // 用户发的信息绝对不删除，完整保留群员发言与聊天记录
+                // 用户发的信息绝对不删除，完整保留群员发言与聊天记录；机器人回复卡片 60 秒后必定自动撤回
                 await this.sendMessage(chat.id, replyMsg, {
                     reply_to_message_id: msg.message_id,
                     reply_markup: keyboard,
-                    parse_mode: undefined
+                    parse_mode: undefined,
+                    autoDeleteSeconds: 60
                 });
             }
             // 无论是否触发，非私聊一律阻断退出，绝对不穿透到后续任何业务逻辑！
@@ -1216,37 +1224,25 @@ _提示：用户名必须为 3-32 位字母、数字或下划线。_`);
 
             const baseSubUrl = this.getBaseSubUrl ? this.getBaseSubUrl(newUser.uuid) : "";
             const clashSubUrl = baseSubUrl ? `${baseSubUrl}&type=clash` : "";
-            const siteSettings = this.getSiteSettings();
-            const days = siteSettings.defaultDays || 3;
-            const traffic = `${siteSettings.defaultTrafficVal || 10} ${siteSettings.defaultTrafficUnit || "GB"}`;
             const expireDateStr = newUser.expireTime ? new Date(newUser.expireTime).toLocaleDateString("zh-CN") : "长期有效";
-
-            const rawNodes = this.getRawNodesText ? this.getRawNodesText(newUser) : "";
-            const rawNodesBlock = rawNodes && rawNodes.trim()
-                ? `\n\n══════════════════════\n📋 *专属直连节点 (长按代码块直接复制导入)*：\n\`\`\`text\n${rawNodes.trim()}\n\`\`\``
-                : "";
+            const trafficLimitGB = (newUser.trafficLimit / (1024 * 1024 * 1024)).toFixed(2);
 
             const successMsg =
-                `🎉 *恭喜！专属节点账号注册成功！*
+                `👤 *我的节点账号状态面板*
 
-👤 *登录账号*：\`${cleanUser}\`
-🔑 *登录密码*：\`${cleanPwd}\`
-⏳ *有效期限*：\`${days} 天 (至 ${expireDateStr})\`
-📦 *流量配额*：\`${traffic}\`
-👥 *认证群组*：\`${groupName}\` (已核验)${rawNodesBlock}
+• 账号名称: \`${cleanUser}\`
+• 服务状态: 🟢 正常可用
+• 已用流量: \`0.00 GB / ${trafficLimitGB} GB\` (已用 0.0%)
+• 剩余流量: \`${trafficLimitGB} GB\`
+• 到期时间: \`${expireDateStr}\`
 
 ══════════════════════
 🔗 *通用订阅链接 (小火箭 / v2rayN / Sing-box)*：
 \`${baseSubUrl}\`
 
-⚡ *Clash / Mihomo 专属订阅*：
+🚀 *Clash / Mihomo 专属订阅*：
 \`${clashSubUrl}\`
-══════════════════════
-
-💡 *极速上手*：
-• 复制上方代码块内的明文节点链接，直接粘贴至客户端即可使用！
-• 随时发送 \`/my\` 可重新提取订阅链接与查询流量；
-• 每天发送 \`/checkin\` 可额外领取免费流量并延长有效期！`;
+══════════════════════`;
 
             const clashJumpUrl = (this.getAppImportUrl && newUser.uuid) ? this.getAppImportUrl(newUser.uuid, "clash") : "";
             const rocketJumpUrl = (this.getAppImportUrl && newUser.uuid) ? this.getAppImportUrl(newUser.uuid, "rocket") : "";
@@ -1262,7 +1258,7 @@ _提示：用户名必须为 3-32 位字母、数字或下划线。_`);
                     ],
                     [
                         { text: "🎁 每日签到领流量", callback_data: "cmd_checkin" },
-                        { text: "📦 我的订阅面板", callback_data: "cmd_my" }
+                        { text: "📦 刷新状态 (/my)", callback_data: "cmd_my" }
                     ]
                 ]
             };
@@ -1276,7 +1272,7 @@ _提示：用户名必须为 3-32 位字母、数字或下划线。_`);
 • Telegram ID: \`${senderId}\`
 • TG 用户名: @${from.username || "无"} (${this.escapeMd(from.first_name || "")})
 • 认证来源群: ${groupName} (已通过)
-• 配额: ${traffic} / ${days}天`;
+• 配额: ${trafficLimitGB} GB / 到期: ${expireDateStr}`;
                 this.sendMessage(this.adminId, adminNotice).catch(() => { });
             }
 

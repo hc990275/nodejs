@@ -722,6 +722,18 @@ function loadSettings() {
                 if (raw.length > 0) {
                     const parsed = JSON.parse(raw);
                     siteSettings = Object.assign({}, defaultSettings, parsed);
+                    // 自动洗涤历史数据中的老旧默认值 (3天 -> 365天，10GB -> 10TB)
+                    if (!siteSettings.defaultDays || siteSettings.defaultDays < 30) {
+                        siteSettings.defaultDays = 365;
+                    }
+                    if (!siteSettings.defaultTrafficUnit || siteSettings.defaultTrafficUnit === "GB") {
+                        siteSettings.defaultTrafficVal = 10;
+                        siteSettings.defaultTrafficUnit = "TB";
+                        siteSettings.defaultTrafficGB = 10240;
+                    }
+                    if (!siteSettings.subDomain) {
+                        siteSettings.subDomain = "db.995677.xyz";
+                    }
                     if (!siteSettings.contactText || String(siteSettings.contactText).includes("abcai")) {
                         siteSettings.contactText = DEFAULT_CONTACT_TEXT;
                     }
@@ -2791,7 +2803,7 @@ function handleHttpRequest(req, res) {
                 // 登记并发锁
                 registeringUsers.set(userKey, Date.now());
 
-                const initDays = Math.max(0, parseInt(siteSettings.defaultDays, 10) || 3);
+                const initDays = Math.max(0, parseInt(siteSettings.defaultDays, 10) || 365);
                 const initVal = parseFloat(siteSettings.defaultTrafficVal !== undefined ? siteSettings.defaultTrafficVal : (siteSettings.defaultTrafficGB || 10)) || 0;
                 const initUnit = String(siteSettings.defaultTrafficUnit || "GB").toUpperCase();
                 const trafficLimitBytes = convertToBytes(initVal, initUnit);
@@ -4758,7 +4770,7 @@ function initTelegramBotService() {
             createUser: async (data) => {
                 const cleanUser = String(data.username || "").trim();
                 const cleanPwd = String(data.password || "").trim();
-                const initDays = Math.max(0, parseInt(siteSettings.defaultDays, 10) || 3);
+                const initDays = Math.max(0, parseInt(siteSettings.defaultDays, 10) || 365);
                 const initVal = parseFloat(siteSettings.defaultTrafficVal !== undefined ? siteSettings.defaultTrafficVal : (siteSettings.defaultTrafficGB || 10)) || 0;
                 const initUnit = String(siteSettings.defaultTrafficUnit || "GB").toUpperCase();
                 const trafficLimitBytes = convertToBytes(initVal, initUnit);
