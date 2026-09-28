@@ -4785,6 +4785,49 @@ function initTelegramBotService() {
                     activeIpsCount,
                     singboxAlive: !!(singboxProcess && !singboxProcess.killed)
                 };
+            },
+            restartSingboxCore: () => {
+                try {
+                    safeReloadSingbox(true);
+                    return {
+                        success: true,
+                        pid: singboxProcess ? singboxProcess.pid : "已重启",
+                        time: new Date().toLocaleTimeString("zh-CN")
+                    };
+                } catch (err) {
+                    return { success: false, error: err.message };
+                }
+            },
+            getUserActivity: (uuid) => getUserActivity(uuid),
+            getOnlineIpsDetails: () => {
+                const results = [];
+                try {
+                    usersDatabase.forEach((u) => {
+                        const act = getUserActivity(u.uuid);
+                        if (act && Array.isArray(act.ips) && act.ips.length > 0) {
+                            results.push({
+                                username: u.username,
+                                ips: act.ips,
+                                activeConnections: act.activeConnections || act.ips.length,
+                                lastSeen: act.lastSeen || Date.now()
+                            });
+                        }
+                    });
+                } catch (_) { }
+                return results;
+            },
+            adminWebUrl: () => {
+                const customDomain = (siteSettings.subDomain || siteSettings.publicHost || process.env.SUB_DOMAIN || "").trim();
+                if (customDomain) {
+                    const proto = (customDomain.includes(":") && !customDomain.endsWith(":443")) ? "http" : "https";
+                    return `${proto}://${customDomain}/admin`;
+                }
+                const hostDomain = (OPTIMIZED_DOMAIN || ARGO_DOMAIN || "").trim();
+                if (hostDomain) {
+                    return `https://${hostDomain}/admin`;
+                }
+                const ip = DIRECT_IP || "127.0.0.1";
+                return `http://${ip}:${SERVER_PORT}/admin`;
             }
         });
     } catch (e) {
