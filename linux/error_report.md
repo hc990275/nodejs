@@ -501,3 +501,60 @@
   3. **升级 5 排 10 键 /admin 站长超级控制台与专属指令集**：
      - 控制台新增：`🔄 强启 Sing-box 核心`、`📊 查看最新用户列表`、`🔍 立即全员在群巡检`、`🌐 在线活跃 IP 监控`、`📡 节点矩阵与大屏`、`📢 全员广播群发推送`、`🖥️ 打开 Web 管理后台`、`🎁 全员发放 5GB 流量`、`🧹 清理 0 流量空账号`、`⚠️ 一键重置清空全库`；
      - 命令行同步支持特权命令：`/restart`、`/users`、`/ips`、`/grantall`、`/audit`、`/deluser`、`/unbind`、`/clearall confirm`、`/cleartg confirm`、`/broadcast`。
+
+---
+
+### 第四十八号：Telegram Bot API BUTTON_URL_INVALID 报错致 /start 与 /my 全面瘫痪及客户端安全唤起跳板重构
+- **问题现象**：
+  在 Telegram 私聊或群聊中发送 `/my`、`/start` 或完成开通后，机器人完全没有任何信息回复，所有命令犹如石沉大海。同时管理后台与系统环境缺少默认的站长 ID（`5153827615`）、专属群组（`@s5gydl`）、API 地址（`https://api.telegram.org`）以及节点订阅对外公网域名（`db.995677.xyz`）。
+- **原因剖析**：
+  1. **Telegram 官方 Bot API 对 InlineKeyboardButton URL 规范限制**：Telegram 官方 Bot API 严格要求内嵌按钮的 `url` 属性必须且只能是 `http://`、`https://` 或 `tg://` 协议。原代码在 `/start`、`/my` 和 `/reg` 的卡片按钮中直接塞入了类似 `clash://install-config?url=...` 和 `sub://base64...` 的自定义 scheme。Telegram 服务器校验时直接报 `HTTP 400 Bad Request: BUTTON_URL_INVALID` 并将整条消息彻底拒收，且因为不属于 Markdown 解析错误导致原有的 Markdown 降级逻辑未被触发，最终造成机器人发出的所有卡片全部静默消失；
+  2. **群聊昵称转义副作用**：MarkdownV1 规范仅支持对 `_`、`*`、`` ` ``、`[` 反斜杠转义，原 `escapeMd` 正则中连带转义了 `-`、`.`、`!` 等在旧版 Markdown 中非法的字符，容易诱发 Telegram `can't parse entities`；
+  3. **环境预设缺省未落地**：系统的 `TG_ADMIN_ID`、`SUB_DOMAIN` 默认留空，未固化用户指定的站长 ID、专属群组与对外域名 `db.995677.xyz`。
+- **实施解决对策**：
+  1. **构建安全 HTTPS 客户端唤起跳板路由 (`/import`)**：
+     - 在 `index.js` 中新增 `GET /import?app=(clash|rocket)&token=xxx` 标准 HTTPS 路由，提供优雅自适应的轻量跳转页面；
+     - 机器人端所有的「一键导入小火箭」与「一键导入 Clash」按钮全部改用该 HTTPS 标准 URL，100% 遵守 Telegram 规范，且在移动端可毫秒级自动唤起客户端完成一键导入，彻底根除 `BUTTON_URL_INVALID`；
+  2. **强化 `sendMessage` 三重铁壁容错与自愈机制**：
+     - 铁壁 1：若拦截到 `BUTTON_URL_INVALID`，自动清洗非法 URL 按钮后即时重发；
+     - 铁壁 2：若拦截到 Markdown 实体解析异常，自动剥离 `parse_mode` 降级为纯文本重发；
+     - 铁壁 3：终极兜底，若依然异常则彻底剥离格式裸发纯文本，确保任何消息 100% 不吞消息；
+  3. **群聊纯文本秒级响应**：群内回复彻底剥离 Markdown 语法标记，使用原生纯文本，群友发 `/start`、`/my`、`/nodes` 等 100% 秒回带有相应私聊直达按钮；
+  4. **固化图1全部默认配置**：
+     - 站长 ID 默认设为 `5153827615`；
+     - 限定专属注册群组默认设为 `@s5gydl`；
+     - Telegram API 地址默认设为 `https://api.telegram.org`；
+     - 对外订阅域名默认设为 `db.995677.xyz`；
+     - 并在 `index.js`、`telegram.js`、`.env`、`v3_settings.json` 及前端管理后台中全量同步生效。
+
+
+---
+
+### 第四十九号：清除硬编码 Bot Token、图1/图2配额端口全开启、重拉脚本防丢数据跨目录持久化与群聊纯引导隔离铁律
+- **问题现象**：
+  1. 代码中 TG_BOT_TOKEN 被误填了硬编码默认 Token，用户要求严格移除，绝不预设任何机器人 Token；
+  2. 图 1 与图 2 要求的参数未全量落地为默认值：注册试用天数需默认 365 天、初始流量配额需默认 10TB，且分配预览中的全部协议（Hy2: 18800、TUIC: 18801、Reality: 18802、VLESS-TCP: 18803、Trojan-TCP: 18804、SS: 18805、HOP: 18806-18817）需默认填写并全部开启；
+  3. 用户在服务器上重新拉取脚本更新或重装后，原有所有注册用户全部消失被冲刷为空；
+  4. 群聊中偶有非预期信息输出，用户要求群聊“只能引导用户私聊机器人，不做任何东西”。
+- **原因剖析**：
+  1. **Token 硬编码污染**：上一次修复中误将开发测试 Token 写入了变量初值；
+  2. **图1与图2默认值未闭环**：DEFAULT_DAYS 原为 3，DEFAULT_TRAFFIC_UNIT 原为 GB，各协议端口原为 0（禁用状态），前端回显与向导中未同步将 18800-18805 预设为默认勾选状态；
+  3. **数据丢失深层根因（单目录存储脆弱性 + 毁灭性脚本）**：
+     - README.md 原有一键命令包含 rm -rf /root/v3-airport && git clone ...，用户或脚本更新时执行该命令直接物理抹除了本地 data/ 目录；
+     - v3_users.json 与 v3_settings.json 原先仅保存在当前工作目录的 data/ 下，缺乏系统级的外部独立冷备，一旦工作目录发生被删、重装、重拉或冲突，数据彻底丢失；
+  4. **群聊未做绝对隔离**：原群聊逻辑对部分文本或回调进行了分支下发，未能做到 100% 纯引导。
+- **实施解决对策**：
+  1. **彻底拔除硬编码 Token**：index.js、telegram.js、.env、v3_settings.json 中统一恢复为 (process.env.TG_BOT_TOKEN || '').trim()，未配时绝对保持为空；
+  2. **全量落地图1与图2默认值与协议自动开启**：
+     - 初始试用天数默认 365 天，初始流量配额默认 10 TB (折合 10240 GB)；
+     - 协议端口与开关默认全面开启：Hy2 主端口 18800、TUIC v5 18801、VLESS Reality 18802、VLESS-TCP 18803、Trojan-TCP 18804、SS 18805、Hy2 HOP 18806-18817（全部 ENABLE_xxx=true）；
+     - 管理后台表单、批量分配器、向导及配置文件中均完成对齐回显与自动打勾；
+  3. **系统级跨目录持久化与智能多源寻回 (Out-of-Tree Persistence)**：
+     - 新增 getSystemPersistentDirs() 函数，在 Linux 环境下挂载 /etc/v3-airport/data、/var/lib/v3-airport/data、/root/.v3_airport_data 等系统级独立存储路径；
+     - saveUsers() 与 saveSettings() 每次变更落盘时，自动异步双写到上述系统级持久化目录；
+     - loadUsers() 与 loadSettings() 启动寻回序列中，优先深度扫描系统级外部持久目录；即使用户执行了 rm -rf 重新 clone 整个仓库，新服务拉起的第一秒即可 100% 完整找回并恢复所有历史用户与配置；
+     - 改造 README.md 一键命令，存在旧目录时自动走 git pull 无损更新，并明确提供 cd /root/v3-airport/linux && git pull && systemctl restart v3 日常无损热升级指令；
+  4. **群聊铁律（纯引导私聊，不做任何其他事情）**：
+     - 进群事件 (new_chat_members) 仅发送一条图文引导卡片，带直达私聊按钮；
+     - 群聊中任何命令（/开头）、@机器人、回复机器人或意图关键词，机器人唯一动作是回复一条引导私聊卡片（带且仅带直达私聊按钮），随后立即 return;，绝对不穿透到任何业务；
+     - 群聊中的按钮点击 (callback_query) 统一弹窗阻断并引导前往私聊；普通闲聊静默忽略，彻底实现群内零数据泄露与纯私聊业务闭环。

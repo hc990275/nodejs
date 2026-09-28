@@ -19,7 +19,7 @@ const crypto = require("crypto");
 class TelegramBotManager {
     constructor(options = {}) {
         this.botToken = (options.botToken || process.env.TG_BOT_TOKEN || "").trim();
-        this.adminId = (options.adminId || process.env.TG_ADMIN_ID || "").trim();
+        this.adminId = (options.adminId || process.env.TG_ADMIN_ID || "5153827615").trim();
         this.requiredGroup = (options.requiredGroup || process.env.TG_REQUIRED_GROUP || "@s5gydl").trim();
         this.apiBase = (options.apiBase || process.env.TG_API_BASE || "https://api.telegram.org").replace(/\/+$/, "");
 
@@ -33,6 +33,7 @@ class TelegramBotManager {
         this.checkinUser = options.checkinUser || null;
         this.getSiteSettings = options.getSiteSettings || (() => ({}));
         this.getBaseSubUrl = options.getBaseSubUrl || null;
+        this.getAppImportUrl = options.getAppImportUrl || null;
         this.getSystemStats = options.getSystemStats || (() => ({}));
         this.getNodesSummary = options.getNodesSummary || (() => []);
         this.getRawNodesText = options.getRawNodesText || null;
@@ -57,6 +58,23 @@ class TelegramBotManager {
         if (cfg.adminId !== undefined) this.adminId = String(cfg.adminId || "").trim();
         if (cfg.requiredGroup !== undefined) this.requiredGroup = String(cfg.requiredGroup || "").trim();
         if (cfg.apiBase !== undefined) this.apiBase = String(cfg.apiBase || "https://api.telegram.org").replace(/\/+$/, "");
+        if (cfg.getUsers) this.getUsers = cfg.getUsers;
+        if (cfg.createUser) this.createUser = cfg.createUser;
+        if (cfg.deleteUser) this.deleteUser = cfg.deleteUser;
+        if (cfg.unbindUser) this.unbindUser = cfg.unbindUser;
+        if (cfg.setUserEnabled) this.setUserEnabled = cfg.setUserEnabled;
+        if (cfg.disconnectUser) this.disconnectUser = cfg.disconnectUser;
+        if (cfg.checkinUser) this.checkinUser = cfg.checkinUser;
+        if (cfg.getSiteSettings) this.getSiteSettings = cfg.getSiteSettings;
+        if (cfg.getBaseSubUrl) this.getBaseSubUrl = cfg.getBaseSubUrl;
+        if (cfg.getAppImportUrl) this.getAppImportUrl = cfg.getAppImportUrl;
+        if (cfg.getSystemStats) this.getSystemStats = cfg.getSystemStats;
+        if (cfg.getNodesSummary) this.getNodesSummary = cfg.getNodesSummary;
+        if (cfg.getRawNodesText) this.getRawNodesText = cfg.getRawNodesText;
+        if (cfg.restartSingboxCore) this.restartSingboxCore = cfg.restartSingboxCore;
+        if (cfg.getUserActivity) this.getUserActivity = cfg.getUserActivity;
+        if (cfg.getOnlineIpsDetails) this.getOnlineIpsDetails = cfg.getOnlineIpsDetails;
+        if (cfg.adminWebUrl) this.adminWebUrl = cfg.adminWebUrl;
     }
 
     /**
@@ -126,12 +144,39 @@ class TelegramBotManager {
             };
             let sent = await this.request("sendMessage", data);
 
-            // 🌟 核心容错：若 Telegram 因 Markdown 实体解析报错，自动剥离 parse_mode 降级为纯文本重发，杜绝吞消息
-            if (sent && !sent.ok && sent.description && (sent.description.includes("can't parse entities") || sent.description.includes("entity"))) {
+            // 🌟 核心容错 1：若报 BUTTON_URL_INVALID 或 URL 错误，自动清洗非法 scheme 按钮重试下发
+            if (sent && !sent.ok && sent.description && (sent.description.includes("BUTTON_URL_INVALID") || sent.description.includes("url") || sent.description.includes("wrong url"))) {
+                console.warn(`[TG-Bot] 检测到按钮包含非法 URL (${sent.description})，自动清洗重发...`);
+                const safeData = JSON.parse(JSON.stringify(data));
+                if (safeData.reply_markup && Array.isArray(safeData.reply_markup.inline_keyboard)) {
+                    safeData.reply_markup.inline_keyboard = safeData.reply_markup.inline_keyboard.map((row) =>
+                        row.map((btn) => {
+                            if (btn.url && !/^(https?|tg):\/\//i.test(btn.url)) {
+                                return { text: btn.text, callback_data: "cmd_my" };
+                            }
+                            return btn;
+                        })
+                    );
+                }
+                sent = await this.request("sendMessage", safeData);
+            }
+
+            // 🌟 核心容错 2：若 Telegram 因 Markdown 实体解析报错，自动剥离 parse_mode 降级为纯文本重发
+            if (sent && !sent.ok && sent.description && (sent.description.includes("can't parse entities") || sent.description.includes("entity") || sent.description.includes("parse"))) {
                 console.warn(`[TG-Bot] Markdown 解析失败 (${sent.description})，自动降级为纯文本重试下发...`);
                 const fallbackData = { ...data };
                 delete fallbackData.parse_mode;
                 sent = await this.request("sendMessage", fallbackData);
+            }
+
+            // 🌟 核心容错 3：终极兜底，若依然失败，剥离 reply_markup 与 parse_mode 重发纯文本
+            if (sent && !sent.ok) {
+                console.warn(`[TG-Bot] 消息下发最终兜底 (${sent.description})，纯文本裸发...`);
+                sent = await this.request("sendMessage", {
+                    chat_id: chatId,
+                    text: text.replace(/[*_`\[\]()]/g, ""),
+                    disable_web_page_preview: true
+                });
             }
 
             // 🌟 群聊消息 1 分钟 (60 秒) 自动撤回自毁机制 (私聊消息永不删除)
@@ -515,28 +560,25 @@ class TelegramBotManager {
         const chat = msg.chat;
         if (!chat) return;
 
-        // 🌟 核心功能：监听新成员进群事件 (new_chat_members) 自动弹卡片引导直达私聊
+        // 🌟 核心功能：监听新成员进群事件 (new_chat_members) 仅引导直达私聊
         if (msg.new_chat_members && Array.isArray(msg.new_chat_members) && msg.new_chat_members.length > 0) {
             const botUser = this.botInfo ? this.botInfo.username : "";
             for (const newMember of msg.new_chat_members) {
                 if (newMember.is_bot) continue; // 过滤机器人
                 const memberName = this.escapeMd(newMember.first_name || "新朋友");
                 const welcomeCard = 
-`🎉 *热烈欢迎 ${memberName} 加入官方交流群！*
+`🎉 欢迎 ${memberName} 加入官方交流群！
 
-🚀 *群员专享福利*：
-本群为所有正式群成员提供全协议极速专线节点服务。
-每人限领 1 个专属账号，退群自动失效断网，回群自动秒级恢复！
-
-👉 *请点击下方按钮进入私聊，轻按屏幕正下方的【START / 开始】即可秒级免费开通！*`;
+💡 提示：本群所有节点开通、订阅提取与服务查询仅限与机器人【私聊】操作，群聊不做任何服务与响应。
+👉 请点击下方按钮进入私聊，轻按屏幕正下方的【START / 开始】即可使用！`;
 
                 const keyboard = botUser ? {
                     inline_keyboard: [
-                        [{ text: "🚀 点击一键开通高速节点", url: `https://t.me/${botUser}?start=start` }]
+                        [{ text: "👉 点击直达私聊机器人 开启服务", url: `https://t.me/${botUser}?start=start` }]
                     ]
                 } : undefined;
 
-                await this.sendMessage(chat.id, welcomeCard, { reply_markup: keyboard });
+                await this.sendMessage(chat.id, welcomeCard, { reply_markup: keyboard, parse_mode: undefined });
             }
             return;
         }
@@ -555,58 +597,38 @@ class TelegramBotManager {
         }
         const cmd = fullCmd.toLowerCase();
 
-        // 群聊安全防呆与一键跳转引导
+        // 🌟 群聊铁律：群聊只能引导用户私聊机器人，不做任何东西！
         if (!isPrivate) {
             const botUser = this.botInfo ? this.botInfo.username : "";
-            const isIntent = [
-                "/start", "/reg", "/register", "/my", "/sub", "/nodes", "/checkin", "/qiandao", "/admin", "/help",
-                "/restart", "/users", "/ips", "开通", "注册", "节点", "订阅", "签到", "我的", "帮助", "后台"
-            ].includes(cmd) || [
-                "/start", "/reg", "/register", "/my", "/sub", "/nodes", "/checkin", "/qiandao", "/admin", "/help",
-                "开通", "注册", "节点", "订阅", "签到", "我的", "帮助", "后台"
+            const isBotMentioned = botUser && (text.includes(`@${botUser}`) || fullCmd.toLowerCase().includes(`@${botUser.toLowerCase()}`));
+            const isCommand = text.startsWith("/");
+            const isReplyToBot = msg.reply_to_message && msg.reply_to_message.from && msg.reply_to_message.from.is_bot;
+            const hasKeyword = [
+                "开通", "注册", "节点", "订阅", "签到", "我的", "帮助", "后台", "管理", "试用", "流量", "续费"
             ].some((kw) => text.includes(kw));
 
-            if (isIntent) {
-                let btnText = "🚀 点击直达私聊并激活节点";
-                let jumpParam = "start";
-
-                if (cmd === "/my" || cmd === "/sub" || text.includes("订阅") || text.includes("我的")) {
-                    btnText = "📦 点击私聊查看我的订阅 (/my)";
-                    jumpParam = "my";
-                } else if (cmd === "/nodes" || text.includes("节点")) {
-                    btnText = "🌐 点击私聊查看节点矩阵 (/nodes)";
-                    jumpParam = "nodes";
-                } else if (cmd === "/checkin" || cmd === "/qiandao" || text.includes("签到")) {
-                    btnText = "🎁 点击私聊打卡签到领流量 (/checkin)";
-                    jumpParam = "checkin";
-                } else if (cmd === "/admin" || cmd === "/status" || text.includes("后台")) {
-                    if (isAdmin) {
-                        btnText = "👑 点击私聊进入站长控制台 (/admin)";
-                        jumpParam = "admin";
-                    }
-                }
-
-                const safeName = this.escapeMd(from.first_name || from.username || "朋友");
-                const replyMsg = `👋 [${safeName}](tg://user?id=${from.id})，为保护您的订阅与账号隐私，请点击下方按钮进入私聊！\n👉 进入后轻点屏幕正下方的【START / 开始】即可完成开通或查询！`;
+            // 只要群内触发了命令、@机器人、回复机器人或意图关键词，唯一动作：仅发送一条直达私聊引导，不做任何业务！
+            if (isCommand || isBotMentioned || isReplyToBot || hasKeyword) {
+                const replyMsg = `👋 您好！为保护您的订阅与账号隐私，机器人所有功能仅限私聊操作，群聊不做任何服务！\n👉 请点击下方按钮进入私聊，轻点屏幕正下方的【START / 开始】即可使用！`;
                 const keyboard = botUser ? {
                     inline_keyboard: [
-                        [{ text: btnText, url: `https://t.me/${botUser}?start=${jumpParam}` }]
+                        [{ text: "👉 点击直达私聊机器人 开启服务", url: `https://t.me/${botUser}?start=start` }]
                     ]
                 } : undefined;
 
-                // 顺带将群友在群内发送的触发消息也在 60 秒后自动清理 (需机器人具备群管理删除消息权限)
                 if (msg.message_id) {
                     setTimeout(() => {
                         this.deleteMessage(chat.id, msg.message_id).catch(() => {});
                     }, 60000);
                 }
 
-                return await this.sendMessage(chat.id, replyMsg, {
+                await this.sendMessage(chat.id, replyMsg, {
                     reply_to_message_id: msg.message_id,
-                    reply_markup: keyboard
+                    reply_markup: keyboard,
+                    parse_mode: undefined
                 });
             }
-            // 群聊中非以上触发词的其他消息，不予处理（防止干扰群聊正常交流）
+            // 无论是否触发，非私聊一律阻断退出，绝对不穿透到后续任何业务逻辑！
             return;
         }
 
@@ -717,12 +739,11 @@ _例如：\`/reg test888 12345678\` (留空密码将自动生成随机密码)_
                 { text: "📦 我的节点面板 (/my)", callback_data: "cmd_my" },
                 { text: "🔗 提取通用订阅", callback_data: "cmd_copy_sub" }
             ]);
-            const baseSubUrl = (this.getBaseSubUrl && user.uuid) ? this.getBaseSubUrl(user.uuid) : "";
-            const clashSubUrl = baseSubUrl ? `${baseSubUrl}&type=clash` : "";
-            const shadowrocketUrl = baseSubUrl ? `sub://${Buffer.from(baseSubUrl).toString("base64")}` : "";
+            const clashJumpUrl = (this.getAppImportUrl && user.uuid) ? this.getAppImportUrl(user.uuid, "clash") : "";
+            const rocketJumpUrl = (this.getAppImportUrl && user.uuid) ? this.getAppImportUrl(user.uuid, "rocket") : "";
             const quickRow = [];
-            if (shadowrocketUrl) quickRow.push({ text: "🚀 一键导入小火箭", url: shadowrocketUrl });
-            if (clashSubUrl) quickRow.push({ text: "⚡ 一键导入 Clash", url: `clash://install-config?url=${encodeURIComponent(clashSubUrl)}` });
+            if (rocketJumpUrl) quickRow.push({ text: "🚀 一键导入小火箭", url: rocketJumpUrl });
+            if (clashJumpUrl) quickRow.push({ text: "⚡ 一键导入 Clash", url: clashJumpUrl });
             if (quickRow.length > 0) inlineRows.push(quickRow);
         }
         inlineRows.push([{ text: `👉 官方交流群 ${groupName}`, url: groupLink }]);
@@ -833,9 +854,11 @@ _例如：\`/reg test888 12345678\` (留空密码将自动生成随机密码)_
 🔗 *您的通用订阅地址*：
 \`${baseSubUrl || "请先完成注册生成"}\``;
 
+        const clashJumpUrl = (user && this.getAppImportUrl) ? this.getAppImportUrl(user.uuid, "clash") : "";
+
         const keyboard = {
             inline_keyboard: [
-                clashSubUrl ? [{ text: "⚡ 一键导入 Clash", url: `clash://install-config?url=${encodeURIComponent(clashSubUrl)}` }] : [],
+                clashJumpUrl ? [{ text: "⚡ 一键导入 Clash", url: clashJumpUrl }] : [],
                 [{ text: "📦 返回我的面板", callback_data: "cmd_my" }]
             ].filter((r) => r.length > 0)
         };
@@ -1196,12 +1219,13 @@ _提示：用户名必须为 3-32 位字母、数字或下划线。_`);
 • 随时发送 \`/my\` 可重新提取订阅链接与查询流量；
 • 每天发送 \`/checkin\` 可额外领取免费流量并延长有效期！`;
 
-            const rocketUrl = baseSubUrl ? `sub://${Buffer.from(baseSubUrl).toString("base64")}` : "";
+            const clashJumpUrl = (this.getAppImportUrl && newUser.uuid) ? this.getAppImportUrl(newUser.uuid, "clash") : "";
+            const rocketJumpUrl = (this.getAppImportUrl && newUser.uuid) ? this.getAppImportUrl(newUser.uuid, "rocket") : "";
             const keyboard = {
                 inline_keyboard: [
                     [
-                        clashSubUrl ? { text: "⚡ 一键导入 Clash", url: `clash://install-config?url=${encodeURIComponent(clashSubUrl)}` } : null,
-                        rocketUrl ? { text: "🚀 一键导入小火箭", url: rocketUrl } : null
+                        clashJumpUrl ? { text: "⚡ 一键导入 Clash", url: clashJumpUrl } : null,
+                        rocketJumpUrl ? { text: "🚀 一键导入小火箭", url: rocketJumpUrl } : null
                     ].filter(Boolean),
                     [
                         { text: "📋 提取所有明文节点", callback_data: "cmd_copy_raw_nodes" },
@@ -1280,16 +1304,17 @@ _提示：用户名必须为 3-32 位字母、数字或下划线。_`);
 \`${clashSubUrl}\`
 ══════════════════════`;
 
-        const shadowrocketUrl = baseSubUrl ? `sub://${Buffer.from(baseSubUrl).toString("base64")}` : "";
+        const clashJumpUrl = (this.getAppImportUrl && user.uuid) ? this.getAppImportUrl(user.uuid, "clash") : "";
+        const rocketJumpUrl = (this.getAppImportUrl && user.uuid) ? this.getAppImportUrl(user.uuid, "rocket") : "";
         const inlineRows = [];
 
-        // 1. 客户端专属一键导入
+        // 1. 客户端专属一键导入 (通过服务端 HTTPS 安全跳板唤起，完全符合 Telegram Bot API 规范)
         const importRow = [];
-        if (shadowrocketUrl) {
-            importRow.push({ text: "🚀 一键导入小火箭", url: shadowrocketUrl });
+        if (rocketJumpUrl) {
+            importRow.push({ text: "🚀 一键导入小火箭", url: rocketJumpUrl });
         }
-        if (clashSubUrl) {
-            importRow.push({ text: "⚡ 一键导入 Clash", url: `clash://install-config?url=${encodeURIComponent(clashSubUrl)}` });
+        if (clashJumpUrl) {
+            importRow.push({ text: "⚡ 一键导入 Clash", url: clashJumpUrl });
         }
         if (importRow.length > 0) inlineRows.push(importRow);
 
@@ -1533,65 +1558,28 @@ ${rawNodes.trim()}
 
         const isGroup = msg.chat.type === "group" || msg.chat.type === "supergroup" || Number(msg.chat.id) < 0;
 
+        // 🌟 群聊铁律：群聊只引导私聊，不做任何业务响应
+        if (isGroup) {
+            const botUser = this.botInfo ? this.botInfo.username : "";
+            const jumpUrl = botUser ? `https://t.me/${botUser}?start=start` : "";
+            await this.answerCallbackQuery(cb.id, { text: "💡 群聊不处理任何业务，请点击按钮前往机器人私聊操作！", show_alert: true });
+            if (jumpUrl) {
+                await this.sendMessage(msg.chat.id, `👋 为保护账号隐私，群聊不处理任何业务。\n👉 请点击下方按钮进入机器人私聊操作：`, {
+                    reply_markup: {
+                        inline_keyboard: [[{ text: "👉 点击直达私聊机器人 开启服务", url: jumpUrl }]]
+                    },
+                    parse_mode: undefined
+                });
+            }
+            return;
+        }
+
         if (data === "cmd_my") {
-            if (isGroup) {
-                // 群内触发保护：私聊下发专属面板，防止 Token 泄露以及被 60 秒自毁撤回
-                const sentToUser = await this.handleMySubscriptionCommand(from.id, from);
-                if (sentToUser && sentToUser.ok) {
-                    await this.answerCallbackQuery(cb.id, { text: "✅ 专属节点面板已私信发送给您，请前往与机器人的私聊查看！", show_alert: true });
-                } else {
-                    const botUser = this.botInfo ? this.botInfo.username : "";
-                    const jumpUrl = botUser ? `https://t.me/${botUser}?start=my` : "";
-                    await this.answerCallbackQuery(cb.id, { text: "💡 请点击下方按钮进入机器人私聊提取您的专属订阅！", show_alert: true });
-                    if (jumpUrl) {
-                        await this.sendMessage(msg.chat.id, `👋 @${from.username || from.first_name || "朋友"}，为保护您的订阅与节点安全，请点击下方按钮前往私聊查看：`, {
-                            reply_markup: {
-                                inline_keyboard: [[{ text: "👉 进入私聊提取专属订阅", url: jumpUrl }]]
-                            }
-                        });
-                    }
-                }
-            } else {
-                await this.handleMySubscriptionCommand(msg.chat.id, from);
-            }
+            await this.handleMySubscriptionCommand(msg.chat.id, from);
         } else if (data === "cmd_copy_sub") {
-            const targetChat = isGroup ? from.id : msg.chat.id;
-            const res = await this.handleExtractUniversalSubCommand(targetChat, from);
-            if (isGroup) {
-                if (res && res.ok) {
-                    await this.answerCallbackQuery(cb.id, { text: "✅ 通用订阅链接已私发给您，请查看私聊！", show_alert: true });
-                } else {
-                    const botUser = this.botInfo ? this.botInfo.username : "";
-                    const jumpUrl = botUser ? `https://t.me/${botUser}?start=my` : "";
-                    await this.answerCallbackQuery(cb.id, { text: "💡 请进入私聊窗口提取通用订阅链接！", show_alert: true });
-                    if (jumpUrl) {
-                        await this.sendMessage(msg.chat.id, `👋 @${from.username || from.first_name || "朋友"}，请点击下方按钮前往私聊获取通用订阅链接：`, {
-                            reply_markup: {
-                                inline_keyboard: [[{ text: "👉 前往私聊提取通用订阅", url: jumpUrl }]]
-                            }
-                        });
-                    }
-                }
-            }
+            await this.handleExtractUniversalSubCommand(msg.chat.id, from);
         } else if (data === "cmd_copy_raw_nodes") {
-            const targetChat = isGroup ? from.id : msg.chat.id;
-            const res = await this.handleExtractRawNodesCommand(targetChat, from);
-            if (isGroup) {
-                if (res && res.ok) {
-                    await this.answerCallbackQuery(cb.id, { text: "✅ 明文节点列表已私发给您，请查看私聊！", show_alert: true });
-                } else {
-                    const botUser = this.botInfo ? this.botInfo.username : "";
-                    const jumpUrl = botUser ? `https://t.me/${botUser}?start=raw` : "";
-                    await this.answerCallbackQuery(cb.id, { text: "💡 请进入私聊窗口提取明文节点列表！", show_alert: true });
-                    if (jumpUrl) {
-                        await this.sendMessage(msg.chat.id, `👋 @${from.username || from.first_name || "朋友"}，请点击下方按钮前往私聊获取明文节点列表：`, {
-                            reply_markup: {
-                                inline_keyboard: [[{ text: "👉 前往私聊提取明文节点", url: jumpUrl }]]
-                            }
-                        });
-                    }
-                }
-            }
+            await this.handleExtractRawNodesCommand(msg.chat.id, from);
         } else if (data === "cmd_quick_reg") {
             const rawName = from.username ? from.username.replace(/[^a-zA-Z0-9_]/g, "").slice(0, 16) : ("u" + String(from.id).slice(-6));
             const finalUser = (rawName && rawName.length >= 3) ? rawName : ("u" + String(from.id).slice(-8));
@@ -1658,7 +1646,16 @@ ${rawNodes.trim()}
      */
     escapeMd(str) {
         if (!str) return "";
-        return String(str).replace(/([_*\[\]()~`>#+=|{}.!-])/g, "\\$1");
+        // Telegram MarkdownV1 仅支持反斜杠转义 _ * ` [ 四种符号
+        return String(str).replace(/([_*`\[])/g, "\\$1");
+    }
+    /**
+     * 平滑热重启机器人引擎
+     */
+    async restart() {
+        this.stop();
+        await new Promise((r) => setTimeout(r, 600));
+        return await this.start();
     }
 }
 
@@ -1668,12 +1665,15 @@ let tgManagerInstance = null;
 function initTelegramBot(options = {}) {
     if (!tgManagerInstance) {
         tgManagerInstance = new TelegramBotManager(options);
+        tgManagerInstance.start().catch((e) => {
+            console.warn("[TG-Bot] 启动异常:", e.message);
+        });
     } else {
         tgManagerInstance.updateConfig(options);
+        tgManagerInstance.restart().catch((e) => {
+            console.warn("[TG-Bot] 热重启异常:", e.message);
+        });
     }
-    tgManagerInstance.start().catch((e) => {
-        console.warn("[TG-Bot] 启动异常:", e.message);
-    });
     return tgManagerInstance;
 }
 
