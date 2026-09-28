@@ -1376,6 +1376,11 @@ return sendHtmlResponse(res, 200, `
                                     </div>
                                 </div>
                                 <div class="field-box">
+                                    <label>节点订阅对外域名 / 公网 IP (SUB_DOMAIN，留空则自动检测公网IP或Tunnel)</label>
+                                    <input type="text" id="set_subDomain" placeholder="例如: sub.example.com 或 123.45.67.89 (选填)" autocomplete="off" />
+                                    <div style="font-size:11px; color:var(--el-text-secondary); margin-top:3px;">用于生成通用订阅链接及客户端远程更新源。若部署在内网/反代后面，填入公网域名可确保手机客户端 100% 成功拉取订阅。</div>
+                                </div>
+                                <div class="field-box">
                                     <label>当前主控节点名称 / 国家地区标识 (留空则根据公网IP自动识别)</label>
                                     <input type="text" id="set_serverLocation" placeholder="例如: 🇺🇸 美西01 或 🇭🇰 香港01 (留空则自动识别)" />
                                     <div style="font-size:11px; color:var(--el-text-secondary); margin-top:3px;">用于订阅客户端节点名称前缀，例如：🇺🇸 美西01 | Reality抗封[18802]-用户名</div>
@@ -2225,6 +2230,9 @@ return sendHtmlResponse(res, 200, `
                         const tgApiInput = document.getElementById("set_tgApiBase");
                         if (tgApiInput) tgApiInput.value = s.tgApiBase || env.TG_API_BASE || "https://api.telegram.org";
 
+                        const subDomainInput = document.getElementById("set_subDomain");
+                        if (subDomainInput) subDomainInput.value = s.subDomain || env.SUB_DOMAIN || "";
+
                         const sLoc = document.getElementById("set_serverLocation");
                         if (sLoc) sLoc.value = s.serverLocation || "";
 
@@ -2331,6 +2339,7 @@ return sendHtmlResponse(res, 200, `
                         const contactText = getVal("set_contactText", "");
                         const contactUrl = getVal("set_contactUrl", "");
                         const serverLocation = getVal("set_serverLocation", "");
+                        const subDomain = getVal("set_subDomain", "");
 
                         // 提取 Telegram 机器人运营参数
                         const tgBotToken = getVal("set_tgBotToken", "");
@@ -2410,6 +2419,8 @@ return sendHtmlResponse(res, 200, `
                             defaultAssignedNodes,
                             contactText,
                             contactUrl,
+                            serverLocation,
+                            subDomain,
                             tgBotToken,
                             tgAdminId,
                             tgRequiredGroup,
