@@ -558,3 +558,63 @@
      - 进群事件 (new_chat_members) 仅发送一条图文引导卡片，带直达私聊按钮；
      - 群聊中任何命令（/开头）、@机器人、回复机器人或意图关键词，机器人唯一动作是回复一条引导私聊卡片（带且仅带直达私聊按钮），随后立即 return;，绝对不穿透到任何业务；
      - 群聊中的按钮点击 (callback_query) 统一弹窗阻断并引导前往私聊；普通闲聊静默忽略，彻底实现群内零数据泄露与纯私聊业务闭环。
+---
+
+### 第五十号：退群断流生效后回群无法连接节点根因排查与管理员回群解封通知闭环
+- **问题现象**：
+  1. 用户退出官方群后，节点成功被停用断网；但重新加入群组后，虽然收到了机器人的回群激活私信（图1），客户端依然无法连接节点上网；
+  2. 管理员在 Telegram 里收到了退群停用通知（图2），但用户回群后管理员端无任何解封通知反馈，导致误认为系统没有解封。
+- **原因剖析**：
+  1. **Sing-box 核心进程不支持 SIGHUP 信号热载入入站用户**：
+     - 退群时调用了 safeReloadSingbox(true)，执行了强制查杀并重新拉起 Sing-box，将禁用的用户从 config.json 中剔除，因此断网立即成功；
+     - 但回群激活时调用的是 safeReloadSingbox(false)，代码命中 Linux SIGHUP 分支：existingProcess.kill('SIGHUP') 并直接 return。然而 Sing-box 内核根本不支持通过 SIGHUP 信号动态重新加载入站用户列表，导致 Sing-box 核心内存中始终保持着剔除该用户的旧状态，客户端连接时直接被 Sing-box 拒绝凭据；
+  2. **回群解封事件缺少对管理员的通知回调**：
+     - 在 telegram.js 的 handleChatMemberUpdate 与 auditAllMembers 中，退群时有 this.sendMessage(this.adminId, ...) 发送图2通知；但回群激活解封时，仅给用户本人发送了欢迎私信，完全没有给管理员发送解封通知，导致管理员产生“回群未解封”的感知断层；
+  3. **用户解封后 disableReason 残留**：
+     - 激活时将 u.disableReason 写入了 '进群自动恢复'，未彻底清空为 ''，影响部分条件判断。
+- **实施解决对策**：
+  1. **彻底移除无效的 SIGHUP 信号逻辑，实行真实进程毫秒级冷重启加载**：
+     - 改造 safeReloadSingbox()：移除 SIGHUP 分支，当检测到配置变动 (configChanged) 或 force === true 时，直接强制释放端口并以新配置拉起 Sing-box 核心进程；
+     - 在用户启用、恢复、回群激活以及管理后台切换状态时，统一调度 safeReloadSingbox(true)，确保新入站凭据 100% 真实加载到 Sing-box 内存；
+  2. **补全管理员回群解封实时通知（图2状态闭环）**：
+     - 在 handleChatMemberUpdate 与后台定时巡检 auditAllMembers 中，当群员重新进群激活时，除给用户下发欢迎卡片外，同步给管理员 (this.adminId) 推送《🎉 群员回群触发解封通知》，明确标注账号、TG ID、动作及解封处理状态；
+  3. **放宽回群判定并彻底清理原因**：
+     - 将回群恢复判定优化为 !boundUser.enabled && boundUser.disableReason !== '管理员手动禁用'，并在 setUserEnabled 中将已启用用户的 disableReason 彻底重置为 ''。
+---
+
+### 第五十一号：空闲超时自动断连 (Idle Timeout) 对主流直连协议失效根因排查与内核级精确切断落地
+- **问题现象**：
+  在管理后台为用户开启“无连接信息产生就断链 (空闲超时守护)”并设定秒数（例如 60 秒）后，用户的客户端（Clash/小火箭等）哪怕长时间锁屏挂起、完全没有任何网络上下行数据流动，后台面板与系统底层依旧显示保持连接，空闲断连功能完全未生效。
+- **原因剖析**：
+  1. **直连协议连接被守护定时器硬编码跳过**：
+     - 在每 10 秒执行一次的全局连接回收定时器中，存在 `if (conn.isSingbox) return;` 逻辑。因为系统当前 99.9% 的流量均由 Sing-box 核心协议（Hy2、TUIC、Reality、VLESS-TCP 等直连端口）承载，全部标记为 `isSingbox = true`，导致该守护定时器将所有直连长连接直接掠过；
+  2. **活跃感知轮询中未区分“连接存活”与“流量流动”**：
+     - 注释原定由 `pollSingboxClashApiTraffic` 负责，但该函数每次获取到连接时，无论其上行/下行字节是否停滞，均将 `existing.lastActivityAt` 强行刷新为当前时间 `Date.now()`，导致连接时间戳永远在刷新，永远无法满足超时判定；
+  3. **缺少针对 Sing-box 核心的单连接底层切断接口**：
+     - 原代码仅对 Node.js 本地 socket 执行 `destroy()`，缺乏通过 Sing-box Clash API 发送 `DELETE /connections/{connId}` 切断单连接的执行逻辑。
+- **实施解决对策**：
+  1. **构建内核级单连接精准切断器 (`closeSingboxConnection`)**：
+     - 封装 `closeSingboxConnection(connId)` 函数，通过 HTTP `DELETE http://127.0.0.1:${PORT_CLASH_API}/connections/${connId}` 接口直接指令 Sing-box 释放指定客户端套接字；
+  2. **精确记录真实数据流动时间戳 (`lastDataAt`)**：
+     - 在 `activeConnTrafficMap` 中新增 `lastDataAt` 字段，仅当检测到真实上传/下载字节增量 (`delta > 0`) 时才推进该时间戳；无数据流动时保持原有时间戳不变；
+  3. **双重防线自动空闲切断**：
+     - **第一道防线**：在 `pollSingboxClashApiTraffic` 中，若连接当前未产生数据且 `now - lastDataAt > timeoutMs`，立即调用 `closeSingboxConnection(c.id)` 并移出活跃队列；
+     - **第二道防线**：在每 10 秒执行的巡检定时器中，移除生硬的 `if (conn.isSingbox) return;`，对超时的 Sing-box 连接直接调度 `closeSingboxConnection(conn.id)`，形成双重闭环保护。
+---
+
+### 第五十二号：群聊自动删除群员发言与机器人引导卡片导致风控卫士刷屏根因排查与禁删优化
+- **问题现象**：
+  群员在群聊中发送提问或触发词（例如“请问这专属订阅怎么使用呢 也导不进机场里啊”），机器人回复引导卡片后 60 秒，群员发送的提问消息以及机器人发送的引导卡片双双被自动删除，导致群内第三方风控机器人（如“S5广告监测 | 杀神联动风控卫士”）频繁在群里弹出灰色“已删除消息:”告警提示。
+- **原因剖析**：
+  1. **主动调用 API 删除群员发言**：
+     - 在 telegram.js 的群聊拦截器中，原先注册了 `setTimeout(() => this.deleteMessage(chat.id, msg.message_id), 60000)`，在 60 秒后直接调用 Telegram Bot API 强行删除了群友发出的提问；
+  2. **机器人卡片默认 60 秒自毁**：
+     - 在 `sendMessage` 基础方法中，原先对群聊消息（isGroup）默认设置了 60 秒后自动执行 `deleteMessage` 撤回；
+  3. **第三方风控机器人联动报警**：
+     - Telegram 群内的广告/防撤回风控卫士对任何被删除的消息都会记录并在群里广播“已删除消息:”，造成版面污染和负面体验。
+- **实施解决对策**：
+  1. **彻底解除对群员发言的删除操作**：
+     - 彻底删除针对 `msg.message_id` 的定时删除代码，机器人绝不触碰、不删除群友用户的任何聊天与提问记录；
+  2. **关闭默认群聊自动撤回**：
+     - 将消息发送底层的 `delaySec` 默认值置为 0，只有在显式指定自毁时间时才删除，默认在群内常驻保留引导卡片；
+     - 彻底避免触发任何群内第三方风控监控机器人的“已删除消息”报警。
