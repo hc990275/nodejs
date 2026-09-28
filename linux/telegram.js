@@ -35,6 +35,7 @@ class TelegramBotManager {
         this.getBaseSubUrl = options.getBaseSubUrl || null;
         this.getSystemStats = options.getSystemStats || (() => ({}));
         this.getNodesSummary = options.getNodesSummary || (() => []);
+        this.getRawNodesText = options.getRawNodesText || null;
 
         this.botInfo = null;
         this.isRunning = false;
@@ -568,6 +569,13 @@ class TelegramBotManager {
         }
 
         if (cmd === "/start") {
+            const cleanArg = (argsStr || "").trim().toLowerCase();
+            if (cleanArg === "my" || cleanArg === "sub") {
+                return await this.handleMySubscriptionCommand(chat.id, from);
+            }
+            if (cleanArg === "raw" || cleanArg === "nodes") {
+                return await this.handleExtractRawNodesCommand(chat.id, from);
+            }
             return await this.handleStartCommand(chat.id, from);
         }
         if (cmd === "/help") {
@@ -645,7 +653,17 @@ _例如：\`/reg test888 12345678\` (留空密码将自动生成随机密码)_
         if (!user) {
             inlineRows.push([{ text: "🚀 一键极速开通节点 (无需输入)", callback_data: "cmd_quick_reg" }]);
         } else {
-            inlineRows.push([{ text: "📦 提取我的节点订阅", callback_data: "cmd_my" }]);
+            inlineRows.push([
+                { text: "📦 我的节点面板 (/my)", callback_data: "cmd_my" },
+                { text: "🔗 提取通用订阅", callback_data: "cmd_copy_sub" }
+            ]);
+            const baseSubUrl = (this.getBaseSubUrl && user.uuid) ? this.getBaseSubUrl(user.uuid) : "";
+            const clashSubUrl = baseSubUrl ? `${baseSubUrl}&type=clash` : "";
+            const shadowrocketUrl = baseSubUrl ? `sub://${Buffer.from(baseSubUrl).toString("base64")}` : "";
+            const quickRow = [];
+            if (shadowrocketUrl) quickRow.push({ text: "🚀 一键导入小火箭", url: shadowrocketUrl });
+            if (clashSubUrl) quickRow.push({ text: "⚡ 一键导入 Clash", url: `clash://install-config?url=${encodeURIComponent(clashSubUrl)}` });
+            if (quickRow.length > 0) inlineRows.push(quickRow);
         }
         inlineRows.push([{ text: `👉 官方交流群 ${groupName}`, url: groupLink }]);
         inlineRows.push([
@@ -653,7 +671,6 @@ _例如：\`/reg test888 12345678\` (留空密码将自动生成随机密码)_
             { text: "🌐 节点矩阵状态", callback_data: "cmd_nodes" }
         ]);
         inlineRows.push([
-            { text: "📖 客户端导入教程", callback_data: "cmd_client_guide" },
             { text: "💬 联系客服支持", url: groupLink }
         ]);
 
@@ -1009,18 +1026,112 @@ _提示：用户名必须为 3-32 位字母、数字或下划线。_`);
 \`${clashSubUrl}\`
 ══════════════════════`;
 
-        const keyboard = {
-            inline_keyboard: [
-                clashSubUrl ? [{ text: "⚡ 一键导入 Clash", url: `clash://install-config?url=${encodeURIComponent(clashSubUrl)}` }] : [],
-                [
-                    { text: "🎁 每日签到领流量", callback_data: "cmd_checkin" },
-                    { text: "🔄 刷新数据 (/my)", callback_data: "cmd_my" }
-                ],
-                [{ text: "📖 客户端导入详细教程", callback_data: "cmd_client_guide" }]
-            ].filter((r) => r.length > 0)
-        };
+        const shadowrocketUrl = baseSubUrl ? `sub://${Buffer.from(baseSubUrl).toString("base64")}` : "";
+        const inlineRows = [];
+
+        // 1. 客户端专属一键导入
+        const importRow = [];
+        if (shadowrocketUrl) {
+            importRow.push({ text: "🚀 一键导入小火箭", url: shadowrocketUrl });
+        }
+        if (clashSubUrl) {
+            importRow.push({ text: "⚡ 一键导入 Clash", url: `clash://install-config?url=${encodeURIComponent(clashSubUrl)}` });
+        }
+        if (importRow.length > 0) inlineRows.push(importRow);
+
+        // 2. 独立纯文本提取通道（单行发送，手机一键长按复制，免去长文本筛选烦恼）
+        inlineRows.push([
+            { text: "🔗 提取通用订阅 (单行秒复制)", callback_data: "cmd_copy_sub" },
+            { text: "📋 提取明文节点 (免订阅直连)", callback_data: "cmd_copy_raw_nodes" }
+        ]);
+
+        // 3. 运营与打卡
+        inlineRows.push([
+            { text: "🎁 每日签到领流量", callback_data: "cmd_checkin" },
+            { text: "🔄 刷新数据 (/my)", callback_data: "cmd_my" }
+        ]);
+
+        const keyboard = { inline_keyboard: inlineRows };
 
         return await this.sendMessage(chatId, infoText, { reply_markup: keyboard });
+    }
+
+    /**
+     * 🔗 独立提取通用订阅链接（单行发送，极其方便手机端一键点选复制）
+     */
+    async handleExtractUniversalSubCommand(chatId, from) {
+        const senderId = String(from.id);
+        const allUsers = this.getUsers();
+        const user = allUsers.find((u) => u.telegramId && String(u.telegramId).trim() === senderId);
+        if (!user) {
+            return await this.sendMessage(chatId, "⚠️ 您尚未注册开通节点服务，请发送 `/reg <用户名> [密码]` 注册后再提取！");
+        }
+
+        const baseSubUrl = this.getBaseSubUrl ? this.getBaseSubUrl(user.uuid) : "";
+        if (!baseSubUrl) {
+            return await this.sendMessage(chatId, "⚠️ 订阅链接生成异常，请联系站长配置服务器公网域名。");
+        }
+
+        const shadowrocketUrl = `sub://${Buffer.from(baseSubUrl).toString("base64")}`;
+        const subMsg =
+`📦 *您的专属通用节点订阅链接已生成*
+适用客户端：*Shadowrocket (小火箭) / v2rayN / Sing-box / Loon / Quantumult X*
+
+👇 *长按或轻触下方单行代码块一键复制*：
+\`${baseSubUrl}\`
+
+──────────────
+💡 *推荐快捷使用*：
+• 苹果 iOS 用户推荐直接点击下方按钮一键导入小火箭；
+• 复制上方链接可在任意客户端添加为 Remote 远程订阅源。`;
+
+        return await this.sendMessage(chatId, subMsg, {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: "🚀 一键自动导入 Shadowrocket (小火箭)", url: shadowrocketUrl }],
+                    [{ text: "📦 返回我的面板", callback_data: "cmd_my" }]
+                ]
+            }
+        });
+    }
+
+    /**
+     * 📋 独立提取明文单节点直连链接（适用不支持订阅的老旧客户端或离线直连）
+     */
+    async handleExtractRawNodesCommand(chatId, from) {
+        const senderId = String(from.id);
+        const allUsers = this.getUsers();
+        const user = allUsers.find((u) => u.telegramId && String(u.telegramId).trim() === senderId);
+        if (!user) {
+            return await this.sendMessage(chatId, "⚠️ 您尚未注册开通节点服务，请发送 `/reg <用户名> [密码]` 注册后再提取！");
+        }
+
+        if (!this.getRawNodesText) {
+            return await this.sendMessage(chatId, "⚠️ 系统未挂载明文节点生成引擎。");
+        }
+
+        const rawNodes = this.getRawNodesText(user);
+        if (!rawNodes || !rawNodes.trim()) {
+            return await this.sendMessage(chatId, "⚠️ 暂无可用的节点直连配置，请联系站长。");
+        }
+
+        const rawMsg =
+`📋 *您的专属明文单节点链接列表* (免订阅直接导入)
+
+👇 *长按或轻触下方区域复制所有节点*：
+\`\`\`text
+${rawNodes.trim()}
+\`\`\`
+
+──────────────
+💡 *使用方法*：
+复制以上以 \`vless://\`、\`vmess://\`、\`hysteria2://\`、\`trojan://\` 开头的全部内容，直接在小火箭 / v2rayN 中从剪贴板一键批量导入即可！`;
+
+        return await this.sendMessage(chatId, rawMsg, {
+            reply_markup: {
+                inline_keyboard: [[{ text: "📦 返回我的面板", callback_data: "cmd_my" }]]
+            }
+        });
     }
 
     /**
@@ -1160,8 +1271,67 @@ _提示：用户名必须为 3-32 位字母、数字或下划线。_`);
 
         await this.answerCallbackQuery(cb.id);
 
+        const isGroup = msg.chat.type === "group" || msg.chat.type === "supergroup" || Number(msg.chat.id) < 0;
+
         if (data === "cmd_my") {
-            await this.handleMySubscriptionCommand(msg.chat.id, from);
+            if (isGroup) {
+                // 群内触发保护：私聊下发专属面板，防止 Token 泄露以及被 60 秒自毁撤回
+                const sentToUser = await this.handleMySubscriptionCommand(from.id, from);
+                if (sentToUser && sentToUser.ok) {
+                    await this.answerCallbackQuery(cb.id, { text: "✅ 专属节点面板已私信发送给您，请前往与机器人的私聊查看！", show_alert: true });
+                } else {
+                    const botUser = this.botInfo ? this.botInfo.username : "";
+                    const jumpUrl = botUser ? `https://t.me/${botUser}?start=my` : "";
+                    await this.answerCallbackQuery(cb.id, { text: "💡 请点击下方按钮进入机器人私聊提取您的专属订阅！", show_alert: true });
+                    if (jumpUrl) {
+                        await this.sendMessage(msg.chat.id, `👋 @${from.username || from.first_name || "朋友"}，为保护您的订阅与节点安全，请点击下方按钮前往私聊查看：`, {
+                            reply_markup: {
+                                inline_keyboard: [[{ text: "👉 进入私聊提取专属订阅", url: jumpUrl }]]
+                            }
+                        });
+                    }
+                }
+            } else {
+                await this.handleMySubscriptionCommand(msg.chat.id, from);
+            }
+        } else if (data === "cmd_copy_sub") {
+            const targetChat = isGroup ? from.id : msg.chat.id;
+            const res = await this.handleExtractUniversalSubCommand(targetChat, from);
+            if (isGroup) {
+                if (res && res.ok) {
+                    await this.answerCallbackQuery(cb.id, { text: "✅ 通用订阅链接已私发给您，请查看私聊！", show_alert: true });
+                } else {
+                    const botUser = this.botInfo ? this.botInfo.username : "";
+                    const jumpUrl = botUser ? `https://t.me/${botUser}?start=my` : "";
+                    await this.answerCallbackQuery(cb.id, { text: "💡 请进入私聊窗口提取通用订阅链接！", show_alert: true });
+                    if (jumpUrl) {
+                        await this.sendMessage(msg.chat.id, `👋 @${from.username || from.first_name || "朋友"}，请点击下方按钮前往私聊获取通用订阅链接：`, {
+                            reply_markup: {
+                                inline_keyboard: [[{ text: "👉 前往私聊提取通用订阅", url: jumpUrl }]]
+                            }
+                        });
+                    }
+                }
+            }
+        } else if (data === "cmd_copy_raw_nodes") {
+            const targetChat = isGroup ? from.id : msg.chat.id;
+            const res = await this.handleExtractRawNodesCommand(targetChat, from);
+            if (isGroup) {
+                if (res && res.ok) {
+                    await this.answerCallbackQuery(cb.id, { text: "✅ 明文节点列表已私发给您，请查看私聊！", show_alert: true });
+                } else {
+                    const botUser = this.botInfo ? this.botInfo.username : "";
+                    const jumpUrl = botUser ? `https://t.me/${botUser}?start=raw` : "";
+                    await this.answerCallbackQuery(cb.id, { text: "💡 请进入私聊窗口提取明文节点列表！", show_alert: true });
+                    if (jumpUrl) {
+                        await this.sendMessage(msg.chat.id, `👋 @${from.username || from.first_name || "朋友"}，请点击下方按钮前往私聊获取明文节点列表：`, {
+                            reply_markup: {
+                                inline_keyboard: [[{ text: "👉 前往私聊提取明文节点", url: jumpUrl }]]
+                            }
+                        });
+                    }
+                }
+            }
         } else if (data === "cmd_quick_reg") {
             const rawName = from.username ? from.username.replace(/[^a-zA-Z0-9_]/g, "").slice(0, 16) : ("u" + String(from.id).slice(-6));
             const finalUser = (rawName && rawName.length >= 3) ? rawName : ("u" + String(from.id).slice(-8));

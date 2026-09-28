@@ -1186,6 +1186,34 @@ function getUserActivity(uuid) {
     return act;
 }
 
+// 彻底切断特定用户存量连接 (包含 Node.js WebSocket 层与 Sing-box 核心进程内所有 UDP/TCP 连接)
+function disconnectUserConnections(uuid, reason = "user_disabled") {
+    if (!uuid) return;
+    try {
+        const act = getUserActivity(uuid);
+        if (act && Array.isArray(act.activeList)) {
+            act.activeList.forEach((c) => {
+                try { if (c.clientSocket && !c.clientSocket.destroyed) c.clientSocket.destroy(); } catch (_) { }
+                try { if (c.backendSocket && !c.backendSocket.destroyed) c.backendSocket.destroy(); } catch (_) { }
+            });
+            act.activeList = [];
+            act.activeConnections = 0;
+        }
+    } catch (_) { }
+
+    try {
+        const req = http.request({
+            hostname: "127.0.0.1",
+            port: PORT_CLASH_API,
+            path: "/connections",
+            method: "DELETE",
+            timeout: 1500
+        }, (res) => { res.resume(); });
+        req.on("error", () => { });
+        req.end();
+    } catch (_) { }
+}
+
 function formatRelativeTime(ts) {
     if (!ts || ts <= 0) return "从未在线";
     const diff = Date.now() - ts;
@@ -3288,7 +3316,8 @@ function handleHttpRequest(req, res) {
                 tgBotToken: siteSettings.tgBotToken || TG_BOT_TOKEN || "",
                 tgAdminId: siteSettings.tgAdminId || TG_ADMIN_ID || "",
                 tgRequiredGroup: siteSettings.tgRequiredGroup || TG_REQUIRED_GROUP || "@s5gydl",
-                tgApiBase: siteSettings.tgApiBase || TG_API_BASE || "https://api.telegram.org"
+                tgApiBase: siteSettings.tgApiBase || TG_API_BASE || "https://api.telegram.org",
+                subDomain: siteSettings.subDomain || process.env.SUB_DOMAIN || ""
             });
         }
 
@@ -3303,6 +3332,9 @@ function handleHttpRequest(req, res) {
                         siteSettings.serverLocation = String(data.serverLocation || "").trim();
                         SERVER_LOCATION = siteSettings.serverLocation;
                         ensureMasterNodeInCluster();
+                    }
+                    if (data.subDomain !== undefined) {
+                        siteSettings.subDomain = String(data.subDomain || "").trim();
                     }
                     if (data.allowRegister !== undefined) {
                         siteSettings.allowRegister = Boolean(data.allowRegister);
@@ -3702,6 +3734,7 @@ function handleHttpRequest(req, res) {
                     }
                 }
 
+                const isNowDisabled = (enabled !== undefined && !Boolean(enabled));
                 if (enabled !== undefined) {
                     user.enabled = Boolean(enabled);
                 }
@@ -3728,7 +3761,12 @@ function handleHttpRequest(req, res) {
                 }
 
                 saveUsers();
-                safeReloadSingbox();
+                if (isNowDisabled || (newUuid && String(newUuid).trim() !== uuid)) {
+                    disconnectUserConnections(effectiveUuid, "admin_disabled");
+                    safeReloadSingbox(true);
+                } else {
+                    safeReloadSingbox(false);
+                }
 
                 res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
                 res.end(JSON.stringify({ success: true, uuid: effectiveUuid }));
@@ -3755,8 +3793,9 @@ function handleHttpRequest(req, res) {
                     userActivityMap.set(assignedUuid, oldAct);
                 }
                 target.uuid = assignedUuid;
+                disconnectUserConnections(uuid, "uuid_rotated");
                 saveUsers();
-                safeReloadSingbox();
+                safeReloadSingbox(true);
 
                 console.log(`[Security] 用户 [${target.username}] 已由管理员一键更换凭据 UUID: ${assignedUuid}`);
                 res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
@@ -3787,10 +3826,11 @@ function handleHttpRequest(req, res) {
             req.on("data", (c) => { body += c; });
             req.on("end", () => {
                 const { uuid } = JSON.parse(body || "{}");
+                disconnectUserConnections(uuid, "user_deleted");
                 usersDatabase = usersDatabase.filter((u) => u.uuid !== uuid);
                 userActivityMap.delete(uuid);
                 saveUsers();
-                safeReloadSingbox();
+                safeReloadSingbox(true);
                 res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
                 res.end(JSON.stringify({ success: true }));
             });
@@ -4644,21 +4684,16 @@ function initTelegramBotService() {
                 u.enabled = Boolean(enabled);
                 u.disableReason = reason || "";
                 saveUsers();
-                safeReloadSingbox();
+                if (!u.enabled) {
+                    disconnectUserConnections(uuid, reason);
+                    safeReloadSingbox(true);
+                } else {
+                    safeReloadSingbox(false);
+                }
                 return { success: true };
             },
             disconnectUser: (uuid, reason) => {
-                try {
-                    const act = getUserActivity(uuid);
-                    if (act && Array.isArray(act.activeList)) {
-                        act.activeList.forEach((c) => {
-                            if (c.clientSocket && !c.clientSocket.destroyed) c.clientSocket.destroy();
-                            if (c.backendSocket && !c.backendSocket.destroyed) c.backendSocket.destroy();
-                        });
-                        act.activeList = [];
-                        act.activeConnections = 0;
-                    }
-                } catch (_) { }
+                disconnectUserConnections(uuid, reason);
             },
             clearAllUsers: (mode = "all") => {
                 let toClear = [];
@@ -4716,8 +4751,21 @@ function initTelegramBotService() {
                 return list;
             },
             getSiteSettings: () => siteSettings,
+            getRawNodesText: (user) => {
+                try {
+                    const base64Str = getNodesForUser(user);
+                    return Buffer.from(base64Str, "base64").toString("utf8");
+                } catch (_) {
+                    return "";
+                }
+            },
             getBaseSubUrl: (userUuid) => {
-                const hostDomain = OPTIMIZED_DOMAIN || ARGO_DOMAIN;
+                const customDomain = (siteSettings.subDomain || siteSettings.publicHost || process.env.SUB_DOMAIN || "").trim();
+                if (customDomain) {
+                    const proto = (customDomain.includes(":") && !customDomain.endsWith(":443")) ? "http" : "https";
+                    return `${proto}://${customDomain}/sub?token=${userUuid}`;
+                }
+                const hostDomain = (OPTIMIZED_DOMAIN || ARGO_DOMAIN || "").trim();
                 if (hostDomain) {
                     return `https://${hostDomain}/sub?token=${userUuid}`;
                 }
