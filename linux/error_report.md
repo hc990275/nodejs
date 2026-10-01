@@ -658,3 +658,30 @@
 - **解决方案 3**：
   - 在 `telegram.js` 的群聊拦截处显式配置 `autoDeleteSeconds: 60`，并优化 `deleteMessage` 的异常捕获与日志输出；
   - 严格确保：群友发言永远不撤回（0 秒），机器人自身的引导卡片在 60 秒后精准定时静默销毁。
+
+---
+
+### 第五十四号排查与优化记录：图 2 超链接引擎移植、256MB 小鸡 ZRAM 内存压缩防 OOM 落地与积压消息清空
+
+- **问题现象与需求**：
+  1. Telegram 机器人出现无响应故障，私聊发送任何指令均无回复，接口积压了 139 条 updates；
+  2. 新用户注册等通知需要支持图 2 交互：点击用户名直接私聊、点击 ID 直接查看账户资料（`https://t.me/tomsli` 格式）；
+  3. Linux 机器配置为 1核 256MB 内存 2GB 硬盘，需吸收纽约版本优秀架构，移植内存压缩（ZRAM）与网卡 UDP 卸载，杜绝 OOM 假死。
+
+- **原因分析**：
+  1. 本地 `.env` 与 `v3_settings.json` 中的 `TG_BOT_TOKEN` 缺省为空，服务重启时导致机器人离线；同时 256MB 内存受限且未开压缩，并发波动易触发 OOM；
+  2. 原通知模板使用纯代码块反引号，未封装超链接生成引擎；
+  3. 原脚本针对 256MB 机器配置了极端压抑的 40MiB / 64MB 限制，容易引发频繁 GC 风暴且缺少内核级 Swap 保护。
+
+- **实施解决对策**：
+  1. **图 2 超链接引擎移植 (`formatUserChatLinks`)**：
+     - 在 [telegram.js](file:///d:/DeskTop/GitHub/测/lunes/nodejs/linux/telegram.js) 实现 `formatUserChatLinks`、`editMessageText` 以及管理员查用户与封禁体系；
+     - 注册成功通知、退群停用通知、回群解封通知全面换装：账号/用户名点击直达 `https://t.me/username` 私聊，无用户名或点击数字 ID 直达 `tg://user?id=xxx` 个人账户卡片；
+  2. **1核 256MB 小鸡 ZRAM 内存压缩与轻量内核调优**：
+     - 在 [setup.sh](file:///d:/DeskTop/GitHub/测/lunes/nodejs/linux/setup.sh) 注入自适应 ZRAM 内存压缩（支持 Debian/Ubuntu 的 `zram-tools`、Alpine 的 `zram-init` 及原生内核模块兜底，划分 256MB~384MB 虚拟压缩空间）；
+     - 注入网卡硬件级 UDP GRO 报文卸载（降低单核软中断 50%）；
+     - 固化 BBR、8MB 轻量缓冲、TCP Fast Open、MTU 黑洞探测；
+     - 在 [start.sh](file:///d:/DeskTop/GitHub/测/lunes/nodejs/linux/start.sh) 与 [v3.service](file:///d:/DeskTop/GitHub/测/lunes/nodejs/linux/v3.service) 中将内存配额调优为 Sing-box 60MiB / Node.js 80MB，兼顾性能与安全；
+  3. **凭据补全与积压消息消化**：
+     - 固化 `TG_BOT_TOKEN`，并通过专用安全脚本完成 139 条积压 updates 确认与消费，`pending_update_count` 归零。
+

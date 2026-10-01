@@ -49,15 +49,34 @@ for cmd in curl tar openssl iptables bash; do
   fi
 done
 
-# 4. 授予执行权限
+# 4. 授予执行权限与句柄提升
 chmod +x index.js 2>/dev/null || true
 if [ -f "./sing-box" ]; then
   chmod +x ./sing-box 2>/dev/null || true
 fi
+ulimit -n 65535 2>/dev/null || true
 
-# 5. 极小内存 (256MB) 激进轻量化调优 (防止 Sing-box 内存膨胀与 GC 风暴)
-export GOMEMLIMIT=40MiB
-export GOGC=20
+# 5. 网卡硬件级 UDP GRO 卸载 (大幅降低单核 CPU 软中断开销)
+if [ "$(id -u)" = "0" ]; then
+  DEF_NIC=$(ip route show default 2>/dev/null | awk '{print $5}' | head -n1)
+  if [ -n "$DEF_NIC" ] && command -v ethtool >/dev/null 2>&1; then
+    ethtool -K "$DEF_NIC" rx-udp-gro-forwarding on rx-gro-list off >/dev/null 2>&1 || true
+  fi
 
-echo "=== [Adaptive-Linux] 环境检查就绪，正在拉起机场主程序 (已开启 64MB 堆内存保护) ==="
-exec node --max-old-space-size=64 index.js
+  # 6. ZRAM 内存压缩防卡死守护 (256MB RAM 必备)
+  if ! grep -q "zram" /proc/swaps 2>/dev/null; then
+    modprobe zram num_devices=1 2>/dev/null || true
+    if [ -b /dev/zram0 ]; then
+      echo 256M > /sys/block/zram0/disksize 2>/dev/null || true
+      mkswap /dev/zram0 >/dev/null 2>&1 || true
+      swapon -p 100 /dev/zram0 >/dev/null 2>&1 || true
+    fi
+  fi
+fi
+
+# 7. 256MB 内存自适应调优 (配合 ZRAM 压缩，平衡 GC 频率与内存占用)
+export GOMEMLIMIT=60MiB
+export GOGC=50
+
+echo "=== [Adaptive-Linux] 环境检查就绪，正在拉起机场主程序 (已开启 80MB 堆保护与 ZRAM 压缩) ==="
+exec node --max-old-space-size=80 index.js
