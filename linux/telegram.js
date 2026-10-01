@@ -222,6 +222,53 @@ class TelegramBotManager {
     }
 
     /**
+     * 生成可一键私聊的用户账号与 TG-ID 格式化文本
+     * 支持: 1. https://t.me/用户名 (点击直接私聊)
+     *       2. tg://user?id=纯数字ID (点击ID直接呼起TG个人账户资料与私聊)
+     */
+    formatUserChatLinks(username, tgId, tgUsername) {
+        let accountLink = `\`${username}\``;
+        let idLink = tgId ? `\`${tgId}\`` : "未绑定";
+        let userLink = tgUsername ? `@${tgUsername}` : "无";
+
+        if (tgUsername) {
+            const cleanUser = String(tgUsername).replace(/^@/, "");
+            accountLink = `[${username}](https://t.me/${cleanUser})`;
+            userLink = `[@${cleanUser}](https://t.me/${cleanUser})`;
+        } else if (tgId) {
+            accountLink = `[${username}](tg://user?id=${tgId})`;
+        }
+
+        if (tgId) {
+            idLink = `[${tgId}](tg://user?id=${tgId})`;
+        }
+
+        return { accountLink, idLink, userLink };
+    }
+
+    /**
+     * 原地编辑消息文本与按钮 (editMessageText)
+     */
+    async editMessageText(chatId, messageId, text, options = {}) {
+        try {
+            const payload = {
+                chat_id: chatId,
+                message_id: messageId,
+                text: text,
+                parse_mode: options.parse_mode !== undefined ? options.parse_mode : "Markdown",
+                disable_web_page_preview: true
+            };
+            if (options.reply_markup) {
+                payload.reply_markup = options.reply_markup;
+            }
+            return await this.request("editMessageText", payload);
+        } catch (e) {
+            console.warn(`[TG-Bot] editMessageText 失败 (Chat: ${chatId}, Msg: ${messageId}):`, e.message);
+            return null;
+        }
+    }
+
+    /**
      * 响应回调查询
      */
     async answerCallbackQuery(callbackQueryId, text = "", showAlert = false) {
@@ -423,10 +470,12 @@ class TelegramBotManager {
 
                     // 通知管理员
                     if (this.adminId) {
+                        const links = this.formatUserChatLinks(boundUser.username, targetTgId, boundUser.telegramUsername);
                         this.sendMessage(this.adminId,
                             `⚠️ *群员退群触发停用通知*
-• 用户账号: \`${boundUser.username}\`
-• Telegram ID: \`${targetTgId}\`
+• 用户账号: ${links.accountLink}
+• Telegram ID: ${links.idLink}
+• TG 用户名: ${links.userLink}
 • 动作: 退出群组 ${this.requiredGroup}
 • 处理: 账号已立即设为禁用，存量连接已切断，Sing-box 配置已同步剔除。`).catch(() => { });
                     }
@@ -455,10 +504,12 @@ class TelegramBotManager {
 
                     // 同步发送通知给管理员，确保图2状态闭环
                     if (this.adminId) {
+                        const links = this.formatUserChatLinks(boundUser.username, targetTgId, boundUser.telegramUsername);
                         this.sendMessage(this.adminId,
                             `🎉 *群员回群触发解封通知*
-• 用户账号: \`${boundUser.username}\`
-• Telegram ID: \`${targetTgId}\`
+• 用户账号: ${links.accountLink}
+• Telegram ID: ${links.idLink}
+• TG 用户名: ${links.userLink}
 • 动作: 重新加入群组 ${this.requiredGroup}
 • 处理: 账号已解除冻结，Sing-box 配置已同步热重载，节点加速服务全面恢复正常！`).catch(() => { });
                     }
@@ -503,6 +554,17 @@ class TelegramBotManager {
                     if (this.setUserEnabled) this.setUserEnabled(u.uuid, false, "退群自动停用");
                     if (this.disconnectUser) this.disconnectUser(u.uuid, "退群巡检查出并断链");
                     disabledCount++;
+
+                    if (this.adminId) {
+                        const links = this.formatUserChatLinks(u.username, u.telegramId, u.telegramUsername);
+                        this.sendMessage(this.adminId,
+                            `⚠️ *群员退群触发停用通知 (后台巡检查出)*
+• 用户账号: ${links.accountLink}
+• Telegram ID: ${links.idLink}
+• TG 用户名: ${links.userLink}
+• 状态: 确认已不在群组 ${this.requiredGroup}
+• 处理: 账号已立即设为禁用，存量连接已切断，Sing-box 配置已同步剔除。`).catch(() => { });
+                    }
                 }
                 // 2. 在群内，但此前因退群被停用 -> 恢复
                 else if (check.inGroup && !u.enabled && u.disableReason !== "管理员手动禁用") {
@@ -523,10 +585,12 @@ class TelegramBotManager {
                     }).catch(() => { });
 
                     if (this.adminId) {
+                        const links = this.formatUserChatLinks(u.username, u.telegramId, u.telegramUsername);
                         this.sendMessage(this.adminId,
                             `🎉 *群员回群触发解封通知 (后台巡检恢复)*
-• 用户账号: \`${u.username}\`
-• Telegram ID: \`${u.telegramId}\`
+• 用户账号: ${links.accountLink}
+• Telegram ID: ${links.idLink}
+• TG 用户名: ${links.userLink}
 • 状态: 确认已在群组 ${this.requiredGroup}
 • 处理: 账号已解除冻结，Sing-box 配置已同步热重载，节点加速服务全面恢复正常！`).catch(() => { });
                     }
@@ -638,34 +702,8 @@ class TelegramBotManager {
         }
         const cmd = fullCmd.toLowerCase();
 
-        // 🌟 群聊铁律：群聊只能引导用户私聊机器人，不做任何东西！
+        // 🌟 群聊彻底静默铁律：除新成员进群事件外，群聊内任何命令、@机器人、回复、关键词或闲聊一律静默忽略，绝不在群内发言！
         if (!isPrivate) {
-            const botUser = this.botInfo ? this.botInfo.username : "";
-            const isBotMentioned = botUser && (text.includes(`@${botUser}`) || fullCmd.toLowerCase().includes(`@${botUser.toLowerCase()}`));
-            const isCommand = text.startsWith("/");
-            const isReplyToBot = msg.reply_to_message && msg.reply_to_message.from && msg.reply_to_message.from.is_bot;
-            const hasKeyword = [
-                "开通", "注册", "节点", "订阅", "签到", "我的", "帮助", "后台", "管理", "试用", "流量", "续费"
-            ].some((kw) => text.includes(kw));
-
-            // 只要群内触发了命令、@机器人、回复机器人或意图关键词，唯一动作：仅发送一条直达私聊引导，不做任何业务！
-            if (isCommand || isBotMentioned || isReplyToBot || hasKeyword) {
-                const replyMsg = `👋 您好！为保护您的订阅与账号隐私，机器人所有功能仅限私聊操作，群聊不做任何服务！\n👉 请点击下方按钮进入私聊，轻点屏幕正下方的【START / 开始】即可使用！`;
-                const keyboard = botUser ? {
-                    inline_keyboard: [
-                        [{ text: "👉 点击直达私聊机器人 开启服务", url: `https://t.me/${botUser}?start=start` }]
-                    ]
-                } : undefined;
-
-                // 用户发的信息绝对不删除，完整保留群员发言与聊天记录；机器人回复卡片 60 秒后必定自动撤回
-                await this.sendMessage(chat.id, replyMsg, {
-                    reply_to_message_id: msg.message_id,
-                    reply_markup: keyboard,
-                    parse_mode: undefined,
-                    autoDeleteSeconds: 60
-                });
-            }
-            // 无论是否触发，非私聊一律阻断退出，绝对不穿透到后续任何业务逻辑！
             return;
         }
 
@@ -703,6 +741,10 @@ class TelegramBotManager {
 
         // 管理员特权指令
         if (isAdmin) {
+            // 查用户与封禁/解封指令 (支持 cha / 查 / /cha / /查)
+            if (cmd === "cha" || cmd === "查" || cmd === "/cha" || cmd === "/查") {
+                return await this.handleAdminQueryUserCommand(chat.id, argsStr);
+            }
             if (cmd === "/status" || cmd === "/admin") {
                 return await this.handleAdminDashboardCommand(chat.id);
             }
@@ -1266,11 +1308,12 @@ _提示：用户名必须为 3-32 位字母、数字或下划线。_`);
             await this.sendMessage(chatId, successMsg, { reply_markup: keyboard });
 
             if (this.adminId && this.adminId !== senderId) {
+                const links = this.formatUserChatLinks(cleanUser, senderId, from.username);
                 const adminNotice =
                     `🔔 *新用户通过 Telegram 注册成功*
-• 用户账号: \`${cleanUser}\`
-• Telegram ID: \`${senderId}\`
-• TG 用户名: @${from.username || "无"} (${this.escapeMd(from.first_name || "")})
+• 用户账号: ${links.accountLink}
+• Telegram ID: ${links.idLink}
+• TG 用户名: ${links.userLink} (${this.escapeMd(from.first_name || "")})
 • 认证来源群: ${groupName} (已通过)
 • 配额: ${trafficLimitGB} GB / 到期: ${expireDateStr}`;
                 this.sendMessage(this.adminId, adminNotice).catch(() => { });
@@ -1663,6 +1706,44 @@ ${rawNodes.trim()}
                 const mode = data === "admin_clear_tg_only" ? "tg_only" : "all";
                 await this.handleAdminClearAllCommand(msg.chat.id, "confirm", mode);
             }
+        } else if (data.startsWith("admin_ban_")) {
+            if (this.adminId && String(from.id) === this.adminId) {
+                const targetUuid = data.replace("admin_ban_", "");
+                if (typeof this.setUserEnabled === "function") {
+                    this.setUserEnabled(targetUuid, false, "管理员手动封禁");
+                }
+                await this.answerCallbackQuery(cb.id, { text: "🚫 该账号已成功封禁，所有在线连接已被立即阻断！", show_alert: true });
+                const u = this.getUsers ? this.getUsers().find(x => x.uuid === targetUuid) : null;
+                if (u && msg.message_id) {
+                    const card = this.buildUserCardData(u);
+                    await this.editMessageText(msg.chat.id, msg.message_id, card.text, { reply_markup: card.reply_markup });
+                }
+            }
+        } else if (data.startsWith("admin_unban_")) {
+            if (this.adminId && String(from.id) === this.adminId) {
+                const targetUuid = data.replace("admin_unban_", "");
+                if (typeof this.setUserEnabled === "function") {
+                    this.setUserEnabled(targetUuid, true, "");
+                }
+                await this.answerCallbackQuery(cb.id, { text: "✅ 该账号已成功解除封禁并恢复连接权限！", show_alert: true });
+                const u = this.getUsers ? this.getUsers().find(x => x.uuid === targetUuid) : null;
+                if (u && msg.message_id) {
+                    const card = this.buildUserCardData(u);
+                    await this.editMessageText(msg.chat.id, msg.message_id, card.text, { reply_markup: card.reply_markup });
+                }
+            }
+        } else if (data.startsWith("admin_query_btn_")) {
+            if (this.adminId && String(from.id) === this.adminId) {
+                const targetUuid = data.replace("admin_query_btn_", "");
+                const u = this.getUsers ? this.getUsers().find(x => x.uuid === targetUuid) : null;
+                if (u && msg.message_id) {
+                    const card = this.buildUserCardData(u);
+                    await this.editMessageText(msg.chat.id, msg.message_id, card.text, { reply_markup: card.reply_markup });
+                    await this.answerCallbackQuery(cb.id, { text: "🔄 用户数据与在线状态已刷新！" });
+                } else {
+                    await this.answerCallbackQuery(cb.id, { text: "❌ 未找到该用户" });
+                }
+            }
         }
     }
 
@@ -1681,6 +1762,130 @@ ${rawNodes.trim()}
         this.stop();
         await new Promise((r) => setTimeout(r, 600));
         return await this.start();
+    }
+
+    /**
+     * 根据关键字检索用户 (支持 username, UUID, TG ID, TG username)
+     */
+    findUserByKeyword(keyword) {
+        if (!keyword) return null;
+        const kw = String(keyword).trim().toLowerCase();
+        const users = this.getUsers ? this.getUsers() : [];
+        // 1. 完全匹配 UUID
+        let u = users.find(x => x.uuid && x.uuid.toLowerCase() === kw);
+        if (u) return u;
+        // 2. 完全匹配 username
+        u = users.find(x => x.username && x.username.toLowerCase() === kw);
+        if (u) return u;
+        // 3. 匹配 telegramId
+        u = users.find(x => x.telegramId && String(x.telegramId).trim() === kw);
+        if (u) return u;
+        // 4. 匹配 telegramUsername (去掉 @)
+        const cleanTg = kw.replace(/^@/, "");
+        u = users.find(x => x.telegramUsername && x.telegramUsername.toLowerCase() === cleanTg);
+        if (u) return u;
+        // 5. 前缀模糊匹配
+        u = users.find(x => (x.username && x.username.toLowerCase().startsWith(kw)) || (x.uuid && x.uuid.toLowerCase().startsWith(kw)));
+        return u || null;
+    }
+
+    /**
+     * 渲染管理员查询用户卡片文本与 Inline 按钮 (显示状态与封禁原因)
+     */
+    buildUserCardData(user) {
+        const isEnabled = user.enabled !== false;
+
+        // 格式化流量与到期
+        const usedGB = (user.trafficUsed ? user.trafficUsed / (1024 * 1024 * 1024) : 0).toFixed(2);
+        const limitGB = user.trafficLimit ? (user.trafficLimit / (1024 * 1024 * 1024)).toFixed(0) : "不限";
+        const expireStr = user.expireTime ? new Date(user.expireTime).toLocaleDateString("zh-CN") : "永久有效";
+
+        // 封禁状态与原因明确展示
+        let statusText = "✅ 正常活跃";
+        let reasonLine = "";
+        if (!isEnabled) {
+            statusText = "🚫 已被封禁 (服务已阻断)";
+            const rawReason = String(user.disableReason || "").toLowerCase();
+            let reasonLabel = "管理员手动封禁";
+            if (rawReason.includes("退群") || rawReason.includes("not_in_group") || rawReason.includes("群")) {
+                reasonLabel = "不在限定群内 (退群自动停用)";
+            } else if (rawReason.includes("管理") || rawReason.includes("admin")) {
+                reasonLabel = "管理员手动封禁";
+            } else if (rawReason.includes("异地") || rawReason.includes("geo")) {
+                reasonLabel = "异地多端超额违规封禁";
+            } else if (rawReason.includes("到期") || rawReason.includes("expire")) {
+                reasonLabel = "账号已过有效期限";
+            } else if (rawReason.includes("流量") || rawReason.includes("traffic")) {
+                reasonLabel = "流量配额已耗尽";
+            } else if (user.disableReason) {
+                reasonLabel = user.disableReason;
+            }
+            reasonLine = `\n• 封禁原因: ⚠️ *【${reasonLabel}】*`;
+        }
+
+        // 实时在线感知
+        let liveLine = "• 当前在线: ⚪ 离线中";
+        if (typeof this.getUserActivity === "function") {
+            const act = this.getUserActivity(user.uuid);
+            if (act && Array.isArray(act.activeList) && act.activeList.length > 0) {
+                const conns = act.activeList;
+                const regMap = {};
+                conns.forEach(c => {
+                    const loc = (c.location || "").replace(/中国|省|市/g, " ").trim().split(/\s+/)[0] || "未知";
+                    regMap[loc] = (regMap[loc] || 0) + 1;
+                });
+                const regSummary = Object.keys(regMap).map(k => `${k}(${regMap[k]}端)`).join(", ");
+                liveLine = `• 当前在线: 🟢 *${conns.length}* 个连接 (地区: ${regSummary})`;
+            }
+        }
+
+        const links = this.formatUserChatLinks(user.username, user.telegramId, user.telegramUsername);
+
+        const text = 
+`👤 *【用户信息档案】*
+• 账号名称: ${links.accountLink}
+• Telegram ID: ${links.idLink}
+• TG 用户名: ${links.userLink}
+• UUID: \`${user.uuid}\`
+• 流量使用: \`${usedGB} GB\` / \`${limitGB} GB\`
+• 有效期限: \`${expireStr}\`
+• 账号状态: *${statusText}*${reasonLine}
+${liveLine}`;
+
+        const buttons = [];
+        if (isEnabled) {
+            buttons.push([{ text: "🚫 立即封禁该账号", callback_data: `admin_ban_${user.uuid}` }]);
+        } else {
+            buttons.push([{ text: "✅ 解除封禁并恢复", callback_data: `admin_unban_${user.uuid}` }]);
+        }
+        buttons.push([{ text: "🔄 刷新用户数据", callback_data: `admin_query_btn_${user.uuid}` }]);
+
+        return { text, reply_markup: { inline_keyboard: buttons } };
+    }
+
+    /**
+     * 管理员执行查用户指令 (cha / 查 用户ID)
+     */
+    async handleAdminQueryUserCommand(chatId, keyword) {
+        if (!keyword || !keyword.trim()) {
+            return await this.sendMessage(chatId, 
+`💡 *管理员查用户指令指引*：
+格式：\`cha 用户ID\` 或 \`查 用户ID\`
+支持搜索：账号名称、UUID、Telegram 数字 ID 或 @用户名。
+
+示例：
+• \`cha 990299\`
+• \`查 5153827615\`
+• \`cha @s5gydl\``);
+        }
+
+        const user = this.findUserByKeyword(keyword.trim());
+        if (!user) {
+            return await this.sendMessage(chatId, `❌ 未检索到匹配的用户：\`${keyword.trim()}\`\n请检查拼写、用户名或 Telegram ID 是否正确。`);
+        }
+
+        const card = this.buildUserCardData(user);
+        await this.sendMessage(chatId, card.text, { reply_markup: card.reply_markup });
     }
 }
 
