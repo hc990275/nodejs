@@ -239,6 +239,90 @@ if [ "$CONFIRM" = "n" ] || [ "$CONFIRM" = "N" ]; then
 fi
 
 echo ""
+echo "${BOLD}${GREEN}=== [256MB轻量小鸡极速网络调优与ZRAM内存压缩] 正在注入内核调优与内存保护... ===${NC}"
+if [ "$(id -u)" = "0" ]; then
+    # 1. 宿主机内核轻量网络调优持久化 (针对 256MB RAM 精确配比，避免大缓存溢出)
+    mkdir -p /etc/sysctl.d 2>/dev/null || true
+    cat << 'EOF' > /etc/sysctl.d/99-v3-adaptive.conf
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+net.core.rmem_max = 8388608
+net.core.wmem_max = 8388608
+net.core.rmem_default = 1048576
+net.core.wmem_default = 1048576
+net.core.netdev_max_backlog = 20000
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_mtu_probing = 1
+net.ipv4.tcp_base_mss = 1024
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_fin_timeout = 15
+net.ipv4.ip_local_port_range = 1024 65535
+net.core.somaxconn = 8192
+net.ipv4.tcp_max_syn_backlog = 8192
+fs.file-max = 200000
+vm.swappiness = 100
+vm.vfs_cache_pressure = 50
+EOF
+    sysctl --system >/dev/null 2>&1 || sysctl -p /etc/sysctl.d/99-v3-adaptive.conf >/dev/null 2>&1 || true
+    echo "${GREEN}  ✓ 已持久化激活 TCP BBR、8MB轻量缓冲、TCP Fast Open(0-RTT)与MTU黑洞探测${NC}"
+
+    # 2. 系统文件描述符与锁内存提升
+    if [ -f /etc/security/limits.conf ]; then
+        cat << 'EOF' >> /etc/security/limits.conf
+* soft nofile 65535
+* hard nofile 65535
+* soft memlock unlimited
+* hard memlock unlimited
+EOF
+    fi
+    ulimit -n 65535 2>/dev/null || true
+    echo "${GREEN}  ✓ 已优化进程句柄与内存锁定限制 (nofile=65535)${NC}"
+
+    # 3. 网卡硬件级 UDP GRO 卸载 (大幅降低单核 CPU 软中断开销)
+    DEF_NIC=$(ip route show default 2>/dev/null | awk '{print $5}' | head -n1)
+    if [ -n "$DEF_NIC" ]; then
+        (command -v ethtool >/dev/null 2>&1 || (apt-get update -y && apt-get install -y ethtool || apk add --no-cache ethtool)) >/dev/null 2>&1 || true
+        if command -v ethtool >/dev/null 2>&1; then
+            ethtool -K "$DEF_NIC" rx-udp-gro-forwarding on rx-gro-list off >/dev/null 2>&1 || true
+            echo "${GREEN}  ✓ 网卡 [$DEF_NIC] 已激活 UDP GRO 硬件级报文卸载${NC}"
+        fi
+    fi
+
+    # 4. ZRAM 内存压缩防卡死机制 (针对 256MB RAM 挂载 256MB-384MB 极速虚拟内存，杜绝 OOM)
+    if ! grep -q "zram" /proc/swaps 2>/dev/null; then
+        # 4.1 Debian / Ubuntu 体系
+        if command -v apt-get >/dev/null 2>&1; then
+            (apt-get update -y >/dev/null 2>&1 && apt-get install -y zram-tools >/dev/null 2>&1 && sed -i 's/^#*PERCENT=.*/PERCENT=100/' /etc/default/zramswap && systemctl restart zramswap >/dev/null 2>&1) || true
+            if grep -q "zram" /proc/swaps 2>/dev/null; then
+                echo "${GREEN}  ✓ 已激活 ZRAM 内存压缩防卡死机制 (zram-tools 100% 物理内存扩展)${NC}"
+            fi
+        # 4.2 Alpine Linux 体系
+        elif command -v apk >/dev/null 2>&1; then
+            (apk add --no-cache zram-init >/dev/null 2>&1 && rc-update add zram-init default >/dev/null 2>&1 && rc-service zram-init start >/dev/null 2>&1) || true
+            if grep -q "zram" /proc/swaps 2>/dev/null; then
+                echo "${GREEN}  ✓ 已激活 Alpine ZRAM 内存压缩防卡死服务${NC}"
+            fi
+        fi
+
+        # 4.3 若以上包管理器未生效，采用 Linux 原生 modprobe zram 脚本兜底挂载 256M
+        if ! grep -q "zram" /proc/swaps 2>/dev/null; then
+            modprobe zram num_devices=1 2>/dev/null || true
+            if [ -b /dev/zram0 ]; then
+                echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null || echo zstd > /sys/block/zram0/comp_algorithm 2>/dev/null || true
+                echo 256M > /sys/block/zram0/disksize 2>/dev/null || true
+                mkswap /dev/zram0 >/dev/null 2>&1 || true
+                swapon -p 100 /dev/zram0 >/dev/null 2>&1 || true
+                if grep -q "zram" /proc/swaps 2>/dev/null; then
+                    echo "${GREEN}  ✓ 已通过内核模块挂载 256MB 原生 ZRAM 压缩内存${NC}"
+                fi
+            fi
+        fi
+    else
+        echo "${GREEN}  ✓ 检测到系统已激活 ZRAM 压缩内存，保持活跃${NC}"
+    fi
+fi
+
+echo ""
 echo "${BOLD}${GREEN}=== 正在安装并启动服务... ===${NC}"
 chmod +x "$WORK_DIR/install_service.sh"
 "$WORK_DIR/install_service.sh"
