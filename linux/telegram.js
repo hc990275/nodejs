@@ -25,6 +25,7 @@ class TelegramBotManager {
 
         // 宿主业务挂载钩子
         this.getUsers = options.getUsers || (() => []);
+        this.saveUsers = options.saveUsers || null;
         this.createUser = options.createUser || null;
         this.deleteUser = options.deleteUser || null;
         this.unbindUser = options.unbindUser || null;
@@ -740,6 +741,28 @@ class TelegramBotManager {
             return;
         }
 
+        // 🌟 实时被动同步：若已绑定用户在私聊中与机器人交互，顺手自动校准最新 @用户名 与昵称
+        if (from && from.id) {
+            const curTgId = String(from.id);
+            const boundUser = (this.getUsers ? this.getUsers() : []).find(u => u.telegramId && String(u.telegramId).trim() === curTgId);
+            if (boundUser) {
+                let updated = false;
+                const curUser = (from.username || "").trim();
+                const curFirst = (from.first_name || "").trim();
+                if (curUser !== (boundUser.telegramUsername || "")) {
+                    boundUser.telegramUsername = curUser;
+                    updated = true;
+                }
+                if (curFirst && curFirst !== (boundUser.telegramFirstName || "")) {
+                    boundUser.telegramFirstName = curFirst;
+                    updated = true;
+                }
+                if (updated && typeof this.saveUsers === "function") {
+                    this.saveUsers();
+                }
+            }
+        }
+
         if (cmd === "/start") {
             const cleanArg = (argsStr || "").trim().toLowerCase();
             if (cleanArg === "my" || cleanArg === "sub") {
@@ -774,15 +797,32 @@ class TelegramBotManager {
 
         // 管理员特权指令
         if (isAdmin) {
-            // 查用户与封禁/解封指令 (支持 cha / 查 / /cha / /查)
-            if (cmd === "cha" || cmd === "查" || cmd === "/cha" || cmd === "/查") {
-                return await this.handleAdminQueryUserCommand(chat.id, argsStr);
+            // 查用户与封禁/解封指令 (支持 cha / 查 / /cha / /查，带空格或不带空格)
+            if (cmd === "cha" || cmd === "查" || cmd === "/cha" || cmd === "/查" || cmd.startsWith("cha") || cmd.startsWith("查")) {
+                let queryTarget = argsStr;
+                if (!queryTarget) {
+                    if (cmd.startsWith("cha")) queryTarget = text.slice(3).trim();
+                    else if (cmd.startsWith("查")) queryTarget = text.slice(1).trim();
+                }
+                return await this.handleAdminQueryUserCommand(chat.id, queryTarget);
+            }
+
+            // 智能感知：管理员私聊直接粘贴 32~36 位 UUID (带或不带连字符)，直接秒出用户管理卡片
+            const uuidCandidate = text.trim().replace(/^[`"']|[`"']$/g, "");
+            if (/^[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}$/.test(uuidCandidate)) {
+                return await this.handleAdminQueryUserCommand(chat.id, uuidCandidate);
             }
             if (cmd === "/status" || cmd === "/admin") {
                 return await this.handleAdminDashboardCommand(chat.id);
             }
             if (cmd === "/restart") {
                 return await this.handleAdminRestartCoreCommand(chat.id);
+            }
+            if (cmd === "/reboot" || cmd === "重启机器" || cmd === "重启系统" || cmd === "/restart_server") {
+                return await this.handleAdminRebootServerCommand(chat.id);
+            }
+            if (cmd === "/restart_v3" || cmd === "重启服务" || cmd === "/restart_service") {
+                return await this.handleAdminRestartServiceCommand(chat.id);
             }
             if (cmd === "/users") {
                 return await this.handleAdminListUsersCommand(chat.id);
@@ -1034,6 +1074,7 @@ _例如：\`/reg test888 12345678\` (留空密码将自动生成随机密码)_
                     { text: "⚠️ 一键重置清空全库", callback_data: "admin_clear_dialog" }
                 ],
                 [
+                    { text: "⚡ 重启机器 (/reboot)", callback_data: "admin_reboot_prompt" },
                     { text: "🔄 刷新系统监控大屏", callback_data: "admin_refresh" }
                 ]
             ]
@@ -1067,6 +1108,56 @@ _例如：\`/reg test888 12345678\` (留空密码将自动生成随机密码)_
         } else {
             return await this.sendMessage(chatId, `❌ 核心重启失败: ${res.error || "未知异常"}`);
         }
+    }
+
+    /**
+     * 重启服务器操作系统指令 (/reboot / 重启机器)
+     */
+    async handleAdminRebootServerCommand(chatId) {
+        const os = require("os");
+        const hostname = os.hostname();
+        const uptimeMin = Math.floor(os.uptime() / 60);
+
+        await this.sendMessage(chatId,
+            `⚠️ *正在向操作系统下发重启指令...*
+            
+• 🖥️ 服务器主机: \`${hostname}\`
+• ⏱️ 连续开机时间: \`${uptimeMin} 分钟\`
+• ⚙️ 系统指令: \`sync; reboot\`
+• ⏳ 预估恢复用时: 约 1 ~ 2 分钟
+
+系统正在安全刷写全量磁盘缓存并向 Linux 内核下达重启信号。
+网络与机器人连线将短暂断开，开机自检完成后守护进程将全自动恢复服务！`,
+            { parse_mode: "Markdown" }
+        );
+
+        // 延迟 1.5 秒执行，确保 Telegram 消息已安全回传至用户手机
+        setTimeout(() => {
+            const { exec } = require("child_process");
+            console.log(`[System] 管理员指令触发系统重启: sync; reboot`);
+            exec("sync; reboot", (err) => {
+                if (err) {
+                    console.error("[System] 重启命令执行返回:", err.message);
+                }
+            });
+        }, 1500);
+    }
+
+    /**
+     * 重启 Node.js 机场后台主服务指令 (/restart_v3 / 重启服务)
+     */
+    async handleAdminRestartServiceCommand(chatId) {
+        await this.sendMessage(chatId,
+            `🔄 *正在重启 Node.js 机场主控服务...*
+            
+守护进程（systemd/openrc）将在进程退出后秒级自愈并重载最新代码与配置。`,
+            { parse_mode: "Markdown" }
+        );
+
+        setTimeout(() => {
+            console.log("[System] 管理员指令触发服务重启，退出当前主进程...");
+            process.exit(0);
+        }, 1200);
     }
 
     /**
@@ -1353,6 +1444,7 @@ _提示：用户名必须为 3-32 位字母、数字或下划线。_`);
                 const adminNotice =
                     `🔔 *新用户通过 Telegram 注册成功*
 • 用户账号: ${links.accountLink}
+• 用户 UUID: \`${newUser.uuid}\`
 • Telegram ID: ${links.idLink}
 • TG 用户名: ${links.userLink} (${this.escapeMd(from.first_name || "")})
 • 认证来源群: ${groupName} (已通过)
@@ -1542,6 +1634,8 @@ ${rawNodes.trim()}
                 `\n\n👑 *站长/管理员特权指令*：
 • \`/admin\` 或 \`/status\` - 打开可视化站长控制台全功能大屏
 • \`/restart\` - 强制重启 Sing-box 核心进程并重载全量规则
+• \`/reboot\` 或 \`重启机器\` - 向 Linux 内核下发安全重启整台机器指令
+• \`/restart_v3\` 或 \`重启服务\` - 重启 Node.js 机场后台服务并重载代码
 • \`/users\` - 快速列出最新注册用户及其流量与状态
 • \`/ips\` - 查看当前活跃在线客户端 IP 与账号连接
 • \`/grantall\` - 为全员正常用户发放 5GB 流量并顺延 7 天
@@ -1705,6 +1799,28 @@ ${rawNodes.trim()}
             if (this.adminId && String(from.id) === this.adminId) {
                 await this.handleAdminRestartCoreCommand(msg.chat.id);
             }
+        } else if (data === "admin_reboot_prompt") {
+            if (this.adminId && String(from.id) === this.adminId) {
+                await this.sendMessage(msg.chat.id,
+                    `⚠️ *危险操作二次确认：确定要重启本台机器吗？*\n\n• 执行指令：\`sync; reboot\`\n• 影响范围：整个底层 Linux 操作系统重启，所有连接将在 1~2 分钟内断开并自愈。\n\n请确认是否立即执行：`,
+                    {
+                        reply_markup: {
+                            inline_keyboard: [
+                                [
+                                    { text: "💣 确认立即重启机器 (Reboot)", callback_data: "admin_reboot_confirm" }
+                                ],
+                                [
+                                    { text: "❌ 取消并返回管理主屏", callback_data: "admin_refresh" }
+                                ]
+                            ]
+                        }
+                    }
+                );
+            }
+        } else if (data === "admin_reboot_confirm") {
+            if (this.adminId && String(from.id) === this.adminId) {
+                await this.handleAdminRebootServerCommand(msg.chat.id);
+            }
         } else if (data === "admin_list_users") {
             if (this.adminId && String(from.id) === this.adminId) {
                 await this.handleAdminListUsersCommand(msg.chat.id);
@@ -1778,9 +1894,12 @@ ${rawNodes.trim()}
                 const targetUuid = data.replace("admin_query_btn_", "");
                 const u = this.getUsers ? this.getUsers().find(x => x.uuid === targetUuid) : null;
                 if (u && msg.message_id) {
+                    if (u.telegramId) {
+                        await this.refreshUserTelegramProfile(u);
+                    }
                     const card = this.buildUserCardData(u);
                     await this.editMessageText(msg.chat.id, msg.message_id, card.text, { reply_markup: card.reply_markup });
-                    await this.answerCallbackQuery(cb.id, { text: "🔄 用户数据与在线状态已刷新！" });
+                    await this.answerCallbackQuery(cb.id, { text: "🔄 用户资料与在线状态已从 Telegram 实时刷新！" });
                 } else {
                     await this.answerCallbackQuery(cb.id, { text: "❌ 未找到该用户" });
                 }
@@ -1810,22 +1929,38 @@ ${rawNodes.trim()}
      */
     findUserByKeyword(keyword) {
         if (!keyword) return null;
-        const kw = String(keyword).trim().toLowerCase();
+        let kw = String(keyword).trim().toLowerCase();
+        // 自动剥离复制时可能带入的首尾反引号、单双引号、冒号或多余空格
+        kw = kw.replace(/^[`"':\s]+|[`"':\s]+$/g, "");
+        if (!kw) return null;
+
         const users = this.getUsers ? this.getUsers() : [];
-        // 1. 完全匹配 UUID
+
+        // 1. 完全匹配 UUID (标准 36 位带连字符格式)
         let u = users.find(x => x.uuid && x.uuid.toLowerCase() === kw);
         if (u) return u;
-        // 2. 完全匹配 username
+
+        // 2. 匹配去除横杠后的 32 位 UUID 格式
+        const kwNoDash = kw.replace(/-/g, "");
+        if (kwNoDash.length >= 8) {
+            u = users.find(x => x.uuid && x.uuid.toLowerCase().replace(/-/g, "") === kwNoDash);
+            if (u) return u;
+        }
+
+        // 3. 完全匹配 username
         u = users.find(x => x.username && x.username.toLowerCase() === kw);
         if (u) return u;
-        // 3. 匹配 telegramId
+
+        // 4. 匹配 telegramId (纯数字 TG 用户 ID)
         u = users.find(x => x.telegramId && String(x.telegramId).trim() === kw);
         if (u) return u;
-        // 4. 匹配 telegramUsername (去掉 @)
+
+        // 5. 匹配 telegramUsername (支持带 @ 或不带 @)
         const cleanTg = kw.replace(/^@/, "");
         u = users.find(x => x.telegramUsername && x.telegramUsername.toLowerCase() === cleanTg);
         if (u) return u;
-        // 5. 前缀模糊匹配
+
+        // 6. 前缀或子串模糊匹配 (支持匹配 UUID 前缀 8 位或用户名开头)
         u = users.find(x => (x.username && x.username.toLowerCase().startsWith(kw)) || (x.uuid && x.uuid.toLowerCase().startsWith(kw)));
         return u || null;
     }
@@ -1905,6 +2040,56 @@ ${liveLine}`;
     }
 
     /**
+     * 实时向 Telegram 官方 API 查询并同步指定用户的最新资料 (username, first_name)
+     */
+    async refreshUserTelegramProfile(user) {
+        if (!user || !user.telegramId) return user;
+        const tgId = String(user.telegramId).trim();
+        if (!tgId || !/^-?\d+$/.test(tgId)) return user;
+
+        try {
+            let freshUser = null;
+            // 优先通过私聊 chat 拉取该用户最新公开 Profile
+            const chatRes = await this.request("getChat", { chat_id: tgId }, 4000);
+            if (chatRes && chatRes.ok && chatRes.result) {
+                freshUser = chatRes.result;
+            } else if (this.requiredGroup) {
+                // 备用通过群组成员资料拉取
+                const memberRes = await this.request("getChatMember", {
+                    chat_id: this.requiredGroup,
+                    user_id: parseInt(tgId, 10)
+                }, 4000);
+                if (memberRes && memberRes.ok && memberRes.result && memberRes.result.user) {
+                    freshUser = memberRes.result.user;
+                }
+            }
+
+            if (freshUser) {
+                let changed = false;
+                const newUsername = (freshUser.username || "").trim();
+                const newFirstName = (freshUser.first_name || "").trim();
+
+                if (newUsername !== (user.telegramUsername || "")) {
+                    user.telegramUsername = newUsername;
+                    changed = true;
+                }
+                if (newFirstName && newFirstName !== (user.telegramFirstName || "")) {
+                    user.telegramFirstName = newFirstName;
+                    changed = true;
+                }
+
+                if (changed && typeof this.saveUsers === "function") {
+                    this.saveUsers();
+                    console.log(`[TG-Bot] 成功实时校准用户 [${user.username}] 的最新 Telegram 资料: @${newUsername} (${newFirstName})`);
+                }
+            }
+        } catch (e) {
+            // 静默容错，API波动不阻塞返回
+        }
+        return user;
+    }
+
+    /**
      * 管理员执行查用户指令 (cha / 查 用户ID)
      */
     async handleAdminQueryUserCommand(chatId, keyword) {
@@ -1923,6 +2108,11 @@ ${liveLine}`;
         const user = this.findUserByKeyword(keyword.trim());
         if (!user) {
             return await this.sendMessage(chatId, `❌ 未检索到匹配的用户：\`${keyword.trim()}\`\n请检查拼写、用户名或 Telegram ID 是否正确。`);
+        }
+
+        // 🌟 核心保鲜机制：若用户绑定了 Telegram ID，先从 Telegram 官方实时拉取最新用户名与昵称并自动持久化
+        if (user.telegramId) {
+            await this.refreshUserTelegramProfile(user);
         }
 
         const card = this.buildUserCardData(user);
