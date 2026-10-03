@@ -1,35 +1,81 @@
-# 忽略敏感环境凭据 (强制使用 .env.example 作为安全模板)
+# =========================================================================
+# Git Ignore 规则 (严格保障凭据与数据隔离，杜绝误传泄密)
+# =========================================================================
+
+# 1. 核心敏感凭据与环境变量 (强制使用 .env.example 作为分享模板)
 .env
 .env.local
 .env.*.local
+**/.env
+**/.env.*
+!**/.env.example
 
-# 忽略运行时生成与动态数据
+# 2. 运行时动态数据与用户数据库 (禁止提交真实用户与动态配置)
 data/*
 !data/.gitkeep
+**/data/*
+!**/data/.gitkeep
 users.json
+settings.json
+**/users.json
+**/settings.json
 
-# 忽略二进制可执行文件与进程 PID
-sing-box
+# 3. 二进制可执行程序与大型核心 (禁止将数十兆二进制程序提交至 GitHub)
 cloudflared
-*.pid
+cloudflared.exe
+cloudflared-*
+**/cloudflared*
+sing-box
+sing-box.exe
+sing-box-*
+**/sing-box*
 
-# 忽略日志文件
+# 4. Node.js 运行时依赖与包管理缓存
+node_modules/
+**/node_modules/
+.npm/
+**/.npm/
+.npm-global/
+**/.npm-global/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# 5. 临时文件、缓存目录与进程 PID
+.tmp/
+**/.tmp/
+*.tmp
+*.tmp.*
+**/*.tmp
+**/*.tmp.*
+*.pid
+**/*.pid
+
+# 6. 运行日志与日志目录
 *.log
 logs/
+**/logs/
 
-# 忽略自签证书与私钥
+# 7. 自签证书、TLS 密钥与 Reality 密钥对
 *.pem
 *.key
+*.crt
 reality_keys.json
+**/reality_keys.json
+ss_secret.key
+**/ss_secret.key
 
-# 忽略系统临时文件
+# 8. 系统与编辑器垃圾文件
 .DS_Store
 Thumbs.db
 *.bak
 *.orig
 scratch_*
 
-# 忽略本地专有同步脚本与缓存 (绝对不提交到远程)
+# 9. 私人自用说明文档与自动化同步脚本 (包含真实凭据，严禁开源)
+TG_BOT_GUIDE_PRIVATE.md
+**/TG_BOT_GUIDE_PRIVATE.md
 sync.ps1
 sync.bat
 sync.sh
