@@ -48,6 +48,7 @@ class TelegramBotManager {
         this.reconnectTimer = null;
         this.auditIntervalTimer = null;
         this.isAuditing = false;
+        this.unconfirmedLeftCountMap = new Map(); // 用于巡检退群防抖确认 (连续2次确认才停用)
     }
 
     /**
@@ -308,14 +309,21 @@ class TelegramBotManager {
                 if (validMemberStatuses.includes(status)) {
                     return { inGroup: true, status, user: res.result.user };
                 } else {
-                    return { inGroup: false, status, reason: "not_in_group" };
+                    return { inGroup: false, status, reason: "not_in_group", confirmedLeft: true };
                 }
             }
 
             const errMsg = (res && res.description) || "未知群组错误";
-            return { inGroup: false, error: errMsg };
+            // 明确由 Telegram 返回的用户不在群组内的状态
+            if (errMsg.includes("USER_NOT_PARTICIPANT") || errMsg.includes("user not found") || errMsg.includes("PARTICIPANT_ID_INVALID")) {
+                return { inGroup: false, status: "left", reason: "not_in_group", confirmedLeft: true };
+            }
+
+            // 其他情况（如网络超时、429 Too Many Requests、chat not found、服务器 502 等）属于 API 接口与网络异常，严禁视作退群
+            return { inGroup: false, isError: true, error: errMsg };
         } catch (e) {
-            return { inGroup: false, error: e.message };
+            // 超时与网络中断属于系统异常，严禁视作真实退群
+            return { inGroup: false, isError: true, error: e.message };
         }
     }
 
@@ -548,54 +556,79 @@ class TelegramBotManager {
         try {
             for (const u of tgUsers) {
                 const check = await this.verifyUserInRequiredGroup(u.telegramId);
-                // 1. 不在群内，但账号当前处于启用 -> 停用
-                if (!check.inGroup && u.enabled) {
-                    console.log(`[TG-Audit-Cron] 巡检查出用户 [${u.username}] 不在群 ${this.requiredGroup}，执行停用断网`);
-                    if (this.setUserEnabled) this.setUserEnabled(u.uuid, false, "退群自动停用");
-                    if (this.disconnectUser) this.disconnectUser(u.uuid, "退群巡检查出并断链");
-                    disabledCount++;
 
-                    if (this.adminId) {
-                        const links = this.formatUserChatLinks(u.username, u.telegramId, u.telegramUsername);
-                        this.sendMessage(this.adminId,
-                            `⚠️ *群员退群触发停用通知 (后台巡检查出)*
-• 用户账号: ${links.accountLink}
-• Telegram ID: ${links.idLink}
-• TG 用户名: ${links.userLink}
-• 状态: 确认已不在群组 ${this.requiredGroup}
-• 处理: 账号已立即设为禁用，存量连接已切断，Sing-box 配置已同步剔除。`).catch(() => { });
-                    }
+                // 🌟 核心防抖 1：网络异常或 API 报错时，绝对不误判退群，跳过当前用户并保留状态
+                if (check.isError) {
+                    console.warn(`[TG-Audit-Cron] 用户 [${u.username}] 巡检查验群身份遭遇网络/API异常 (${check.error})，跳过变更以防误杀`);
+                    await new Promise((r) => setTimeout(r, 400));
+                    continue;
                 }
-                // 2. 在群内，但此前因退群被停用 -> 恢复
-                else if (check.inGroup && !u.enabled && u.disableReason !== "管理员手动禁用") {
-                    console.log(`[TG-Audit-Cron] 巡检查出用户 [${u.username}] 已回群，自动恢复权限`);
-                    if (this.setUserEnabled) this.setUserEnabled(u.uuid, true, "进群自动恢复");
-                    restoredCount++;
 
-                    this.sendMessage(u.telegramId,
-                        `🎉 *检测到您已在群内，节点权限已自动恢复*
+                // 🌟 核心防抖 2：在群内用户，立即重置不在群计数
+                if (check.inGroup) {
+                    if (this.unconfirmedLeftCountMap.has(u.uuid)) {
+                        this.unconfirmedLeftCountMap.delete(u.uuid);
+                    }
+
+                    // 此前因退群被系统自动停用 -> 恢复
+                    if (!u.enabled && u.disableReason !== "管理员手动禁用") {
+                        console.log(`[TG-Audit-Cron] 巡检查出用户 [${u.username}] 已回群，自动恢复权限`);
+                        if (this.setUserEnabled) this.setUserEnabled(u.uuid, true, "进群自动恢复");
+                        restoredCount++;
+
+                        this.sendMessage(u.telegramId,
+                            `🎉 *检测到您已在群内，节点权限已自动恢复*
 
 系统检测到您当前已在官方交流群 ${this.requiredGroup}。
 您的账号 \`${u.username}\` 现已重新激活，所有高速节点恢复正常使用！
 
 💡 发送 \`/my\` 可刷新并提取最新订阅链接。`, {
-                        reply_markup: {
-                            inline_keyboard: [[{ text: "📦 查看我的订阅 (/my)", callback_data: "cmd_my" }]]
-                        }
-                    }).catch(() => { });
+                            reply_markup: {
+                                inline_keyboard: [[{ text: "📦 查看我的订阅 (/my)", callback_data: "cmd_my" }]]
+                            }
+                        }).catch(() => { });
 
-                    if (this.adminId) {
-                        const links = this.formatUserChatLinks(u.username, u.telegramId, u.telegramUsername);
-                        this.sendMessage(this.adminId,
-                            `🎉 *群员回群触发解封通知 (后台巡检恢复)*
+                        if (this.adminId) {
+                            const links = this.formatUserChatLinks(u.username, u.telegramId, u.telegramUsername);
+                            this.sendMessage(this.adminId,
+                                `🎉 *群员回群触发解封通知 (后台巡检恢复)*
 • 用户账号: ${links.accountLink}
 • Telegram ID: ${links.idLink}
 • TG 用户名: ${links.userLink}
 • 状态: 确认已在群组 ${this.requiredGroup}
 • 处理: 账号已解除冻结，Sing-box 配置已同步热重载，节点加速服务全面恢复正常！`).catch(() => { });
+                        }
                     }
                 }
-                await new Promise((r) => setTimeout(r, 120)); // 平滑流控
+                // 3. 确凿不在群内（API 明确返回 left/kicked/not_in_group），且账号当前处于启用 -> 连续 2 次确认才停用
+                else if (!check.inGroup && check.confirmedLeft && u.enabled) {
+                    const failCount = (this.unconfirmedLeftCountMap.get(u.uuid) || 0) + 1;
+                    this.unconfirmedLeftCountMap.set(u.uuid, failCount);
+
+                    // 手动巡检或连续 2 次巡检确认不在群 -> 正式停用断网
+                    if (isManual || failCount >= 2) {
+                        this.unconfirmedLeftCountMap.delete(u.uuid);
+                        console.log(`[TG-Audit-Cron] 巡检查出用户 [${u.username}] 确凿已不在群 ${this.requiredGroup} (确认次数: ${failCount})，执行停用断网`);
+                        if (this.setUserEnabled) this.setUserEnabled(u.uuid, false, "退群自动停用");
+                        if (this.disconnectUser) this.disconnectUser(u.uuid, "退群巡检查出并断链");
+                        disabledCount++;
+
+                        if (this.adminId) {
+                            const links = this.formatUserChatLinks(u.username, u.telegramId, u.telegramUsername);
+                            this.sendMessage(this.adminId,
+                                `⚠️ *群员退群触发停用通知 (后台巡检查出)*
+• 用户账号: ${links.accountLink}
+• Telegram ID: ${links.idLink}
+• TG 用户名: ${links.userLink}
+• 状态: 确认已不在群组 ${this.requiredGroup}
+• 处理: 账号已立即设为禁用，存量连接已切断，Sing-box 配置已同步剔除。`).catch(() => { });
+                        }
+                    } else {
+                        console.log(`[TG-Audit-Cron] 用户 [${u.username}] 首次巡检查出不在群，标记待二次确认 (1/2)，暂不停用`);
+                    }
+                }
+
+                await new Promise((r) => setTimeout(r, 250)); // 平滑流控，避免高频触发 Telegram 429
             }
         } finally {
             this.isAuditing = false;
