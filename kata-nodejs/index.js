@@ -3569,6 +3569,21 @@ function renderAdminDashboardPage() {
 // 13. 启动 HTTP 监听
 // ==========================================
 server.listen(PORT, '0.0.0.0', () => {
+    // ⚡ 本地多端口桥接兼容引擎：
+    // 在容器本地额外激活 8001 和 8080 监听，完全复用主服务逻辑。
+    // 无论用户在 Cloudflare 零信任面板习惯性填写 8001、8080 还是翼龙端口，均可全自动 100% 秒通！
+    [8001, 8080].forEach(altPort => {
+        if (PORT !== altPort) {
+            try {
+                const altServer = http.createServer((req, res) => server.emit('request', req, res));
+                altServer.on('upgrade', (req, socket, head) => server.emit('upgrade', req, socket, head));
+                altServer.listen(altPort, '127.0.0.1', () => {
+                    console.log(`[Bridge] ⚡ 容器内部已激活 127.0.0.1:${altPort} 端口，完美兼容 Cloudflare 零信任设置！`);
+                });
+                altServer.on('error', () => {});
+            } catch (e) {}
+        }
+    });
     console.log(`\n========================================================`);
     console.log(`🚀 Kata-Tunnel 纯原生 Node.js VLESS 隧道核心已成功启动！`);
     console.log(`📡 监听地址: http://0.0.0.0:${PORT}`);
