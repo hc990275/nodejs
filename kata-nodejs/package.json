@@ -1,0 +1,12 @@
+{
+  "name": "kata-tunnel",
+  "version": "1.0.0",
+  "description": "Ultra-lightweight VLESS-WebSocket Tunnel & Wetest 3-Carrier Engine for Kata Container (308MB RAM / 25% CPU)",
+  "main": "index.js",
+  "scripts": {
+    "start": "node --max-old-space-size=96 index.js"
+  },
+  "author": "Antigravity",
+  "license": "MIT",
+  "dependencies": {}
+}
