@@ -282,6 +282,65 @@ function stopArgoTunnel() {
 
 // 优先读取 .env
 const initialEnv = parseEnvFile(ENV_FILE);
+
+// ==========================================
+// 2.2 .env 文件变更智能监听与双向热重载
+// ==========================================
+let envWatchDebounce = null;
+function reloadEnvHot() {
+    if (!fs.existsSync(ENV_FILE)) return;
+    try {
+        const newEnv = parseEnvFile(ENV_FILE);
+        console.log('[Env] ⚡ 监听到外部 .env 文件变动，正在执行内存双向热重载...');
+
+        if (newEnv.ADMIN_PASSWORD && newEnv.ADMIN_PASSWORD !== ADMIN_PASSWORD) {
+            ADMIN_PASSWORD = newEnv.ADMIN_PASSWORD;
+            console.log('[Env] 🔑 管理员密码已即时热更新！');
+        }
+
+        if (newEnv.ARGO_TOKEN !== undefined && newEnv.ARGO_TOKEN !== siteSettings.argoToken) {
+            siteSettings.argoToken = newEnv.ARGO_TOKEN.trim();
+            startArgoTunnel(siteSettings.argoToken);
+            console.log('[Env] ⚡ Argo Token 已热更新，隧道进程已自动重载！');
+        }
+
+        if (newEnv.ARGO_DOMAIN !== undefined && newEnv.ARGO_DOMAIN !== siteSettings.argoDomain) {
+            siteSettings.argoDomain = newEnv.ARGO_DOMAIN.trim();
+            console.log('[Env] 🌐 Argo 穿透域名已热更新:', siteSettings.argoDomain);
+        }
+
+        if (newEnv.SUB_DOMAIN !== undefined && newEnv.SUB_DOMAIN !== siteSettings.subDomain) {
+            siteSettings.subDomain = newEnv.SUB_DOMAIN.trim();
+            console.log('[Env] 📡 节点主公网域名/IP已热更新:', siteSettings.subDomain);
+        }
+
+        if (newEnv.IP_REGISTER_COOLDOWN_SEC !== undefined) {
+            siteSettings.ipRegisterCooldownSec = Math.max(0, parseInt(newEnv.IP_REGISTER_COOLDOWN_SEC, 10) || 0);
+            console.log('[Env] 🛡️ 单 IP 注册冷却时间已热重载:', siteSettings.ipRegisterCooldownSec, '秒');
+        }
+
+        if (newEnv.IP_DAILY_REGISTER_LIMIT !== undefined) {
+            siteSettings.ipDailyRegisterLimit = Math.max(0, parseInt(newEnv.IP_DAILY_REGISTER_LIMIT, 10) || 0);
+            console.log('[Env] 🛡️ 单 IP 每日注册上限已热重载:', siteSettings.ipDailyRegisterLimit, '个');
+        }
+    } catch (e) {
+        console.error('[Env] 热重载异常:', e.message);
+    }
+}
+
+if (fs.existsSync(ENV_FILE)) {
+    try {
+        fs.watch(ENV_FILE, (eventType) => {
+            if (eventType === 'change' || eventType === 'rename') {
+                if (envWatchDebounce) clearTimeout(envWatchDebounce);
+                envWatchDebounce = setTimeout(() => {
+                    reloadEnvHot();
+                }, 500);
+            }
+        });
+    } catch (e) {}
+}
+
 function getEnv(key, defVal = '') {
     if (process.env[key] !== undefined && process.env[key] !== '') return process.env[key];
     if (initialEnv[key] !== undefined && initialEnv[key] !== '') return initialEnv[key];
@@ -299,6 +358,8 @@ const DEFAULT_SETTINGS = {
     allowRegister: getEnv('DEFAULT_ALLOW_REGISTER', 'true') === 'true',
     defaultDays: parseInt(getEnv('DEFAULT_DAYS', '365'), 10),
     defaultTrafficGB: parseInt(getEnv('DEFAULT_TRAFFIC_GB', '100'), 10),
+    ipRegisterCooldownSec: parseInt(getEnv('IP_REGISTER_COOLDOWN_SEC', '60'), 10), // 单 IP 注册冷却时间 (秒)
+    ipDailyRegisterLimit: parseInt(getEnv('IP_DAILY_REGISTER_LIMIT', '3'), 10),     // 单 IP 24小时注册配额上限 (个)
     subDomain: getEnv('SUB_DOMAIN', ''),
     argoToken: getEnv('ARGO_TOKEN', ''),
     argoDomain: getEnv('ARGO_DOMAIN', ''),
@@ -500,7 +561,7 @@ function normalizeWetestItemList(rawList) {
         } else if (item && typeof item === 'object') {
             ip = (item.ip || item.node || '').trim();
             colo = (item.colo || item.datacenter || item.city || '').toUpperCase();
-            rtt = parseInt(item.rtt || item.ping || item.latency || 0, 10);
+            rtt = parseInt(item.rtt_avg || item.rtt || item.ping || item.latency || 0, 10);
         }
         return { ip, colo, rtt };
     }).filter(x => x.ip && /^[\d\.]+$/.test(x.ip));
@@ -513,17 +574,18 @@ async function fetchWetestCleanIps() {
         const cfRes = await fetchJsonUrl(cfUrl, 10000);
         if (cfRes && (cfRes.code === 200 || cfRes.status === 'success' || cfRes.info)) {
             const rawData = cfRes.data || cfRes.info || {};
-            const cleanCT = normalizeWetestItemList(rawData.ct || rawData.dx || rawData.telecom);
-            const cleanCU = normalizeWetestItemList(rawData.cu || rawData.lt || rawData.unicom);
-            const cleanCM = normalizeWetestItemList(rawData.cm || rawData.yd || rawData.mobile);
-            const cleanCN = normalizeWetestItemList(rawData.all || rawData.anycast || rawData.cn || []);
+            const cleanCT = normalizeWetestItemList(rawData.CT || rawData.ct || rawData.dx || rawData.telecom);
+            const cleanCU = normalizeWetestItemList(rawData.CU || rawData.cu || rawData.lt || rawData.unicom);
+            const cleanCM = normalizeWetestItemList(rawData.CM || rawData.cm || rawData.yd || rawData.mobile);
+            const cleanCN = normalizeWetestItemList(rawData.CN || rawData.cn || rawData.all || rawData.anycast || []);
 
             const sortByRtt = (list) => list.sort((a, b) => (a.rtt || 999) - (b.rtt || 999));
 
-            if (cleanCT.length > 0) siteSettings.cfNodes.ct = sortByRtt(cleanCT).slice(0, 5);
-            if (cleanCU.length > 0) siteSettings.cfNodes.cu = sortByRtt(cleanCU).slice(0, 5);
-            if (cleanCM.length > 0) siteSettings.cfNodes.cm = sortByRtt(cleanCM).slice(0, 5);
-            if (cleanCN.length > 0) siteSettings.cfNodes.official = sortByRtt(cleanCN).slice(0, 5);
+            // 有多少抓多少！全量保留微测网抓取到的所有合格 IP，彻底解除人为数量限制
+            if (cleanCT.length > 0) siteSettings.cfNodes.ct = sortByRtt(cleanCT);
+            if (cleanCU.length > 0) siteSettings.cfNodes.cu = sortByRtt(cleanCU);
+            if (cleanCM.length > 0) siteSettings.cfNodes.cm = sortByRtt(cleanCM);
+            if (cleanCN.length > 0) siteSettings.cfNodes.official = sortByRtt(cleanCN);
 
             siteSettings.wetestSyncTime = new Date().toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' });
             saveSettings();
@@ -821,7 +883,7 @@ function generateUserNodes(user) {
     // 3. CF 中国电信 (CT) 优选
     if (siteSettings.enableOptCT !== false) {
         const ctList = siteSettings.cfNodes.ct || [];
-        ctList.slice(0, 3).forEach((n, idx) => {
+        ctList.forEach((n, idx) => {
             const ip = (idx === 0 && siteSettings.optCTIp) ? siteSettings.optCTIp : n.ip;
             const tag = `【CF·电信优选·${idx + 1}·${n.colo || 'FRA'}·${n.rtt || 160}ms】-VLESS-WS`;
             list.push(`vless://${user.uuid}@${ip}:443?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F#${encodeURIComponent(tag)}`);
@@ -831,7 +893,7 @@ function generateUserNodes(user) {
     // 4. CF 中国联通 (CU) 优选
     if (siteSettings.enableOptCU !== false) {
         const cuList = siteSettings.cfNodes.cu || [];
-        cuList.slice(0, 3).forEach((n, idx) => {
+        cuList.forEach((n, idx) => {
             const ip = (idx === 0 && siteSettings.optCUIp) ? siteSettings.optCUIp : n.ip;
             const tag = `【CF·联通优选·${idx + 1}·${n.colo || 'SJC'}·${n.rtt || 130}ms】-VLESS-WS`;
             list.push(`vless://${user.uuid}@${ip}:443?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F#${encodeURIComponent(tag)}`);
@@ -841,7 +903,7 @@ function generateUserNodes(user) {
     // 5. CF 中国移动 (CM) 优选
     if (siteSettings.enableOptCM !== false) {
         const cmList = siteSettings.cfNodes.cm || [];
-        cmList.slice(0, 3).forEach((n, idx) => {
+        cmList.forEach((n, idx) => {
             const ip = (idx === 0 && siteSettings.optCMIp) ? siteSettings.optCMIp : n.ip;
             const tag = `【CF·移动优选·${idx + 1}·${n.colo || 'HKG'}·${n.rtt || 48}ms】-VLESS-WS`;
             list.push(`vless://${user.uuid}@${ip}:443?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F#${encodeURIComponent(tag)}`);
@@ -856,6 +918,47 @@ function generateUserNodes(user) {
 // ==========================================
 const adminSessions = new Set();
 const userSessions = new Map(); // token -> uuid
+// 🛡️ 防薅风控核心：clientIp -> Array<number> (最近24小时内所有成功注册的时间戳毫秒列表)
+const registerIpHistory = new Map();
+
+// 辅助方法：获取客户端 IP 在过去 24 小时内的所有有效注册记录
+function getRecentIpRegistrations(clientIp) {
+    const now = Date.now();
+    const oneDayAgo = now - 24 * 3600 * 1000;
+    const history = registerIpHistory.get(clientIp) || [];
+    const valid = history.filter(t => t > oneDayAgo);
+    if (valid.length !== history.length) {
+        if (valid.length === 0) {
+            registerIpHistory.delete(clientIp);
+        } else {
+            registerIpHistory.set(clientIp, valid);
+        }
+    }
+    return valid;
+}
+
+// 每 10 分钟自动清理 24 小时前的过期注册 IP 记录，彻底防止内存泄漏
+setInterval(() => {
+    const oneDayAgo = Date.now() - 24 * 3600 * 1000;
+    for (const [ip, list] of registerIpHistory.entries()) {
+        const valid = list.filter(t => t > oneDayAgo);
+        if (valid.length === 0) {
+            registerIpHistory.delete(ip);
+        } else {
+            registerIpHistory.set(ip, valid);
+        }
+    }
+}, 10 * 60 * 1000).unref();
+
+function getClientIp(req) {
+    const cfIp = req.headers['cf-connecting-ip'];
+    if (cfIp) return cfIp.trim();
+    const xff = req.headers['x-forwarded-for'];
+    if (xff) return xff.split(',')[0].trim();
+    const xReal = req.headers['x-real-ip'];
+    if (xReal) return xReal.trim();
+    return req.socket ? (req.socket.remoteAddress || '') : '';
+}
 
 function parseCookies(req) {
     const list = {};
@@ -940,6 +1043,36 @@ const server = http.createServer((req, res) => {
         if (siteSettings.allowRegister === false) {
             return sendJson({ error: '当前系统已关闭新用户自主注册' }, 403);
         }
+
+        const clientIp = getClientIp(req) || '127.0.0.1';
+        const now = Date.now();
+        const cooldownSec = siteSettings.ipRegisterCooldownSec !== undefined ? Number(siteSettings.ipRegisterCooldownSec) : 60;
+        const dailyLimit = siteSettings.ipDailyRegisterLimit !== undefined ? Number(siteSettings.ipDailyRegisterLimit) : 3;
+
+        const recentRegistrations = getRecentIpRegistrations(clientIp);
+
+        // 1. 单 IP 24小时注册配额上限检测 (dailyLimit > 0 时生效)
+        if (dailyLimit > 0 && recentRegistrations.length >= dailyLimit) {
+            const earliestTime = recentRegistrations[0];
+            const unlockTime = earliestTime + 24 * 3600 * 1000;
+            const remainHours = Math.max(1, Math.ceil((unlockTime - now) / (3600 * 1000)));
+            return sendJson({ 
+                error: `防薅保护：同一 IP 24 小时内最多仅允许注册 ${dailyLimit} 个账号，您今日配额已用尽（预计 ${remainHours} 小时后恢复）` 
+            }, 429);
+        }
+
+        // 2. 单 IP 注册冷却间隔检测 (cooldownSec > 0 时生效)
+        if (cooldownSec > 0 && recentRegistrations.length > 0) {
+            const lastRegTime = recentRegistrations[recentRegistrations.length - 1];
+            const cooldownMs = cooldownSec * 1000;
+            if (now - lastRegTime < cooldownMs) {
+                const remainSec = Math.ceil((cooldownMs - (now - lastRegTime)) / 1000);
+                return sendJson({ 
+                    error: `防薅保护：同一 IP 需间隔 ${cooldownSec} 秒才能再次注册，请等待 ${remainSec} 秒后再试` 
+                }, 429);
+            }
+        }
+
         readBody(data => {
             const username = (data.username || '').trim();
             const password = (data.password || '').trim();
@@ -949,6 +1082,11 @@ const server = http.createServer((req, res) => {
             for (const u of users.values()) {
                 if (u.username === username) return sendJson({ error: '用户名已被注册' }, 400);
             }
+
+            // 注册成功，记录到该 IP 的 24 小时历史时间线
+            const updatedHistory = registerIpHistory.get(clientIp) || [];
+            updatedHistory.push(Date.now());
+            registerIpHistory.set(clientIp, updatedHistory);
 
             const uuid = crypto.randomUUID();
             const newUser = {
@@ -963,8 +1101,11 @@ const server = http.createServer((req, res) => {
             };
             users.set(uuid, newUser);
             saveUsers();
-            console.log(`[Auth] 🆕 用户注册成功: ${username} | 0ms即刻连接可用`);
-            sendJson({ success: true, message: '注册成功', uuid });
+            console.log(`[Auth] 🆕 用户注册成功: ${username} (IP: ${clientIp}) | 1分钟防薅锁已生效`);
+            const sessionToken = crypto.randomBytes(16).toString('hex');
+            userSessions.set(sessionToken, uuid);
+            res.setHeader('Set-Cookie', `user_token=${sessionToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`);
+            sendJson({ success: true, message: '注册并登录成功', uuid, user: { username, uuid } });
         });
         return;
     }
@@ -1063,6 +1204,14 @@ const server = http.createServer((req, res) => {
                 if (data.allowRegister !== undefined) siteSettings.allowRegister = Boolean(data.allowRegister);
                 if (data.defaultDays !== undefined) siteSettings.defaultDays = parseInt(data.defaultDays, 10);
                 if (data.defaultTrafficGB !== undefined) siteSettings.defaultTrafficGB = parseInt(data.defaultTrafficGB, 10);
+                if (data.ipRegisterCooldownSec !== undefined) {
+                    siteSettings.ipRegisterCooldownSec = Math.max(0, parseInt(data.ipRegisterCooldownSec, 10) || 0);
+                    envUpdates.IP_REGISTER_COOLDOWN_SEC = siteSettings.ipRegisterCooldownSec;
+                }
+                if (data.ipDailyRegisterLimit !== undefined) {
+                    siteSettings.ipDailyRegisterLimit = Math.max(0, parseInt(data.ipDailyRegisterLimit, 10) || 0);
+                    envUpdates.IP_DAILY_REGISTER_LIMIT = siteSettings.ipDailyRegisterLimit;
+                }
                 if (data.subDomain !== undefined) {
                     siteSettings.subDomain = data.subDomain.trim();
                     envUpdates.SUB_DOMAIN = siteSettings.subDomain;
@@ -1724,7 +1873,48 @@ function renderHomepage(currentUser) {
             color: var(--text-muted);
             margin-top: 30px;
         }
-    </style>
+    
+        /* 移动端深度自适应适配 (iPhone / Android / 平板) */
+        @media (max-width: 768px) {
+            .container { padding: 12px 10px 30px; }
+            header.top-nav {
+                flex-direction: column;
+                align-items: stretch;
+                padding: 12px 14px;
+                gap: 12px;
+            }
+            .nav-brand { justify-content: flex-start; }
+            .nav-right {
+                justify-content: space-between;
+                width: 100%;
+                border-top: 1px dashed var(--border);
+                padding-top: 10px;
+            }
+            .kpi-row {
+                grid-template-columns: 1fr 1fr;
+                gap: 10px;
+            }
+            .kpi-card { padding: 12px 14px; }
+            .kpi-metric { font-size: 16px; }
+            .kpi-icon-box { width: 36px; height: 36px; font-size: 16px; }
+            .user-console-card { padding: 16px 14px; }
+            .sub-input-row { flex-direction: column; align-items: stretch; }
+            .sub-url-field { width: 100%; min-width: auto; }
+            .sub-input-row .btn { width: 100%; height: 36px; }
+            .section-panel { padding: 16px 12px; }
+            .table-wrap {
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+            }
+            .table-wrap table {
+                min-width: 540px;
+            }
+            .modal-dialog {
+                width: 95%;
+                padding: 18px 16px;
+            }
+        }
+</style>
 </head>
 <body>
     <div class="container">
@@ -2113,18 +2303,29 @@ function renderHomepage(currentUser) {
 
 function renderCarrierRows(carrierName, badgeClass, list, overrideIp) {
     if (!list || list.length === 0) {
-        return `<tr><td><span class="badge ${badgeClass}">${carrierName}</span></td><td colspan="5" style="color:var(--el-text-light);">动态抓取中...</td></tr>`;
+        return `<tr><td colspan="4" style="text-align:center; padding:16px; color:#94a3b8;">微测网动态抓取中...</td></tr>`;
     }
     return list.map((item, idx) => {
         const isOverride = idx === 0 && overrideIp && overrideIp !== item.ip;
         const displayIp = isOverride ? overrideIp : item.ip;
         return `<tr>
-            <td><span class="badge ${badgeClass}">${carrierName}</span></td>
-            <td><strong style="font-family:Consolas, monospace;">${displayIp}</strong> ${isOverride ? '<span style="font-size:10px; color:#e6a23c;">(覆盖)</span>' : ''}</td>
-            <td><span style="font-weight:600; color:#409eff;">${item.colo || 'HKG'}</span></td>
-            <td><span style="color:#67c23a; font-weight:700;">${item.rtt ? item.rtt + ' ms' : '--'}</span></td>
-            <td><span style="color:var(--el-success); font-size:12px;">🟢 畅通优选</span></td>
-            <td style="font-size:12px; color:var(--el-text-sub);">针对骨干网定向加速直连 (第 ${idx + 1} 优选)</td>
+            <td>
+                <strong style="font-family:Consolas, monospace; font-size:13px; color:#0f172a;">${displayIp}</strong>
+                ${isOverride ? '<span style="font-size:10px; color:#d97706; background:#fffbeb; padding:1px 5px; border-radius:3px; border:1px solid #fde68a; margin-left:4px;">首选覆盖</span>' : ''}
+            </td>
+            <td>
+                <span style="font-weight:700; color:#2563eb; background:#eff6ff; padding:2px 8px; border-radius:4px; border:1px solid #dbeafe; font-family:Consolas, monospace;">${item.colo || 'HKG'}</span>
+            </td>
+            <td>
+                <span class="rtt-pill">${item.rtt ? item.rtt + ' ms' : '--'}</span>
+            </td>
+            <td>
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <span class="badge-carrier ${badgeClass}">${carrierName}</span>
+                    <span style="color:#16a34a; font-weight:600; font-size:12px;">🟢 畅通直连</span>
+                    <span style="font-size:11px; color:#64748b;">(第 ${idx + 1} 优选)</span>
+                </div>
+            </td>
         </tr>`;
     }).join('');
 }
@@ -2815,7 +3016,72 @@ function renderAdminDashboardPage() {
             font-size: 12px;
             width: 160px;
         }
-    </style>
+    
+        /* 移动端深度自适应适配 (Element Plus Pro 移动端规范) */
+        @media (max-width: 768px) {
+            body {
+                flex-direction: column;
+            }
+            aside.sidebar {
+                width: 100%;
+                min-height: auto;
+                border-right: none;
+                border-bottom: 1px solid #1e293b;
+            }
+            .sidebar-brand {
+                height: 48px;
+                padding: 0 14px;
+            }
+            .sidebar-menu {
+                flex-direction: row;
+                overflow-x: auto;
+                padding: 6px 10px;
+                gap: 6px;
+                -webkit-overflow-scrolling: touch;
+            }
+            .menu-item {
+                padding: 6px 12px;
+                font-size: 12px;
+                white-space: nowrap;
+                flex-shrink: 0;
+            }
+            .sidebar-footer { display: none; }
+            header.top-header {
+                height: 48px;
+                padding: 0 14px;
+            }
+            .header-breadcrumb { display: none; }
+            .content-container {
+                padding: 12px 10px;
+            }
+            .kpi-grid {
+                grid-template-columns: 1fr 1fr;
+                gap: 10px;
+            }
+            .kpi-card { padding: 12px 14px; }
+            .kpi-val { font-size: 17px; }
+            .kpi-icon-wrap { width: 36px; height: 36px; font-size: 16px; }
+            .card-panel { padding: 14px 12px; }
+            .panel-header {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 10px;
+            }
+            .search-box { width: 100%; }
+            .search-box input { width: 100%; }
+            .table-wrap {
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+            }
+            .table-wrap table {
+                min-width: 680px;
+            }
+            .modal-card {
+                width: 95%;
+                padding: 18px 16px;
+            }
+        }
+</style>
 </head>
 <body>
     <!-- 左侧侧边栏导航 -->
@@ -3060,6 +3326,16 @@ function renderAdminDashboardPage() {
                         <label>主公网域名或外网 IP (SUB_DOMAIN)</label>
                         <input type="text" id="cfg_subDomain" placeholder="如 51.75.118.151 或自定义域名" />
                     </div>
+                    <div class="form-row">
+                        <label>🛡️ 单 IP 注册冷却时间 (秒)</label>
+                        <input type="number" id="cfg_ipRegisterCooldownSec" value="60" min="0" />
+                        <span style="font-size:11px; color:#64748b; margin-top:3px; display:block;">防刷冷却期，默认 60 秒 (填 0 则关闭冷却)。</span>
+                    </div>
+                    <div class="form-row">
+                        <label>🛡️ 单 IP 24小时注册上限 (个)</label>
+                        <input type="number" id="cfg_ipDailyRegisterLimit" value="3" min="0" />
+                        <span style="font-size:11px; color:#64748b; margin-top:3px; display:block;">单 IP 每日配额，默认 3 个 (填 0 不限制，防止挂机脚本薅号)。</span>
+                    </div>
                 </div>
 
                 <!-- 管理员密码修改 -->
@@ -3259,6 +3535,8 @@ function renderAdminDashboardPage() {
                     document.getElementById('cfg_allowRegister').value = String(currentSettings.allowRegister !== false);
                     document.getElementById('cfg_defaultDays').value = currentSettings.defaultDays || 365;
                     document.getElementById('cfg_defaultTrafficGB').value = currentSettings.defaultTrafficGB || 100;
+                    document.getElementById('cfg_ipRegisterCooldownSec').value = currentSettings.ipRegisterCooldownSec !== undefined ? currentSettings.ipRegisterCooldownSec : 60;
+                    document.getElementById('cfg_ipDailyRegisterLimit').value = currentSettings.ipDailyRegisterLimit !== undefined ? currentSettings.ipDailyRegisterLimit : 3;
                     document.getElementById('cfg_subDomain').value = currentSettings.subDomain || '';
                     document.getElementById('cfg_argoToken').value = currentSettings.argoToken || '';
                     document.getElementById('cfg_argoDomain').value = currentSettings.argoDomain || '';
@@ -3540,6 +3818,8 @@ function renderAdminDashboardPage() {
                 allowRegister: document.getElementById('cfg_allowRegister').value === 'true',
                 defaultDays: parseInt(document.getElementById('cfg_defaultDays').value, 10),
                 defaultTrafficGB: parseInt(document.getElementById('cfg_defaultTrafficGB').value, 10),
+                ipRegisterCooldownSec: parseInt(document.getElementById('cfg_ipRegisterCooldownSec').value, 10) || 0,
+                ipDailyRegisterLimit: parseInt(document.getElementById('cfg_ipDailyRegisterLimit').value, 10) || 0,
                 subDomain: document.getElementById('cfg_subDomain').value.trim(),
                 argoToken: document.getElementById('cfg_argoToken').value.trim(),
                 argoDomain: document.getElementById('cfg_argoDomain').value.trim(),
