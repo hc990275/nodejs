@@ -685,3 +685,32 @@
   3. **凭据补全与积压消息消化**：
      - 固化 `TG_BOT_TOKEN`，并通过专用安全脚本完成 139 条积压 updates 确认与消费，`pending_update_count` 归零。
 
+---
+
+### 第五十五号排查与优化记录：TG 巡检网络超时误判退群与回群恢复震荡死循环排查与根治
+
+- **问题现象**：
+  - 用户在官方群内并未退群，但 Telegram 机器人隔段时间（如下午 9:44、凌晨 3:29、凌晨 3:59）会反复向用户发送私信通知：`🎉 检测到您已在群内，节点权限已自动恢复`；
+  - 期间用户节点连接偶发短暂被切断或重置。
+
+- **原因深度剖析**：
+  1. **API 网络超时/报错被误当做退群 (致命盲区)**：
+     - 在 [telegram.js](file:///d:/DeskTop/GitHub/测/lunes/nodejs/linux/telegram.js) 的 `verifyUserInRequiredGroup` 中，当海外 VPS 到 Telegram API 偶发网络超时（10秒）、接口返回 429 Too Many Requests、502 错误或连接重置时，统一返回了 `{ inGroup: false, error: ... }`；
+     - `auditAllMembers` 巡检定时器（每 15 分钟运行一次）在此前仅依据 `if (!check.inGroup && u.enabled)` 进行判定，完全未对 `check.error` 进行过滤识别，把临时的网络故障当成了“用户退群”，立即执行 `setUserEnabled(..., false, "退群自动停用")` 并切断了节点连接！
+  2. **状态抖动（Flapping Loop）**：
+     - 用户被误停用后，下一次巡检网络恢复正常，`getChatMember` 成功返回 `status: member`（`check.inGroup = true`）；
+     - 系统触发 `else if (check.inGroup && !u.enabled && u.disableReason !== "管理员手动禁用")` 分支，误以为用户“重新加群”，于是自动调用激活并向用户发送了私信通知；
+     - 随着凌晨网络环境的偶发波动，此“误停用 -> 恢复通知 -> 误停用 -> 恢复通知”形成震荡循环。
+
+- **实施解决对策**：
+  1. **明确区分 Telegram 确凿退群与系统/网络异常**：
+     - 在 [telegram.js](file:///d:/DeskTop/GitHub/测/lunes/nodejs/linux/telegram.js) 的 `verifyUserInRequiredGroup` 中增加精确区分：只有接口返回 `status === 'left'`、`'kicked'` 或 Telegram 明确说明 `USER_NOT_PARTICIPANT` 时，才标定 `confirmedLeft: true`；
+     - 所有超时（Timeout）、网络中断（ECONNRESET/ETIMEDOUT）、HTTP 429/502 等均显式标记 `isError: true`。
+  2. **巡检异常全面保护与防误杀跳过**：
+     - 在 `auditAllMembers` 巡检中加入 `if (check.isError) { continue; }` 保护守卫，一旦遇到网络抖动坚决维持现有状态不变，绝不盲目断网。
+  3. **引入退群双重防抖确认机制 (`unconfirmedLeftCountMap`)**：
+     - 单次常规巡检查出不在群仅打上待确认标记（1/2），只有连续 2 次巡检均确凿不在群内（或手动巡检、原生 chat_member 实时事件）时才执行停用断网，彻底杜绝单次抖动误判。
+  4. **平滑流控升级**：
+     - 请求间隔由 120ms 调至 250ms~400ms，有效抵御 Telegram 群成员批量查询时的 429 频控限制。
+
+
