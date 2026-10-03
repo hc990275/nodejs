@@ -713,4 +713,23 @@
   4. **平滑流控升级**：
      - 请求间隔由 120ms 调至 250ms~400ms，有效抵御 Telegram 群成员批量查询时的 429 频控限制。
 
+---
+
+### 第五十六号排查与优化记录：Telegram 大阪与香港机器人官方命名升级、命令菜单固化与标准对称按钮矩阵落地
+
+- **需求与优化背景**：
+  1. 将 2号（大阪）与 3号（香港）机器人杂乱名称统一升级为官方专业节点服务中枢品牌；
+  2. 固化 Telegram 客户端左下角原生快捷命令菜单（Menu Button）；
+  3. 优化 `/start` 控制面板 Inline Keyboard 为标准对称双列排版，提升交互体验。
+
+- **实施解决对策**：
+  1. **Telegram 官方属性全自动更新**：
+     - 2号（大阪）：通过 `setMyName` 更新为 `S5加速器 - 大阪节点中枢`；注入 `setMyDescription` 与 `setMyShortDescription`；
+     - 3号（香港）：通过 `setMyName` 更新为 `S5加速器 - 香港高速中枢`；注入 `setMyDescription` 与 `setMyShortDescription`；
+     - 同步固化原生快捷命令菜单（`/my`、`/checkin`、`/nodes`、`/menu`、`/help`）。
+  2. **代码层自适应与对称按钮矩阵落地**：
+     - 在 [telegram.js](file:///d:/DeskTop/GitHub/测/lunes/nodejs/linux/telegram.js) 中自适应提取机器人名称（大阪/香港动态匹配）；
+     - 将私聊主菜单升级为标准双列对称矩阵：首排【📦 提取我的订阅 (/my) \| 🎁 每日签到领流量】，支持一键导入小火箭/Clash、通用订阅、节点状态与官方交流群快捷入口，管理员动态挂载【👑 站长管理控制台】。
+
+
 
