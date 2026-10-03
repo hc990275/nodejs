@@ -126,7 +126,7 @@ let TG_BOT_TOKEN = (process.env.TG_BOT_TOKEN || "").trim();
 let TG_ADMIN_ID = (process.env.TG_ADMIN_ID || "5153827615").trim();
 let TG_REQUIRED_GROUP = (process.env.TG_REQUIRED_GROUP || "@s5gydl").trim();
 let TG_API_BASE = (process.env.TG_API_BASE || "https://api.telegram.org").replace(/\/+$/, "");
-let SUB_DOMAIN = (process.env.SUB_DOMAIN || "db.995677.xyz").trim();
+let SUB_DOMAIN = (process.env.SUB_DOMAIN || "").trim();
 
 // -------------------- 2. Cloudflare Argo 隧道与优选域名 --------------------
 // Cloudflare Argo 隧道 Token (留空则不开启 Argo，直接使用 DIRECT_IP 直连)
@@ -266,7 +266,32 @@ const defaultSettings = {
     tgAdminId: TG_ADMIN_ID || "5153827615",
     tgRequiredGroup: TG_REQUIRED_GROUP || "@s5gydl",
     tgApiBase: TG_API_BASE || "https://api.telegram.org",
-    subDomain: SUB_DOMAIN || "db.995677.xyz"
+    subDomain: SUB_DOMAIN || "",
+    // 1. Cloudflare CDN 优选独立开关与最优回显
+    enableOptOfficial: true,
+    enableOptCT: true,
+    enableOptCU: true,
+    enableOptCM: true,
+    optOfficialIp: "",
+    optCTIp: "104.25.18.145",
+    optCTColo: "FRA",
+    optCTRtt: 159,
+    optCUIp: "104.19.152.130",
+    optCUColo: "HKG",
+    optCURtt: 67,
+    optCMIp: "104.21.90.61",
+    optCMColo: "HKG",
+    optCMRtt: 107,
+    // 2. AWS CloudFront 优选独立开关 (有多少抓多少)
+    enableAwsOfficial: true,
+    enableAwsCT: true,
+    enableAwsCU: true,
+    enableAwsCM: true,
+    // 3. 全量优选 IP 列表池 (全量动态下发)
+    cfNodes: { official: [], ct: [], cu: [], cm: [] },
+    awsNodes: { official: [], ct: [], cu: [], cm: [] },
+    autoSyncWetest: true,
+    wetestSyncTime: ""
 };
 
 let siteSettings = { ...defaultSettings };
@@ -779,70 +804,121 @@ function saveSettings() {
 
 // ==================== 集群管理与地理位置智能定位引擎 ====================
 
-// 异步探测公网 IP 的国家/地区信息
+// 规范化输出国家与城市/地区（支持“中国 香港”、“日本 大阪”、“日本 东京”、“美国 纽约”等精细化组合）
+function formatGeoLocation(cCode, country, city, region, domain) {
+    const raw = ((city || "") + " " + (region || "") + " " + (domain || "")).toLowerCase();
+    const flags = { HK: "🇭🇰", JP: "🇯🇵", US: "🇺🇸", SG: "🇸🇬", TW: "🇹🇼", MO: "🇲🇴", KR: "🇰🇷", GB: "🇬🇧", DE: "🇩🇪", CN: "🇨🇳" };
+    const flag = flags[cCode] || (COUNTRY_FLAGS[cCode] ? COUNTRY_FLAGS[cCode].flag : "🌐");
+    
+    let baseCountry = country || (COUNTRY_FLAGS[cCode] ? COUNTRY_FLAGS[cCode].name : cCode);
+    
+    if (cCode === "HK") {
+        return { code: "HK", flag, name: "中国 香港", city: "香港" };
+    }
+    if (cCode === "TW") {
+        return { code: "TW", flag, name: "中国 台湾", city: "台湾" };
+    }
+    if (cCode === "MO") {
+        return { code: "MO", flag, name: "中国 澳门", city: "澳门" };
+    }
+    
+    let normCity = "";
+    if (cCode === "JP") {
+        baseCountry = "日本";
+        if (raw.includes("osaka") || raw.includes("ōsaka") || raw.includes("大阪") || raw.includes("db.")) normCity = "大阪";
+        else if (raw.includes("tokyo") || raw.includes("tōkyō") || raw.includes("东京") || raw.includes("dj.")) normCity = "东京";
+        else if (raw.includes("sapporo") || raw.includes("札幌")) normCity = "札幌";
+        else if (raw.includes("nagoya") || raw.includes("名古屋")) normCity = "名古屋";
+        else if (raw.includes("fukuoka") || raw.includes("福冈")) normCity = "福冈";
+    } else if (cCode === "US") {
+        baseCountry = "美国";
+        if (raw.includes("new york") || raw.includes("ny") || raw.includes("纽约")) normCity = "纽约";
+        else if (raw.includes("los angeles") || raw.includes("lax") || raw.includes("洛杉矶")) normCity = "洛杉矶";
+        else if (raw.includes("san jose") || raw.includes("sjc") || raw.includes("圣何塞")) normCity = "圣何塞";
+        else if (raw.includes("seattle") || raw.includes("sea") || raw.includes("西雅图")) normCity = "西雅图";
+        else if (raw.includes("buffalo") || raw.includes("水牛城")) normCity = "水牛城";
+    } else if (cCode === "SG") {
+        return { code: "SG", flag, name: "新加坡", city: "新加坡" };
+    }
+    
+    const fullName = normCity ? `${baseCountry} ${normCity}` : baseCountry;
+    return { code: cCode, flag, name: fullName, city: normCity || city || "" };
+}
+
+// 异步探测公网 IP 的国家/地区信息 (高可用双源并发与域名智能辅助)
 function detectServerLocation(targetIp = "") {
     const ip = targetIp || DIRECT_IP;
     if (!ip || isDetectingLocation) return;
     isDetectingLocation = true;
 
-    const options = {
-        hostname: "ipwho.is",
-        path: `/${encodeURIComponent(ip)}`,
-        method: "GET",
-        headers: { "User-Agent": "NodeJS-GeoIP/1.0" },
-        timeout: 4000
+    // 优先采用全球极速无鉴权中文接口 ip-api.com
+    const tryIpApi = () => {
+        const req = http.get(`http://ip-api.com/json/${encodeURIComponent(ip)}?lang=zh-CN`, { timeout: 3500 }, (res) => {
+            let data = "";
+            res.on("data", (chunk) => { data += chunk; });
+            res.on("end", () => {
+                try {
+                    const json = JSON.parse(data);
+                    if (json && json.status === "success" && json.countryCode) {
+                        isDetectingLocation = false;
+                        const cCode = json.countryCode.toUpperCase();
+                        const domain = (siteSettings.subDomain || SUB_DOMAIN || ARGO_DOMAIN || "").toLowerCase();
+                        detectedCountry = formatGeoLocation(cCode, json.country, json.city, json.regionName, domain);
+                        console.log(`[GeoIP] 智能探测到公网 IP (${ip}) 所在地区: ${detectedCountry.flag} ${detectedCountry.name} (${detectedCountry.city || cCode})`);
+                        ensureMasterNodeInCluster();
+                        return;
+                    }
+                } catch (_) { }
+                tryIpWhoIs();
+            });
+        });
+        req.on("error", () => { tryIpWhoIs(); });
+        req.on("timeout", () => { req.destroy(); tryIpWhoIs(); });
     };
 
-    const req = http.request(options, (res) => {
-        let data = "";
-        res.on("data", (chunk) => { data += chunk; });
-        res.on("end", () => {
-            isDetectingLocation = false;
-            try {
-                const json = JSON.parse(data);
-                if (json && json.success && json.country_code) {
-                    const cCode = json.country_code.toUpperCase();
-                    const info = COUNTRY_FLAGS[cCode] || { flag: "🌐", name: json.country || cCode };
-                    detectedCountry = {
-                        code: cCode,
-                        flag: info.flag,
-                        name: info.name,
-                        city: json.city || ""
-                    };
-                    console.log(`[GeoIP] 探测到公网 IP (${ip}) 所在地区: ${detectedCountry.flag} ${detectedCountry.name} (${detectedCountry.city || cCode})`);
-                    ensureMasterNodeInCluster();
-                }
-            } catch (err) { }
+    // 备用接口 ipwho.is
+    const tryIpWhoIs = () => {
+        const req = http.get(`http://ipwho.is/${encodeURIComponent(ip)}`, { timeout: 3500 }, (res) => {
+            let data = "";
+            res.on("data", (chunk) => { data += chunk; });
+            res.on("end", () => {
+                isDetectingLocation = false;
+                try {
+                    const json = JSON.parse(data);
+                    if (json && json.success && json.country_code) {
+                        const cCode = json.country_code.toUpperCase();
+                        const domain = (siteSettings.subDomain || SUB_DOMAIN || ARGO_DOMAIN || "").toLowerCase();
+                        detectedCountry = formatGeoLocation(cCode, json.country, json.city, json.region, domain);
+                        console.log(`[GeoIP] 备用通道探测到公网 IP (${ip}) 所在地区: ${detectedCountry.flag} ${detectedCountry.name} (${detectedCountry.city || cCode})`);
+                        ensureMasterNodeInCluster();
+                        return;
+                    }
+                } catch (_) { }
+                fallbackDetectFromDomain();
+            });
         });
-    });
+        req.on("error", () => { isDetectingLocation = false; fallbackDetectFromDomain(); });
+        req.on("timeout", () => { req.destroy(); isDetectingLocation = false; fallbackDetectFromDomain(); });
+    };
 
-    req.on("error", () => {
-        isDetectingLocation = false;
-        fallbackDetectFromDomain();
-    });
-
-    req.on("timeout", () => {
-        req.destroy();
-        isDetectingLocation = false;
-        fallbackDetectFromDomain();
-    });
-
-    req.end();
+    tryIpApi();
 }
 
 function fallbackDetectFromDomain() {
     if (detectedCountry) return;
-    const domain = (ARGO_DOMAIN || "").toLowerCase();
-    if (domain.startsWith("us.") || domain.includes("-us")) {
-        detectedCountry = { code: "US", flag: "🇺🇸", name: "美国", city: "" };
-    } else if (domain.startsWith("hk.") || domain.includes("-hk")) {
-        detectedCountry = { code: "HK", flag: "🇭🇰", name: "香港", city: "" };
-    } else if (domain.startsWith("jp.") || domain.includes("-jp")) {
-        detectedCountry = { code: "JP", flag: "🇯🇵", name: "日本", city: "" };
+    const domain = (siteSettings.subDomain || SUB_DOMAIN || ARGO_DOMAIN || "").toLowerCase();
+    if (domain.startsWith("hk.") || domain.includes("-hk") || domain.includes(".hk")) {
+        detectedCountry = formatGeoLocation("HK", "中国", "香港", "香港", domain);
+    } else if (domain.startsWith("jp.") || domain.startsWith("db.") || domain.includes("-jp") || domain.includes("-db")) {
+        detectedCountry = formatGeoLocation("JP", "日本", "大阪", "大阪", domain);
+    } else if (domain.startsWith("dj.") || domain.includes("-dj")) {
+        detectedCountry = formatGeoLocation("JP", "日本", "东京", "东京", domain);
     } else if (domain.startsWith("sg.") || domain.includes("-sg")) {
-        detectedCountry = { code: "SG", flag: "🇸🇬", name: "新加坡", city: "" };
+        detectedCountry = formatGeoLocation("SG", "新加坡", "新加坡", "新加坡", domain);
+    } else if (domain.startsWith("us.") || domain.startsWith("ny.") || domain.includes("-us") || domain.includes("-ny")) {
+        detectedCountry = formatGeoLocation("US", "美国", "纽约", "纽约", domain);
     } else {
-        detectedCountry = { code: "US", flag: "🇺🇸", name: "美国", city: "" };
+        detectedCountry = formatGeoLocation("HK", "中国", "香港", "香港", domain);
     }
     console.log(`[GeoIP] 根据网络特征自动匹配默认地区: ${detectedCountry.flag} ${detectedCountry.name}`);
     ensureMasterNodeInCluster();
@@ -856,10 +932,13 @@ function getEffectiveServerLocation() {
     if (SERVER_LOCATION && SERVER_LOCATION.trim() !== "") {
         return SERVER_LOCATION.trim();
     }
-    if (detectedCountry) {
-        return `${detectedCountry.flag} ${detectedCountry.name}`;
+    if (!detectedCountry) {
+        fallbackDetectFromDomain();
     }
-    return "🇺🇸 美国";
+    if (detectedCountry && detectedCountry.name) {
+        return `${detectedCountry.flag} ${detectedCountry.name}`.trim();
+    }
+    return "🇭🇰 香港";
 }
 
 // 载入集群节点配置 (v3_cluster_nodes.json)
@@ -928,8 +1007,12 @@ function ensureMasterNodeInCluster() {
         master.port = SERVER_PORT;
         master.status = "online";
         master.lastHeartbeat = Date.now();
-        if (!master.name || master.name === "主控节点" || master.name.includes("undefined")) {
-            master.name = `${loc} (主控)`;
+        const currentLocName = `${loc} (主控)`;
+        if (!master.name || master.name === "主控节点" || master.name.includes("undefined") || master.name.endsWith("(主控)") || master.name.includes("美国") || master.name.includes("US") || master.name.includes("us")) {
+            if (master.name !== currentLocName) {
+                master.name = currentLocName;
+                saveClusterNodes();
+            }
         }
         master.protocols = masterProtocols;
     }
@@ -1113,6 +1196,137 @@ function crawlFlClashDownloads(force = false) {
         fetchPage('https://flclash.cc/en/download.html');
     });
 }
+
+// ==================== 微测网 (wetest.vip) 优选 IP 矩阵抓取引擎 (Cloudflare + CloudFront 全量抓取) ====================
+let isFetchingWetest = false;
+let lastWetestFetchTime = 0;
+
+function fetchJsonUrl(targetUrl) {
+    return new Promise((resolve, reject) => {
+        const req = https.get(targetUrl, {
+            headers: {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "application/json"
+            },
+            timeout: 10000
+        }, (res) => {
+            if (res.statusCode !== 200) {
+                return reject(new Error(`微测网 HTTP 响应异常: ${res.statusCode}`));
+            }
+            let rawData = "";
+            res.on("data", (chunk) => { rawData += chunk; });
+            res.on("end", () => {
+                try {
+                    const parsed = JSON.parse(rawData);
+                    resolve(parsed.info || {});
+                } catch (e) {
+                    reject(new Error("解析微测网响应失败: " + e.message));
+                }
+            });
+        });
+        req.on("error", (err) => reject(new Error("微测网请求失败: " + err.message)));
+        req.on("timeout", () => {
+            req.destroy();
+            reject(new Error("微测网请求超时"));
+        });
+    });
+}
+
+function normalizeWetestItemList(list) {
+    if (!Array.isArray(list)) return [];
+    return list.map(item => ({
+        ip: item.ip,
+        colo: (item.colo || "").split("-")[0] || "",
+        rtt: item.rtt_avg || 0,
+        loss: item.loss_rate || 0,
+        line_name: item.line_name || ""
+    })).sort((a, b) => a.rtt - b.rtt);
+}
+
+async function fetchWetestCleanIps(force = false) {
+    const now = Date.now();
+    if (!force && now - lastWetestFetchTime < 30000) {
+        return siteSettings;
+    }
+    if (isFetchingWetest) {
+        return siteSettings;
+    }
+    isFetchingWetest = true;
+    lastWetestFetchTime = now;
+
+    try {
+        const cfUrl = "https://www.wetest.vip/api/cf2dns/get_cloudflare_ip?key=o1zrmHAF&type=v4";
+        const awsUrl = "https://www.wetest.vip/api/cf2dns/get_cloudfront_ip?key=o1zrmHAF&type=v4";
+
+        const [cfInfo, awsInfo] = await Promise.all([
+            fetchJsonUrl(cfUrl).catch(e => { console.warn("[Wetest] 抓取 Cloudflare 优选失败:", e.message); return {}; }),
+            fetchJsonUrl(awsUrl).catch(e => { console.warn("[Wetest] 抓取 CloudFront 优选失败:", e.message); return {}; })
+        ]);
+
+        // 1. 处理 Cloudflare 全量优选 IP
+        const cfCT = normalizeWetestItemList(cfInfo.CT);
+        const cfCU = normalizeWetestItemList(cfInfo.CU);
+        const cfCM = normalizeWetestItemList(cfInfo.CM);
+        const cfCN = normalizeWetestItemList(cfInfo.CN);
+
+        siteSettings.cfNodes = {
+            official: cfCN,
+            ct: cfCT,
+            cu: cfCU,
+            cm: cfCM
+        };
+
+        // 回显更新首选最优 IP
+        if (cfCT.length > 0) {
+            siteSettings.optCTIp = cfCT[0].ip;
+            siteSettings.optCTColo = cfCT[0].colo || "CT";
+            siteSettings.optCTRtt = cfCT[0].rtt || 0;
+        }
+        if (cfCU.length > 0) {
+            siteSettings.optCUIp = cfCU[0].ip;
+            siteSettings.optCUColo = cfCU[0].colo || "CU";
+            siteSettings.optCURtt = cfCU[0].rtt || 0;
+        }
+        if (cfCM.length > 0) {
+            siteSettings.optCMIp = cfCM[0].ip;
+            siteSettings.optCMColo = cfCM[0].colo || "CM";
+            siteSettings.optCMRtt = cfCM[0].rtt || 0;
+        }
+
+        // 2. 处理 AWS CloudFront 全量优选 IP
+        const awsCT = normalizeWetestItemList(awsInfo.CT);
+        const awsCU = normalizeWetestItemList(awsInfo.CU);
+        const awsCM = normalizeWetestItemList(awsInfo.CM);
+        const awsCN = normalizeWetestItemList(awsInfo.CN);
+
+        siteSettings.awsNodes = {
+            official: awsCN,
+            ct: awsCT,
+            cu: awsCU,
+            cm: awsCM
+        };
+
+        siteSettings.wetestSyncTime = new Date().toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
+        saveSettings();
+        console.log(`[Wetest] 全量优选 IP 矩阵抓取完成: CF(CT:${cfCT.length}, CU:${cfCU.length}, CM:${cfCM.length}, CN:${cfCN.length}) | AWS(CT:${awsCT.length}, CU:${awsCU.length}, CM:${awsCM.length}, CN:${awsCN.length})`);
+        return siteSettings;
+    } finally {
+        isFetchingWetest = false;
+    }
+}
+
+// 启动后 8 秒静默同步一次微测网，之后每 30 分钟定时自动同步
+setTimeout(() => {
+    if (siteSettings.autoSyncWetest !== false) {
+        fetchWetestCleanIps(true).catch(e => console.warn("[Wetest] 初次启动同步微测网失败:", e.message));
+    }
+}, 8000);
+
+setInterval(() => {
+    if (siteSettings.autoSyncWetest !== false) {
+        fetchWetestCleanIps(true).catch(e => console.warn("[Wetest] 定时自动同步微测网失败:", e.message));
+    }
+}, 30 * 60 * 1000);
 
 // ==================== 1.1 IP 归属地极速查询引擎 (多源兜底 + 本地持久内存缓存) ====================
 const ipGeoCache = new Map();
@@ -1887,6 +2101,105 @@ function getStructuredNodesForUser(user) {
 
     // 1. 本地主控节点 (当用户权限允许时生成)
     if (allowMaster) {
+        // 自定义域名 / Cloudflare CDN 加速节点 (443端口 + TLS + SNI，保障国内穿透与100%连通率)
+        const effectiveDomain = (siteSettings.subDomain || siteSettings.publicHost || process.env.SUB_DOMAIN || "").trim();
+        if (effectiveDomain) {
+            const cleanDomain = effectiveDomain.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+            
+            // 辅助函数：根据开关全量下发优选 IP 节点池
+            const pushCleanList = (list, prefixLabel, enableFlag, fallbackIp, fallbackColo, fallbackRtt) => {
+                if (enableFlag === false) return;
+                if (Array.isArray(list) && list.length > 0) {
+                    list.forEach((item, idx) => {
+                        const tagIdx = list.length > 1 ? `#${idx + 1}` : "";
+                        const coloTag = item.colo ? `·${item.colo}` : "";
+                        const rttTag = item.rtt ? `·${item.rtt}ms` : "";
+                        nodes.push({
+                            name: `${masterPrefix} | 【${prefixLabel}${tagIdx}${coloTag}${rttTag}】-VLESS-WS${nameSuffix}`,
+                            type: "vless",
+                            server: item.ip,
+                            port: 443,
+                            uuid: uuid,
+                            tls: true,
+                            sni: cleanDomain,
+                            network: "ws",
+                            wsPath: vlessPath,
+                            wsHeaders: { Host: cleanDomain }
+                        });
+                    });
+                } else if (fallbackIp && String(fallbackIp).trim() !== "") {
+                    const coloTag = fallbackColo ? `·${fallbackColo}` : "";
+                    const rttTag = fallbackRtt ? `·${fallbackRtt}ms` : "";
+                    nodes.push({
+                        name: `${masterPrefix} | 【${prefixLabel}${coloTag}${rttTag}】-VLESS-WS${nameSuffix}`,
+                        type: "vless",
+                        server: fallbackIp,
+                        port: 443,
+                        uuid: uuid,
+                        tls: true,
+                        sni: cleanDomain,
+                        network: "ws",
+                        wsPath: vlessPath,
+                        wsHeaders: { Host: cleanDomain }
+                    });
+                }
+            };
+
+            // ── 1. Cloudflare 优选 IP 矩阵 (独立开关，动态池全量下发) ──
+            const cfNodes = siteSettings.cfNodes || {};
+            pushCleanList(cfNodes.official, "CF·Anycast", siteSettings.enableOptOfficial, siteSettings.optOfficialIp || cleanDomain, "CF", 0);
+            pushCleanList(cfNodes.ct, "CF·电信优选", siteSettings.enableOptCT, siteSettings.optCTIp || "104.25.18.145", siteSettings.optCTColo, siteSettings.optCTRtt);
+            pushCleanList(cfNodes.cu, "CF·联通优选", siteSettings.enableOptCU, siteSettings.optCUIp || "104.19.152.130", siteSettings.optCUColo, siteSettings.optCURtt);
+            pushCleanList(cfNodes.cm, "CF·移动优选", siteSettings.enableOptCM, siteSettings.optCMIp || "104.21.90.61", siteSettings.optCMColo, siteSettings.optCMRtt);
+
+            // ── 2. AWS CloudFront 优选 IP 矩阵 (独立开关，动态池全量下发) ──
+            const awsNodes = siteSettings.awsNodes || {};
+            pushCleanList(awsNodes.official, "AWS·三网优选", siteSettings.enableAwsOfficial, null, "AWS", 0);
+            pushCleanList(awsNodes.ct, "AWS·电信优选", siteSettings.enableAwsCT, null, "NRT", 66);
+            pushCleanList(awsNodes.cu, "AWS·联通优选", siteSettings.enableAwsCU, null, "HKG", 38);
+            pushCleanList(awsNodes.cm, "AWS·移动优选", siteSettings.enableAwsCM, null, "HKG", 58);
+
+            // 基础域名 CDN 节点
+            nodes.push({
+                name: `${masterPrefix} | CDN-VLESS${nameSuffix} [${cleanDomain}]`,
+                type: "vless",
+                server: cleanDomain,
+                port: 443,
+                uuid: uuid,
+                tls: true,
+                sni: cleanDomain,
+                network: "ws",
+                wsPath: vlessPath,
+                wsHeaders: { Host: cleanDomain }
+            });
+            nodes.push({
+                name: `${masterPrefix} | CDN-VMess${nameSuffix} [${cleanDomain}]`,
+                type: "vmess",
+                server: cleanDomain,
+                port: 443,
+                uuid: uuid,
+                alterId: 0,
+                cipher: "auto",
+                tls: true,
+                sni: cleanDomain,
+                network: "ws",
+                wsPath: vmessPath,
+                wsHeaders: { Host: cleanDomain }
+            });
+            nodes.push({
+                name: `${masterPrefix} | CDN-Trojan${nameSuffix} [${cleanDomain}]`,
+                type: "trojan",
+                server: cleanDomain,
+                port: 443,
+                password: uuid,
+                tls: true,
+                sni: cleanDomain,
+                network: "ws",
+                wsPath: trojanPath,
+                wsHeaders: { Host: cleanDomain }
+            });
+        }
+
         nodes.push({
             name: `${masterPrefix} | 直连-VLESS${nameSuffix}`,
             type: "vless",
@@ -2613,7 +2926,10 @@ function handleHttpRequest(req, res) {
         normalizedUrl = normalizedUrl.slice(3); // 去掉 /v3 前缀
     }
     const parsedUrl = new URL(normalizedUrl, `http://${req.headers.host}`);
-    const pathname = parsedUrl.pathname;
+    // 自动清除尾部冗余斜杠（如 /admin/ -> /admin），彻底兼容浏览器与反代带斜杠访问
+    const pathname = (parsedUrl.pathname.length > 1 && parsedUrl.pathname.endsWith("/"))
+        ? parsedUrl.pathname.replace(/\/+$/, "")
+        : parsedUrl.pathname;
     const query = parsedUrl.searchParams;
 
     // 1. 订阅分发 (支持 Base64 / Clash / Surge 自动转换分发)
@@ -3396,7 +3712,9 @@ function handleHttpRequest(req, res) {
         if (pathname === "/admin/api/settings" && req.method === "GET") {
             return sendJsonResponse(res, 200, {
                 ...siteSettings,
-                serverLocation: getEffectiveServerLocation(),
+                serverLocation: siteSettings.serverLocation || "", // 默认不填写，留空代表自动根据公网IP探测
+                autoDetectedLocation: detectedCountry ? `${detectedCountry.flag} ${detectedCountry.name}` : "",
+                effectiveLocation: getEffectiveServerLocation(),
                 envSettings: {
                     SERVER_PORT,
                     DIRECT_IP,
@@ -3490,6 +3808,21 @@ function handleHttpRequest(req, res) {
                         siteSettings.tgApiBase = String(data.tgApiBase || "").trim();
                         TG_API_BASE = siteSettings.tgApiBase;
                     }
+
+                    // CDN 优选矩阵独立开关与微测网定时同步设置
+                    if (data.enableOptOfficial !== undefined) siteSettings.enableOptOfficial = Boolean(data.enableOptOfficial);
+                    if (data.enableOptCT !== undefined) siteSettings.enableOptCT = Boolean(data.enableOptCT);
+                    if (data.enableOptCU !== undefined) siteSettings.enableOptCU = Boolean(data.enableOptCU);
+                    if (data.enableOptCM !== undefined) siteSettings.enableOptCM = Boolean(data.enableOptCM);
+                    if (data.enableAwsOfficial !== undefined) siteSettings.enableAwsOfficial = Boolean(data.enableAwsOfficial);
+                    if (data.enableAwsCT !== undefined) siteSettings.enableAwsCT = Boolean(data.enableAwsCT);
+                    if (data.enableAwsCU !== undefined) siteSettings.enableAwsCU = Boolean(data.enableAwsCU);
+                    if (data.enableAwsCM !== undefined) siteSettings.enableAwsCM = Boolean(data.enableAwsCM);
+                    if (data.autoSyncWetest !== undefined) siteSettings.autoSyncWetest = Boolean(data.autoSyncWetest);
+                    if (data.optOfficialIp !== undefined) siteSettings.optOfficialIp = String(data.optOfficialIp || "").trim();
+                    if (data.optCTIp !== undefined) siteSettings.optCTIp = String(data.optCTIp || "").trim();
+                    if (data.optCUIp !== undefined) siteSettings.optCUIp = String(data.optCUIp || "").trim();
+                    if (data.optCMIp !== undefined) siteSettings.optCMIp = String(data.optCMIp || "").trim();
 
                     // 准备 .env 持久化更新字典与端口探针告警记录
                     const envUpdates = {};
@@ -3692,6 +4025,26 @@ function handleHttpRequest(req, res) {
                 } catch (e) {
                     return sendJsonResponse(res, 500, { error: "保存站点配置失败: " + e.message });
                 }
+            });
+            return;
+        }
+
+        // 手动一键同步微测网优选 IP 矩阵 (Cloudflare + AWS CloudFront)
+        if (pathname === "/admin/api/sync-wetest" && req.method === "POST") {
+            fetchWetestCleanIps(true).then((updatedSettings) => {
+                sendJsonResponse(res, 200, {
+                    success: true,
+                    message: "微测网 Cloudflare + AWS CloudFront 优选 IP 矩阵同步成功！",
+                    wetestSyncTime: updatedSettings.wetestSyncTime,
+                    optCTIp: updatedSettings.optCTIp,
+                    optCUIp: updatedSettings.optCUIp,
+                    optCMIp: updatedSettings.optCMIp,
+                    cfNodes: updatedSettings.cfNodes,
+                    awsNodes: updatedSettings.awsNodes,
+                    settings: siteSettings
+                });
+            }).catch((err) => {
+                sendJsonResponse(res, 500, { success: false, error: err.message });
             });
             return;
         }
@@ -4767,6 +5120,7 @@ function initTelegramBotService() {
             requiredGroup: effectiveGroup,
             apiBase: effectiveApiBase,
             getUsers: () => usersDatabase,
+            saveUsers: () => saveUsers(),
             createUser: async (data) => {
                 const cleanUser = String(data.username || "").trim();
                 const cleanPwd = String(data.password || "").trim();
@@ -4897,7 +5251,7 @@ function initTelegramBotService() {
                 }
             },
             getBaseSubUrl: (userUuid) => {
-                const rawCustomDomain = (siteSettings.subDomain || siteSettings.publicHost || process.env.SUB_DOMAIN || "db.995677.xyz").trim();
+                const rawCustomDomain = (siteSettings.subDomain || siteSettings.publicHost || process.env.SUB_DOMAIN || "").trim();
                 if (rawCustomDomain) {
                     const cleanDomain = rawCustomDomain.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
                     const proto = (cleanDomain.includes(":") && !cleanDomain.endsWith(":443")) ? "http" : "https";
@@ -4969,7 +5323,7 @@ function initTelegramBotService() {
                 return `http://${ip}:${SERVER_PORT}/admin`;
             },
             getAppImportUrl: (userUuid, app) => {
-                const rawCustomDomain = (siteSettings.subDomain || siteSettings.publicHost || process.env.SUB_DOMAIN || "db.995677.xyz").trim();
+                const rawCustomDomain = (siteSettings.subDomain || siteSettings.publicHost || process.env.SUB_DOMAIN || "").trim();
                 const cleanDomain = rawCustomDomain.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
                 const proto = (cleanDomain.includes(":") && !cleanDomain.endsWith(":443")) ? "http" : "https";
                 return `${proto}://${cleanDomain}/import?token=${userUuid}&app=${app}`;

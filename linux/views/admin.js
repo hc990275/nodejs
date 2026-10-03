@@ -1291,6 +1291,7 @@ return sendHtmlResponse(res, 200, `
                                 <button type="button" class="tab-btn active" id="tab_btn_ops" onclick="switchSettingsTab('ops')" style="padding:8px 14px; background:none; border:none; border-bottom:2px solid var(--el-primary); font-weight:600; color:var(--el-primary); cursor:pointer; font-size:13px;">🏢 运营与注册</button>
                                 <button type="button" class="tab-btn" id="tab_btn_proto" onclick="switchSettingsTab('proto')" style="padding:8px 14px; background:none; border:none; border-bottom:2px solid transparent; font-weight:500; color:var(--el-text-regular); cursor:pointer; font-size:13px;">⚡ 节点协议与端口</button>
                                 <button type="button" class="tab-btn" id="tab_btn_net" onclick="switchSettingsTab('net')" style="padding:8px 14px; background:none; border:none; border-bottom:2px solid transparent; font-weight:500; color:var(--el-text-regular); cursor:pointer; font-size:13px;">🌐 网络与公网IP</button>
+                                <button type="button" class="tab-btn" id="tab_btn_cdn" onclick="switchSettingsTab('cdn')" style="padding:8px 14px; background:none; border:none; border-bottom:2px solid transparent; font-weight:500; color:var(--el-text-regular); cursor:pointer; font-size:13px;">🚀 CDN 优选 (微测网)</button>
                             </div>
 
                             <!-- TAB 1: 运营与注册 -->
@@ -1548,6 +1549,196 @@ return sendHtmlResponse(res, 200, `
                                     <label>宿主机外网公网 IPv4 (SERVER_IP / DIRECT_IP)</label>
                                     <input type="text" id="env_DIRECT_IP" placeholder="留空则由系统权威接口自动探测真实公网 IP" />
                                     <span style="font-size:11px; color:var(--el-text-secondary); margin-top:4px; display:block;">留空时由服务器自动探测并广播公网 IP，换 VPS 机房或云服务器迁移时通常保持留空即可。</span>
+                                </div>
+                            </div>
+
+                            <!-- TAB 4: CDN 优选分发矩阵 (Cloudflare + AWS CloudFront 独立开关控制) -->
+                            <div id="tab_content_cdn" style="display:none;">
+                                <div style="background:#f4f4f5; border:1px solid #dcdfe6; border-radius:6px; padding:12px 14px; margin-bottom:14px;">
+                                    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+                                        <div>
+                                            <div style="font-size:13px; font-weight:600; color:#303133;">🚀 CDN 优选双擎全量动态矩阵 (Cloudflare + AWS CloudFront)</div>
+                                            <div style="font-size:11px; color:#606266; margin-top:2px;">
+                                                自动从微测网 (wetest.vip) 动态抓取全部低延迟 IP (有多少抓多少)。下方各运营商线路<strong>全部独立开关</strong>，可自由组合开关。
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <button type="button" id="btnSyncWetest" class="btn" onclick="manualSyncWetest(this)" style="background:#409eff; color:#ffffff; border:none; padding:6px 14px; font-size:12px; border-radius:4px; cursor:pointer; font-weight:600;">
+                                                🔄 立即全量同步微测网
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div style="margin-top:10px; font-size:11px; color:#606266; display:flex; justify-content:space-between; align-items:center; border-top:1px dashed #dcdfe6; padding-top:8px;">
+                                        <span>微测网最近同步时间：<strong id="wetest_last_sync_time" style="color:#409eff;">未同步</strong></span>
+                                        <label style="display:flex; align-items:center; gap:4px; cursor:pointer;">
+                                            <input type="checkbox" id="set_autoSyncWetest" />
+                                            <span>后台每 30 分钟自动抓取更新</span>
+                                        </label>
+                                    </div>
+                                </div>
+
+                                <!-- ════════ 第一部分：Cloudflare CDN 矩阵 (全部抓取) ════════ -->
+                                <div style="margin-bottom:16px;">
+                                    <div style="font-size:13px; font-weight:700; color:#2c3e50; margin-bottom:8px; display:flex; align-items:center; gap:6px;">
+                                        <span>🛡️ Cloudflare CDN 优选专线</span>
+                                        <span id="badge_cf_total_count" style="font-size:11px; font-weight:normal; background:#ecf5ff; color:#409eff; border:1px solid #d9ecff; padding:1px 6px; border-radius:3px;">动态池: 已抓取</span>
+                                    </div>
+
+                                    <!-- 1. CF 官方 Anycast -->
+                                    <div style="background:#ffffff; border:1px solid #dcdfe6; border-radius:6px; padding:10px 12px; margin-bottom:8px;">
+                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                                            <div style="display:flex; align-items:center; gap:6px;">
+                                                <span style="font-weight:600; font-size:12px; color:#303133;">CF 官方 Anycast 优选</span>
+                                                <span id="badge_cf_official_count" style="background:#f4f4f5; color:#909399; padding:1px 5px; border-radius:3px; font-size:10px;">5个IP</span>
+                                            </div>
+                                            <label style="display:flex; align-items:center; gap:4px; cursor:pointer; font-size:12px; font-weight:600; color:#409eff;">
+                                                <input type="checkbox" id="set_enableOptOfficial" />
+                                                <span>开启下发</span>
+                                            </label>
+                                        </div>
+                                        <div style="font-size:11px; color:#909399; margin-bottom:6px;">Cloudflare 权威 Anycast 全球节点智能就近调度。</div>
+                                        <div class="field-box" style="margin-bottom:0;">
+                                            <label style="font-size:11px;">接入主域名 (留空跟随系统)</label>
+                                            <input type="text" id="set_optOfficialIp" placeholder="默认跟随 subDomain" style="font-size:12px; padding:4px 8px;" />
+                                        </div>
+                                    </div>
+
+                                    <!-- 2. CF 中国电信 -->
+                                    <div style="background:#ffffff; border:1px solid #dcdfe6; border-radius:6px; padding:10px 12px; margin-bottom:8px;">
+                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                                            <div style="display:flex; align-items:center; gap:6px;">
+                                                <span style="font-weight:600; font-size:12px; color:#303133;">CF 中国电信 (CT) 优选</span>
+                                                <span id="badge_optCTColo" style="background:#f0f9eb; color:#67c23a; border:1px solid #e1f3d8; padding:1px 5px; border-radius:3px; font-size:10px;">机房: --</span>
+                                                <span id="badge_optCTRtt" style="background:#fdf6ec; color:#e6a23c; border:1px solid #faecd8; padding:1px 5px; border-radius:3px; font-size:10px;">延迟: --ms</span>
+                                                <span id="badge_cf_ct_count" style="background:#f4f4f5; color:#909399; padding:1px 5px; border-radius:3px; font-size:10px;">5个IP</span>
+                                            </div>
+                                            <label style="display:flex; align-items:center; gap:4px; cursor:pointer; font-size:12px; font-weight:600; color:#67c23a;">
+                                                <input type="checkbox" id="set_enableOptCT" />
+                                                <span>开启下发</span>
+                                            </label>
+                                        </div>
+                                        <div style="font-size:11px; color:#909399; margin-bottom:6px;">针对中国电信骨干网，自动生成全部优质节点。</div>
+                                        <div class="field-box" style="margin-bottom:0;">
+                                            <label style="font-size:11px;">首选 IPv4 (其余节点由微测网全量自动填充)</label>
+                                            <input type="text" id="set_optCTIp" placeholder="如 104.25.18.145" style="font-size:12px; padding:4px 8px;" />
+                                        </div>
+                                    </div>
+
+                                    <!-- 3. CF 中国联通 -->
+                                    <div style="background:#ffffff; border:1px solid #dcdfe6; border-radius:6px; padding:10px 12px; margin-bottom:8px;">
+                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                                            <div style="display:flex; align-items:center; gap:6px;">
+                                                <span style="font-weight:600; font-size:12px; color:#303133;">CF 中国联通 (CU) 优选</span>
+                                                <span id="badge_optCUColo" style="background:#f0f9eb; color:#67c23a; border:1px solid #e1f3d8; padding:1px 5px; border-radius:3px; font-size:10px;">机房: --</span>
+                                                <span id="badge_optCURtt" style="background:#fdf6ec; color:#e6a23c; border:1px solid #faecd8; padding:1px 5px; border-radius:3px; font-size:10px;">延迟: --ms</span>
+                                                <span id="badge_cf_cu_count" style="background:#f4f4f5; color:#909399; padding:1px 5px; border-radius:3px; font-size:10px;">5个IP</span>
+                                            </div>
+                                            <label style="display:flex; align-items:center; gap:4px; cursor:pointer; font-size:12px; font-weight:600; color:#409eff;">
+                                                <input type="checkbox" id="set_enableOptCU" />
+                                                <span>开启下发</span>
+                                            </label>
+                                        </div>
+                                        <div style="font-size:11px; color:#909399; margin-bottom:6px;">针对中国联通骨干网定向直连，自动生成全部优质节点。</div>
+                                        <div class="field-box" style="margin-bottom:0;">
+                                            <label style="font-size:11px;">首选 IPv4 (其余节点由微测网全量自动填充)</label>
+                                            <input type="text" id="set_optCUIp" placeholder="如 104.19.152.130" style="font-size:12px; padding:4px 8px;" />
+                                        </div>
+                                    </div>
+
+                                    <!-- 4. CF 中国移动 -->
+                                    <div style="background:#ffffff; border:1px solid #dcdfe6; border-radius:6px; padding:10px 12px; margin-bottom:8px;">
+                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                                            <div style="display:flex; align-items:center; gap:6px;">
+                                                <span style="font-weight:600; font-size:12px; color:#303133;">CF 中国移动 (CM) 优选</span>
+                                                <span id="badge_optCMColo" style="background:#f0f9eb; color:#67c23a; border:1px solid #e1f3d8; padding:1px 5px; border-radius:3px; font-size:10px;">机房: --</span>
+                                                <span id="badge_optCMRtt" style="background:#fdf6ec; color:#e6a23c; border:1px solid #faecd8; padding:1px 5px; border-radius:3px; font-size:10px;">延迟: --ms</span>
+                                                <span id="badge_cf_cm_count" style="background:#f4f4f5; color:#909399; padding:1px 5px; border-radius:3px; font-size:10px;">5个IP</span>
+                                            </div>
+                                            <label style="display:flex; align-items:center; gap:4px; cursor:pointer; font-size:12px; font-weight:600; color:#e6a23c;">
+                                                <input type="checkbox" id="set_enableOptCM" />
+                                                <span>开启下发</span>
+                                            </label>
+                                        </div>
+                                        <div style="font-size:11px; color:#909399; margin-bottom:6px;">针对中国移动骨干网 (通常为香港低延迟节点)，自动生成全部优质节点。</div>
+                                        <div class="field-box" style="margin-bottom:0;">
+                                            <label style="font-size:11px;">首选 IPv4 (其余节点由微测网全量自动填充)</label>
+                                            <input type="text" id="set_optCMIp" placeholder="如 104.21.90.61" style="font-size:12px; padding:4px 8px;" />
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- ════════ 第二部分：AWS CloudFront 矩阵 (全部抓取) ════════ -->
+                                <div style="margin-bottom:12px;">
+                                    <div style="font-size:13px; font-weight:700; color:#2c3e50; margin-bottom:8px; display:flex; align-items:center; gap:6px;">
+                                        <span>☁️ AWS CloudFront CDN 优选专线</span>
+                                        <span id="badge_aws_total_count" style="font-size:11px; font-weight:normal; background:#fdf6ec; color:#e6a23c; border:1px solid #faecd8; padding:1px 6px; border-radius:3px;">动态池: 已抓取</span>
+                                    </div>
+
+                                    <!-- 5. AWS 三网通用 Anycast -->
+                                    <div style="background:#ffffff; border:1px solid #dcdfe6; border-radius:6px; padding:10px 12px; margin-bottom:8px;">
+                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                                            <div style="display:flex; align-items:center; gap:6px;">
+                                                <span style="font-weight:600; font-size:12px; color:#303133;">AWS 三网通用 Anycast</span>
+                                                <span id="badge_aws_official_count" style="background:#f4f4f5; color:#909399; padding:1px 5px; border-radius:3px; font-size:10px;">5个IP</span>
+                                            </div>
+                                            <label style="display:flex; align-items:center; gap:4px; cursor:pointer; font-size:12px; font-weight:600; color:#409eff;">
+                                                <input type="checkbox" id="set_enableAwsOfficial" />
+                                                <span>开启下发</span>
+                                            </label>
+                                        </div>
+                                        <div style="font-size:11px; color:#909399;">AWS 全球高防 Anycast CDN 节点，多地区智能分发。</div>
+                                    </div>
+
+                                    <!-- 6. AWS 中国电信 -->
+                                    <div style="background:#ffffff; border:1px solid #dcdfe6; border-radius:6px; padding:10px 12px; margin-bottom:8px;">
+                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                                            <div style="display:flex; align-items:center; gap:6px;">
+                                                <span style="font-weight:600; font-size:12px; color:#303133;">AWS 中国电信 (CT) 优选</span>
+                                                <span id="badge_awsCTColo" style="background:#f0f9eb; color:#67c23a; border:1px solid #e1f3d8; padding:1px 5px; border-radius:3px; font-size:10px;">机房: --</span>
+                                                <span id="badge_awsCTRtt" style="background:#fdf6ec; color:#e6a23c; border:1px solid #faecd8; padding:1px 5px; border-radius:3px; font-size:10px;">延迟: --ms</span>
+                                                <span id="badge_aws_ct_count" style="background:#f4f4f5; color:#909399; padding:1px 5px; border-radius:3px; font-size:10px;">5个IP</span>
+                                            </div>
+                                            <label style="display:flex; align-items:center; gap:4px; cursor:pointer; font-size:12px; font-weight:600; color:#67c23a;">
+                                                <input type="checkbox" id="set_enableAwsCT" />
+                                                <span>开启下发</span>
+                                            </label>
+                                        </div>
+                                        <div style="font-size:11px; color:#909399;">针对中国电信骨干网的 AWS 东京 (NRT) 等亚太极速机房。</div>
+                                    </div>
+
+                                    <!-- 7. AWS 中国联通 -->
+                                    <div style="background:#ffffff; border:1px solid #dcdfe6; border-radius:6px; padding:10px 12px; margin-bottom:8px;">
+                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                                            <div style="display:flex; align-items:center; gap:6px;">
+                                                <span style="font-weight:600; font-size:12px; color:#303133;">AWS 中国联通 (CU) 优选</span>
+                                                <span id="badge_awsCUColo" style="background:#f0f9eb; color:#67c23a; border:1px solid #e1f3d8; padding:1px 5px; border-radius:3px; font-size:10px;">机房: --</span>
+                                                <span id="badge_awsCURtt" style="background:#fdf6ec; color:#e6a23c; border:1px solid #faecd8; padding:1px 5px; border-radius:3px; font-size:10px;">延迟: --ms</span>
+                                                <span id="badge_aws_cu_count" style="background:#f4f4f5; color:#909399; padding:1px 5px; border-radius:3px; font-size:10px;">5个IP</span>
+                                            </div>
+                                            <label style="display:flex; align-items:center; gap:4px; cursor:pointer; font-size:12px; font-weight:600; color:#409eff;">
+                                                <input type="checkbox" id="set_enableAwsCU" />
+                                                <span>开启下发</span>
+                                            </label>
+                                        </div>
+                                        <div style="font-size:11px; color:#909399;">针对中国联通直连的 AWS 香港/日本超低延迟机房。</div>
+                                    </div>
+
+                                    <!-- 8. AWS 中国移动 -->
+                                    <div style="background:#ffffff; border:1px solid #dcdfe6; border-radius:6px; padding:10px 12px; margin-bottom:8px;">
+                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                                            <div style="display:flex; align-items:center; gap:6px;">
+                                                <span style="font-weight:600; font-size:12px; color:#303133;">AWS 中国移动 (CM) 优选</span>
+                                                <span id="badge_awsCMColo" style="background:#f0f9eb; color:#67c23a; border:1px solid #e1f3d8; padding:1px 5px; border-radius:3px; font-size:10px;">机房: --</span>
+                                                <span id="badge_awsCMRtt" style="background:#fdf6ec; color:#e6a23c; border:1px solid #faecd8; padding:1px 5px; border-radius:3px; font-size:10px;">延迟: --ms</span>
+                                                <span id="badge_aws_cm_count" style="background:#f4f4f5; color:#909399; padding:1px 5px; border-radius:3px; font-size:10px;">5个IP</span>
+                                            </div>
+                                            <label style="display:flex; align-items:center; gap:4px; cursor:pointer; font-size:12px; font-weight:600; color:#e6a23c;">
+                                                <input type="checkbox" id="set_enableAwsCM" />
+                                                <span>开启下发</span>
+                                            </label>
+                                        </div>
+                                        <div style="font-size:11px; color:#909399;">针对中国移动直连的 AWS 香港/新加坡超高速机房。</div>
+                                    </div>
                                 </div>
                             </div>
 
@@ -2037,7 +2228,7 @@ return sendHtmlResponse(res, 200, `
                     }
 
                     function switchSettingsTab(tabKey) {
-                        const tabs = ["ops", "proto", "net"];
+                        const tabs = ["ops", "proto", "net", "cdn"];
                         tabs.forEach((k) => {
                             const btn = document.getElementById("tab_btn_" + k);
                             const content = document.getElementById("tab_content_" + k);
@@ -2242,7 +2433,15 @@ return sendHtmlResponse(res, 200, `
                         if (subDomainInput) subDomainInput.value = s.subDomain || env.SUB_DOMAIN || "db.995677.xyz";
 
                         const sLoc = document.getElementById("set_serverLocation");
-                        if (sLoc) sLoc.value = s.serverLocation || "";
+                        if (sLoc) {
+                            sLoc.value = s.serverLocation || "";
+                            const detectedHint = s.autoDetectedLocation || s.effectiveLocation || "";
+                            if (detectedHint) {
+                                sLoc.placeholder = "留空则自动识别 (当前公网IP探明: " + detectedHint + ")";
+                            } else {
+                                sLoc.placeholder = "留空则根据公网IP自动识别";
+                            }
+                        }
 
                         const defNodes = Array.isArray(s.defaultAssignedNodes) ? s.defaultAssignedNodes : ["*"];
                         const isMasterOnly = defNodes.length === 1 && defNodes[0] === "master";
@@ -2298,9 +2497,123 @@ return sendHtmlResponse(res, 200, `
 
                         setVal("env_DIRECT_IP", env.DIRECT_IP || "");
 
+                        // 回显 8 个独立 CDN 优选节点开关与微测网数据
+                        setCheck("set_enableOptOfficial", s.enableOptOfficial !== false);
+                        setCheck("set_enableOptCT", s.enableOptCT !== false);
+                        setCheck("set_enableOptCU", s.enableOptCU !== false);
+                        setCheck("set_enableOptCM", s.enableOptCM !== false);
+                        setCheck("set_autoSyncWetest", s.autoSyncWetest !== false);
+
+                        // 回显 AWS CloudFront 4 个独立优选开关
+                        setCheck("set_enableAwsOfficial", s.enableAwsOfficial !== false);
+                        setCheck("set_enableAwsCT", s.enableAwsCT !== false);
+                        setCheck("set_enableAwsCU", s.enableAwsCU !== false);
+                        setCheck("set_enableAwsCM", s.enableAwsCM !== false);
+
+                        setVal("set_optOfficialIp", s.optOfficialIp || "");
+                        setVal("set_optCTIp", s.optCTIp || "104.25.18.145");
+                        setVal("set_optCUIp", s.optCUIp || "104.19.152.130");
+                        setVal("set_optCMIp", s.optCMIp || "104.21.90.61");
+
+                        const updateCdnBadges = (data) => {
+                            // CF 徽章更新
+                            const ctColoEl = document.getElementById("badge_optCTColo");
+                            const ctRttEl = document.getElementById("badge_optCTRtt");
+                            if (ctColoEl) ctColoEl.innerText = "机房: " + (data.optCTColo || "--");
+                            if (ctRttEl) ctRttEl.innerText = "延迟: " + (data.optCTRtt ? data.optCTRtt + "ms" : "--");
+
+                            const cuColoEl = document.getElementById("badge_optCUColo");
+                            const cuRttEl = document.getElementById("badge_optCURtt");
+                            if (cuColoEl) cuColoEl.innerText = "机房: " + (data.optCUColo || "--");
+                            if (cuRttEl) cuRttEl.innerText = "延迟: " + (data.optCURtt ? data.optCURtt + "ms" : "--");
+
+                            const cmColoEl = document.getElementById("badge_optCMColo");
+                            const cmRttEl = document.getElementById("badge_optCMRtt");
+                            if (cmColoEl) cmColoEl.innerText = "机房: " + (data.optCMColo || "--");
+                            if (cmRttEl) cmRttEl.innerText = "延迟: " + (data.optCMRtt ? data.optCMRtt + "ms" : "--");
+
+                            // CF 全量数量统计徽章
+                            const cfNodes = data.cfNodes || {};
+                            const cfOfficialLen = (cfNodes.official && cfNodes.official.length) || 5;
+                            const cfCtLen = (cfNodes.ct && cfNodes.ct.length) || 5;
+                            const cfCuLen = (cfNodes.cu && cfNodes.cu.length) || 5;
+                            const cfCmLen = (cfNodes.cm && cfNodes.cm.length) || 5;
+                            const cfTotalLen = cfOfficialLen + cfCtLen + cfCuLen + cfCmLen;
+
+                            const setBadgeText = (id, txt) => { const el = document.getElementById(id); if (el) el.innerText = txt; };
+                            setBadgeText("badge_cf_official_count", cfOfficialLen + "个IP");
+                            setBadgeText("badge_cf_ct_count", cfCtLen + "个IP");
+                            setBadgeText("badge_cf_cu_count", cfCuLen + "个IP");
+                            setBadgeText("badge_cf_cm_count", cfCmLen + "个IP");
+                            setBadgeText("badge_cf_total_count", "动态池: 已抓取 " + cfTotalLen + " 个优质节点");
+
+                            // AWS CloudFront 徽章更新与数量统计
+                            const awsNodes = data.awsNodes || {};
+                            const awsOfficialLen = (awsNodes.official && awsNodes.official.length) || 5;
+                            const awsCtLen = (awsNodes.ct && awsNodes.ct.length) || 5;
+                            const awsCuLen = (awsNodes.cu && awsNodes.cu.length) || 5;
+                            const awsCmLen = (awsNodes.cm && awsNodes.cm.length) || 5;
+                            const awsTotalLen = awsOfficialLen + awsCtLen + awsCuLen + awsCmLen;
+
+                            setBadgeText("badge_aws_official_count", awsOfficialLen + "个IP");
+                            setBadgeText("badge_aws_ct_count", awsCtLen + "个IP");
+                            setBadgeText("badge_aws_cu_count", awsCuLen + "个IP");
+                            setBadgeText("badge_aws_cm_count", awsCmLen + "个IP");
+                            setBadgeText("badge_aws_total_count", "动态池: 已抓取 " + awsTotalLen + " 个优质节点");
+
+                            const awsCtTop = (awsNodes.ct && awsNodes.ct[0]) || { colo: "NRT", rtt: 66 };
+                            setBadgeText("badge_awsCTColo", "机房: " + (awsCtTop.colo || "NRT"));
+                            setBadgeText("badge_awsCTRtt", "延迟: " + (awsCtTop.rtt ? awsCtTop.rtt + "ms" : "--"));
+
+                            const awsCuTop = (awsNodes.cu && awsNodes.cu[0]) || { colo: "HKG", rtt: 38 };
+                            setBadgeText("badge_awsCUColo", "机房: " + (awsCuTop.colo || "HKG"));
+                            setBadgeText("badge_awsCURtt", "延迟: " + (awsCuTop.rtt ? awsCuTop.rtt + "ms" : "--"));
+
+                            const awsCmTop = (awsNodes.cm && awsNodes.cm[0]) || { colo: "HKG", rtt: 58 };
+                            setBadgeText("badge_awsCMColo", "机房: " + (awsCmTop.colo || "HKG"));
+                            setBadgeText("badge_awsCMRtt", "延迟: " + (awsCmTop.rtt ? awsCmTop.rtt + "ms" : "--"));
+
+                            const syncEl = document.getElementById("wetest_last_sync_time");
+                            if (syncEl) syncEl.innerText = data.wetestSyncTime || "未同步";
+                        };
+                        updateCdnBadges(s);
+
                         switchSettingsTab("ops");
                         const modal = document.getElementById("settingsModal");
                         if (modal) modal.style.display = "flex";
+                    }
+
+                    async function manualSyncWetest(btn) {
+                        const originText = btn.innerText;
+                        btn.innerText = "同步中...";
+                        btn.disabled = true;
+                        const token = getAdminToken();
+                        try {
+                            const basePrefix = location.pathname.startsWith("/v3") ? "/v3" : "";
+                            const reqUrl = basePrefix + "/admin/api/sync-wetest" + (token ? "?token=" + encodeURIComponent(token) : "");
+                            const reqHeaders = {};
+                            if (token) reqHeaders["x-admin-token"] = token;
+                            const res = await fetch(reqUrl, { method: "POST", headers: reqHeaders });
+                            const data = await res.json();
+                            if (res.ok && data.settings) {
+                                const s = data.settings;
+                                window.__SITE_SETTINGS__ = Object.assign({}, window.__SITE_SETTINGS__ || {}, s);
+                                setVal("set_optCTIp", s.optCTIp || "");
+                                setVal("set_optCUIp", s.optCUIp || "");
+                                setVal("set_optCMIp", s.optCMIp || "");
+
+                                updateCdnBadges(s);
+
+                                alert("✅ " + (data.message || "微测网 CDN 双擎优选 IP (Cloudflare + AWS CloudFront) 全量抓取成功！"));
+                            } else {
+                                alert("❌ 同步失败: " + (data.error || "未知异常"));
+                            }
+                        } catch (e) {
+                            alert("❌ 异常: " + e.message);
+                        } finally {
+                            btn.innerText = originText;
+                            btn.disabled = false;
+                        }
                     }
 
                     async function manualSyncClientDownloads(btn) {
@@ -2423,6 +2736,21 @@ return sendHtmlResponse(res, 200, `
                         const reqHeaders = { "Content-Type": "application/json" };
                         if (token) reqHeaders["x-admin-token"] = token;
 
+                        // 采集 8 个独立优选节点开关及微测网配置 (有多少抓多少)
+                        const enableOptOfficial = getCheck("set_enableOptOfficial");
+                        const enableOptCT = getCheck("set_enableOptCT");
+                        const enableOptCU = getCheck("set_enableOptCU");
+                        const enableOptCM = getCheck("set_enableOptCM");
+                        const enableAwsOfficial = getCheck("set_enableAwsOfficial");
+                        const enableAwsCT = getCheck("set_enableAwsCT");
+                        const enableAwsCU = getCheck("set_enableAwsCU");
+                        const enableAwsCM = getCheck("set_enableAwsCM");
+                        const autoSyncWetest = getCheck("set_autoSyncWetest");
+                        const optOfficialIp = getVal("set_optOfficialIp");
+                        const optCTIp = getVal("set_optCTIp");
+                        const optCUIp = getVal("set_optCUIp");
+                        const optCMIp = getVal("set_optCMIp");
+
                         const reqBodyStr = JSON.stringify({
                             serverLocation,
                             allowRegister,
@@ -2433,12 +2761,24 @@ return sendHtmlResponse(res, 200, `
                             defaultAssignedNodes,
                             contactText,
                             contactUrl,
-                            serverLocation,
                             subDomain,
                             tgBotToken,
                             tgAdminId,
                             tgRequiredGroup,
                             tgApiBase,
+                            enableOptOfficial,
+                            enableOptCT,
+                            enableOptCU,
+                            enableOptCM,
+                            enableAwsOfficial,
+                            enableAwsCT,
+                            enableAwsCU,
+                            enableAwsCM,
+                            autoSyncWetest,
+                            optOfficialIp,
+                            optCTIp,
+                            optCUIp,
+                            optCMIp,
                             envSettings
                         });
 
