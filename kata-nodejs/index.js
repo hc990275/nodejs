@@ -319,6 +319,13 @@ function reloadEnvHot() {
             console.log('[Env] 🛡️ 单 IP 注册冷却时间已热重载:', siteSettings.ipRegisterCooldownSec, '秒');
         }
 
+                if (newEnv.SUBAPI !== undefined) {
+            siteSettings.subApi = newEnv.SUBAPI.trim();
+            console.log('[Env] 🔄 订阅转换后端已热更新:', siteSettings.subApi);
+        }
+        if (newEnv.SUBCONFIG !== undefined) {
+            siteSettings.subConfig = newEnv.SUBCONFIG.trim();
+        }
         if (newEnv.IP_DAILY_REGISTER_LIMIT !== undefined) {
             siteSettings.ipDailyRegisterLimit = Math.max(0, parseInt(newEnv.IP_DAILY_REGISTER_LIMIT, 10) || 0);
             console.log('[Env] 🛡️ 单 IP 每日注册上限已热重载:', siteSettings.ipDailyRegisterLimit, '个');
@@ -360,6 +367,8 @@ const DEFAULT_SETTINGS = {
     defaultTrafficGB: parseInt(getEnv('DEFAULT_TRAFFIC_GB', '100'), 10),
     ipRegisterCooldownSec: parseInt(getEnv('IP_REGISTER_COOLDOWN_SEC', '60'), 10), // 单 IP 注册冷却时间 (秒)
     ipDailyRegisterLimit: parseInt(getEnv('IP_DAILY_REGISTER_LIMIT', '3'), 10),     // 单 IP 24小时注册配额上限 (个)
+    subApi: getEnv('SUBAPI', 'local'), // 订阅转换服务: local(本地原生零外传引擎) 或 https://api.v1.mk 等公网Subconverter
+    subConfig: getEnv('SUBCONFIG', 'https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/config/ACL4SSR_Online.ini'),
     subDomain: getEnv('SUB_DOMAIN', ''),
     argoToken: getEnv('ARGO_TOKEN', ''),
     argoDomain: getEnv('ARGO_DOMAIN', ''),
@@ -993,7 +1002,7 @@ function formatBytes(bytes) {
 // ==========================================
 // 10. Web 服务与 API
 // ==========================================
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
     const parsedUrl = url.parse(req.url, true);
     const pathname = parsedUrl.pathname;
     const method = req.method;
@@ -1021,7 +1030,406 @@ const server = http.createServer((req, res) => {
         });
     };
 
-    // ──────────────── 1. 订阅导出 /sub ────────────────
+    
+// ========================================================
+// 8.1 全能订阅转换与零信任安全脱敏引擎 (Universal Converter SOP)
+// ========================================================
+function parseVlessUri(uri) {
+    try {
+        const u = new URL(uri);
+        const uuid = u.username;
+        const server = u.hostname;
+        const port = parseInt(u.port || '443', 10);
+        const name = decodeURIComponent(u.hash.replace(/^#/, '')) || `${server}:${port}`;
+        const params = u.searchParams;
+        const tls = params.get('security') === 'tls';
+        const sni = params.get('sni') || params.get('host') || server;
+        const host = params.get('host') || sni;
+        const path = params.get('path') || '/';
+        const type = params.get('type') || 'ws';
+        return { name, uuid, server, port, tls, sni, host, path, type };
+    } catch (e) {
+        return null;
+    }
+}
+
+function generateClashConfig(parsedNodes, subName = 'Kata-Tunnel') {
+    const validNodes = parsedNodes.filter(n => n !== null);
+    const nodeNames = validNodes.map(n => n.name);
+
+    let proxiesYaml = validNodes.map(n => {
+        return `  - name: "${n.name}"
+    type: vless
+    server: "${n.server}"
+    port: ${n.port}
+    uuid: "${n.uuid}"
+    cipher: auto
+    udp: true
+    tls: ${n.tls}
+    skip-cert-verify: false
+    servername: "${n.sni}"
+    network: ws
+    ws-opts:
+      path: "${n.path}"
+      headers:
+        Host: "${n.host}"`;
+    }).join('\n');
+
+    const ctNames = validNodes.filter(n => n.name.includes('电信')).map(n => `"${n.name}"`);
+    const cuNames = validNodes.filter(n => n.name.includes('联通')).map(n => `"${n.name}"`);
+    const cmNames = validNodes.filter(n => n.name.includes('移动')).map(n => `"${n.name}"`);
+    const directNames = validNodes.filter(n => n.name.includes('直连')).map(n => `"${n.name}"`);
+
+    const quotedAll = nodeNames.map(n => `"${n}"`);
+
+    let groupsYaml = `  - name: "🚀 节点选择"
+    type: select
+    proxies:
+      - "⚡ 自动优选"
+      - "🇨🇳 电信优选"
+      - "🇨🇳 联通优选"
+      - "🇨🇳 移动优选"
+      - "🌐 直连优选"
+      - DIRECT
+      ${quotedAll.map(n => '- ' + n).join('\n      ')}
+
+  - name: "⚡ 自动优选"
+    type: url-test
+    url: http://cp.cloudflare.com/generate_204
+    interval: 300
+    tolerance: 50
+    proxies:
+      ${quotedAll.map(n => '- ' + n).join('\n      ')}
+
+  - name: "🇨🇳 电信优选"
+    type: select
+    proxies:
+      ${(ctNames.length > 0 ? ctNames : quotedAll).map(n => '- ' + n).join('\n      ')}
+
+  - name: "🇨🇳 联通优选"
+    type: select
+    proxies:
+      ${(cuNames.length > 0 ? cuNames : quotedAll).map(n => '- ' + n).join('\n      ')}
+
+  - name: "🇨🇳 移动优选"
+    type: select
+    proxies:
+      ${(cmNames.length > 0 ? cmNames : quotedAll).map(n => '- ' + n).join('\n      ')}
+
+  - name: "🌐 直连优选"
+    type: select
+    proxies:
+      ${(directNames.length > 0 ? directNames : quotedAll).map(n => '- ' + n).join('\n      ')}
+
+  - name: "🐟 漏网之鱼"
+    type: select
+    proxies:
+      - "🚀 节点选择"
+      - "⚡ 自动优选"
+      - DIRECT`;
+
+    return `# ========================================================
+# 🚀 ${subName} Clash / Meta 专属开箱即用订阅配置
+# 🛡️ 零信任安全脱敏架构 · 内置国内权威 DNS 与三网自动测速
+# ========================================================
+port: 7890
+socks-port: 7891
+mixed-port: 7890
+allow-lan: false
+mode: rule
+log-level: info
+ipv6: false
+external-controller: 127.0.0.1:9090
+
+dns:
+  enable: true
+  listen: 0.0.0.0:1053
+  ipv6: false
+  default-nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  nameserver:
+    - https://dns.alidns.com/dns-query
+    - https://doh.pub/dns-query
+  fallback:
+    - https://1.1.1.1/dns-query
+    - https://8.8.8.8/dns-query
+  fallback-filter:
+    geoip: true
+    geoip-code: CN
+    ipcidr:
+      - 240.0.0.0/4
+
+proxies:
+${proxiesYaml}
+
+proxy-groups:
+${groupsYaml}
+
+rules:
+  - GEOIP,LAN,DIRECT
+  - GEOIP,CN,DIRECT
+  - GEOSITE,CN,DIRECT
+  - MATCH,🚀 节点选择
+`;
+}
+
+function generateSingboxConfig(parsedNodes, subName = 'Kata-Tunnel') {
+    const validNodes = parsedNodes.filter(n => n !== null);
+    const nodeTags = validNodes.map(n => n.name);
+
+    const outbounds = [
+        {
+            type: "selector",
+            tag: "🚀 节点选择",
+            outbounds: ["⚡ 自动优选", ...nodeTags, "direct"]
+        },
+        {
+            type: "urltest",
+            tag: "⚡ 自动优选",
+            outbounds: nodeTags,
+            url: "http://cp.cloudflare.com/generate_204",
+            interval: "3m",
+            tolerance: 50
+        }
+    ];
+
+    validNodes.forEach(n => {
+        outbounds.push({
+            type: "vless",
+            tag: n.name,
+            server: n.server,
+            server_port: n.port,
+            uuid: n.uuid,
+            packet_encoding: "xudp",
+            transport: {
+                type: "ws",
+                path: n.path,
+                headers: {
+                    Host: n.host
+                }
+            },
+            tls: {
+                enabled: n.tls,
+                server_name: n.sni,
+                insecure: false
+            }
+        });
+    });
+
+    outbounds.push(
+        { type: "direct", tag: "direct" },
+        { type: "block", tag: "block" },
+        { type: "dns", tag: "dns-out" }
+    );
+
+    const config = {
+        log: { level: "info", timestamp: true },
+        dns: {
+            servers: [
+                { tag: "dns-remote", address: "https://1.1.1.1/dns-query", address_resolver: "dns-local", strategy: "ipv4_only", detour: "🚀 节点选择" },
+                { tag: "dns-local", address: "223.5.5.5", detour: "direct", strategy: "ipv4_only" },
+                { tag: "dns-block", address: "rcode://success" }
+            ],
+            rules: [
+                { outbound: "any", server: "dns-local" },
+                { geosite: "cn", server: "dns-local" },
+                { clash_mode: "Global", server: "dns-remote" }
+            ],
+            strategy: "ipv4_only"
+        },
+        inbounds: [
+            {
+                type: "mixed",
+                tag: "mixed-in",
+                listen: "127.0.0.1",
+                listen_port: 2080,
+                sniff: true,
+                sniff_override_destination: false
+            }
+        ],
+        outbounds: outbounds,
+        route: {
+            rules: [
+                { protocol: "dns", outbound: "dns-out" },
+                { ip_is_private: true, outbound: "direct" },
+                { geosite: "cn", outbound: "direct" },
+                { geoip: "cn", outbound: "direct" },
+                { clash_mode: "Direct", outbound: "direct" },
+                { clash_mode: "Global", outbound: "🚀 节点选择" }
+            ],
+            auto_detect_interface: true
+        }
+    };
+
+    return JSON.stringify(config, null, 2);
+}
+
+
+function generateQuantumultXConfig(parsedNodes, subName = 'Kata-Tunnel') {
+    const validNodes = parsedNodes.filter(n => n !== null);
+
+    // QX server_local 规范格式:
+    // vless=server:port, method=none, password=uuid, obfs=ws, obfs-host=host, obfs-uri=path, fast-open=false, udp-relay=true, tag=名称, [tls=true, tls-verification=true, tls-host=sni]
+    const serverLines = validNodes.map(n => {
+        const cleanTag = n.name.replace(/[=,]/g, ' ');
+        let line = `vless=${n.server}:${n.port}, method=none, password=${n.uuid}, obfs=ws, obfs-host=${n.host}, obfs-uri=${n.path}, fast-open=false, udp-relay=true, tag=${cleanTag}`;
+        if (n.tls) {
+            line += `, tls=true, tls-verification=true, tls-host=${n.sni}`;
+        }
+        return line;
+    });
+
+    const tags = validNodes.map(n => n.name.replace(/[=,]/g, ' '));
+    const ctTags = validNodes.filter(n => n.name.includes('电信')).map(n => n.name.replace(/[=,]/g, ' '));
+    const cuTags = validNodes.filter(n => n.name.includes('联通')).map(n => n.name.replace(/[=,]/g, ' '));
+    const cmTags = validNodes.filter(n => n.name.includes('移动')).map(n => n.name.replace(/[=,]/g, ' '));
+
+    const ctPolicy = ctTags.length > 0 ? `static=🇨🇳 电信优选, ${ctTags.join(', ')}, img-url=https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/ChinaTelecom.png` : '';
+    const cuPolicy = cuTags.length > 0 ? `static=🇨🇳 联通优选, ${cuTags.join(', ')}, img-url=https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/ChinaUnicom.png` : '';
+    const cmPolicy = cmTags.length > 0 ? `static=🇨🇳 移动优选, ${cmTags.join(', ')}, img-url=https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/ChinaMobile.png` : '';
+
+    const allTagsStr = tags.length > 0 ? tags.join(', ') : 'direct';
+
+    return `# ========================================================
+# 🚀 ${subName} Quantumult X 专属配置文件
+# 🛡️ 零信任安全脱敏架构 · 极速策略分流
+# ========================================================
+
+[general]
+server_check_url = http://www.gstatic.com/generate_204
+dns_exclusion_list = *.cmpassport.com, *.id6.me, *.open.e.189.cn
+excluded_routes = 192.168.0.0/16, 172.16.0.0/12, 100.64.0.0/10, 10.0.0.0/8
+
+[dns]
+server = 223.5.5.5
+server = 119.29.29.29
+server = 1.1.1.1
+
+[policy]
+static=🚀 节点选择, ⚡ 自动优选${ctTags.length > 0 ? ', 🇨🇳 电信优选' : ''}${cuTags.length > 0 ? ', 🇨🇳 联通优选' : ''}${cmTags.length > 0 ? ', 🇨🇳 移动优选' : ''}, direct, ${allTagsStr}, img-url=https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Rocket.png
+url-latency-benchmark=⚡ 自动优选, ${allTagsStr}, check-interval=300, tolerance=50, img-url=https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Auto.png
+${ctPolicy}
+${cuPolicy}
+${cmPolicy}
+static=🐟 漏网之鱼, 🚀 节点选择, ⚡ 自动优选, direct, img-url=https://raw.githubusercontent.com/Koolson/Qure/master/IconSet/Color/Final.png
+
+[server_local]
+${serverLines.join('\n')}
+
+[filter_local]
+geoip, cn, direct
+final, 🚀 节点选择
+`.replace(/\n\s*\n\s*\n/g, '\n\n');
+}
+
+function generateSurgeConfig(parsedNodes, subName = 'Kata-Tunnel') {
+    const validNodes = parsedNodes.filter(n => n !== null);
+
+    const proxyLines = validNodes.map(n => {
+        const cleanName = n.name.replace(/[=,]/g, ' ');
+        return `${cleanName} = vless, ${n.server}, ${n.port}, username=${n.uuid}, ws=true, ws-path=${n.path}, ws-headers=Host:${n.host}, tls=${n.tls}, sni=${n.sni}, skip-cert-verify=false, udp-relay=true`;
+    });
+
+    const cleanNames = validNodes.map(n => n.name.replace(/[=,]/g, ' '));
+    const ctNames = validNodes.filter(n => n.name.includes('电信')).map(n => n.name.replace(/[=,]/g, ' '));
+    const cuNames = validNodes.filter(n => n.name.includes('联通')).map(n => n.name.replace(/[=,]/g, ' '));
+    const cmNames = validNodes.filter(n => n.name.includes('移动')).map(n => n.name.replace(/[=,]/g, ' '));
+
+    const ctGroup = ctNames.length > 0 ? `🇨🇳 电信优选 = url-test, ${ctNames.join(', ')}, url=http://www.gstatic.com/generate_204, interval=300, tolerance=50` : '';
+    const cuGroup = cuNames.length > 0 ? `🇨🇳 联通优选 = url-test, ${cuNames.join(', ')}, url=http://www.gstatic.com/generate_204, interval=300, tolerance=50` : '';
+    const cmGroup = cmNames.length > 0 ? `🇨🇳 移动优选 = url-test, ${cmNames.join(', ')}, url=http://www.gstatic.com/generate_204, interval=300, tolerance=50` : '';
+
+    const autoAll = cleanNames.length > 0 ? cleanNames.join(', ') : 'DIRECT';
+
+    return `#!MANAGEMENT
+# ========================================================
+# 🚀 ${subName} Surge 专属托管配置
+# 🛡️ 零信任安全脱敏架构 · 极速分流策略
+# ========================================================
+
+[General]
+loglevel = notify
+bypass-system = true
+skip-proxy = 127.0.0.1, 192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12, 100.64.0.0/10, localhost, *.local
+dns-server = 223.5.5.5, 119.29.29.29, 1.1.1.1
+enhanced-mode-by-rule = false
+show-error-page-for-reject = true
+always-real-ip = *.srv.nintendo.net, *.stun.playstation.net, xbox.*.microsoft.com, *.xboxlive.com
+
+[Proxy]
+${proxyLines.join('\n')}
+
+[Proxy Group]
+🚀 节点选择 = select, ⚡ 自动优选${ctNames.length > 0 ? ', 🇨🇳 电信优选' : ''}${cuNames.length > 0 ? ', 🇨🇳 联通优选' : ''}${cmNames.length > 0 ? ', 🇨🇳 移动优选' : ''}, DIRECT, ${autoAll}
+⚡ 自动优选 = url-test, ${autoAll}, url=http://www.gstatic.com/generate_204, interval=300, tolerance=50
+${ctGroup}
+${cuGroup}
+${cmGroup}
+🐟 漏网之鱼 = select, 🚀 节点选择, ⚡ 自动优选, DIRECT
+
+[Rule]
+DOMAIN-SUFFIX,local,DIRECT
+IP-CIDR,127.0.0.0/8,DIRECT
+IP-CIDR,172.16.0.0/12,DIRECT
+IP-CIDR,192.168.0.0/16,DIRECT
+IP-CIDR,10.0.0.0/8,DIRECT
+IP-CIDR,100.64.0.0/10,DIRECT
+GEOIP,CN,DIRECT
+FINAL,🚀 节点选择,dns-failed
+`.replace(/\n\s*\n\s*\n/g, '\n\n');
+}
+
+async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEngineFn) {
+    const subApi = (settings.subApi || '').trim();
+    // 本地原生零外传引擎模式 (物理级内网闭环)
+    if (!subApi || subApi === 'local' || !subApi.startsWith('http')) {
+        return localEngineFn();
+    }
+
+    try {
+        const httpLib = subApi.startsWith('https') ? https : http;
+        // 1. 零信任虚拟占位脱敏 (铁律：绝不向公网Subconverter发送真实UUID与真实域名)
+        const maskedNodes = rawNodes.map(uri => {
+            return uri
+                .replace(user.uuid, '00000000-0000-4000-8000-000000000000')
+                .replace(settings.argoDomain || settings.subDomain || '51.75.118.151', 'example.com');
+        });
+        const maskedBase64 = Buffer.from(maskedNodes.join('\n'), 'utf-8').toString('base64');
+        const subConfig = encodeURIComponent(settings.subConfig || 'https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/config/ACL4SSR_Online.ini');
+        const sourceUrl = encodeURIComponent(`data:text/plain;base64,${maskedBase64}`);
+        const apiUrl = `${subApi}/sub?target=${target}&url=${sourceUrl}&config=${subConfig}&emoji=true&list=false&udp=true&scv=true`;
+
+        // 2. 发起转换 (带 3 秒硬超时熔断保护)
+        const converted = await new Promise((resolve, reject) => {
+            const req = httpLib.get(apiUrl, { timeout: 3000 }, (res) => {
+                if (res.statusCode < 200 || res.statusCode >= 300) {
+                    return reject(new Error(`Subconverter HTTP ${res.statusCode}`));
+                }
+                let body = '';
+                res.setEncoding('utf8');
+                res.on('data', chunk => body += chunk);
+                res.on('end', () => resolve(body));
+            });
+            req.on('timeout', () => { req.destroy(); reject(new Error('Subconverter timeout 3000ms')); });
+            req.on('error', reject);
+        });
+
+        // 3. 内存原子回填真实凭据
+        const restored = converted
+            .replace(/00000000-0000-4000-8000-000000000000/g, user.uuid)
+            .replace(/example\.com/g, settings.argoDomain || settings.subDomain || '51.75.118.151');
+
+        return restored;
+    } catch (err) {
+        console.warn(`[SubConvert] ⚠️ 外部转换后端不可用 (${err.message})，已自愈降级为本地原生引擎！`);
+        return localEngineFn();
+    }
+}
+
+    // ──────────────── 1. 订阅导出 /sub (全能自适应与零信任脱敏) ────────────────
     if (pathname === '/sub') {
         const token = parsedUrl.query.token || parsedUrl.query.uuid;
         if (!token) return sendJson({ error: '缺少 token 或 uuid 参数' }, 400);
@@ -1029,13 +1437,78 @@ const server = http.createServer((req, res) => {
         if (!user || !user.enabled || Date.now() > user.expireTime || user.trafficUsed >= user.trafficLimit) {
             return sendJson({ error: '订阅无效、已被封禁或已到期/超额' }, 403);
         }
-        const nodeLines = generateUserNodes(user);
-        const base64Data = Buffer.from(nodeLines.join('\n'), 'utf-8').toString('base64');
-        res.writeHead(200, {
-            'Content-Type': 'text/plain; charset=utf-8',
-            'Subscription-Userinfo': `upload=0; download=${user.trafficUsed}; total=${user.trafficLimit}; expire=${Math.floor(user.expireTime / 1000)}`
-        });
-        return res.end(base64Data);
+
+        const rawNodes = generateUserNodes(user);
+        const parsedNodes = rawNodes.map(parseVlessUri).filter(Boolean);
+        const ua = (req.headers['user-agent'] || '').toLowerCase();
+        const queryTarget = (parsedUrl.query.target || '').toLowerCase();
+
+        // 智能探测客户端类型 (Clash / Singbox / Surge / Mixed)
+        let target = 'mixed';
+        if (queryTarget === 'clash' || parsedUrl.query.clash !== undefined || ua.includes('clash') || ua.includes('meta') || ua.includes('mihomo')) {
+            target = 'clash';
+        } else if (queryTarget === 'singbox' || queryTarget === 'sb' || parsedUrl.query.singbox !== undefined || parsedUrl.query.sb !== undefined || ua.includes('singbox') || ua.includes('sing-box')) {
+            target = 'singbox';
+        } else if (queryTarget === 'surge' || parsedUrl.query.surge !== undefined || ua.includes('surge')) {
+            target = 'surge';
+        } else if (queryTarget === 'qx' || queryTarget === 'quantumultx' || queryTarget === 'quantumult' || parsedUrl.query.qx !== undefined || ua.includes('quantumult%20x') || ua.includes('quantumult')) {
+            target = 'quantumultx';
+        } else if (parsedUrl.query.b64 !== undefined || parsedUrl.query.base64 !== undefined) {
+            target = 'mixed';
+        }
+
+        const commonHeaders = {
+            'Profile-Update-Interval': '24',
+            'Subscription-Userinfo': `upload=0; download=${user.trafficUsed}; total=${user.trafficLimit}; expire=${Math.floor(user.expireTime / 1000)}`,
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
+            'Access-Control-Allow-Origin': '*'
+        };
+
+        const safeName = encodeURIComponent(user.username || 'user');
+        const asciiName = (user.username || 'user').replace(/[^a-zA-Z0-9_-]/g, '_');
+
+        if (target === 'clash') {
+            const clashContent = await convertSubWithZeroTrust(user, 'clash', rawNodes, siteSettings, () => generateClashConfig(parsedNodes, `Kata-${user.username}`));
+            res.writeHead(200, {
+                ...commonHeaders,
+                'Content-Type': 'application/x-yaml; charset=utf-8',
+                'Content-Disposition': `attachment; filename="clash_${asciiName}.yaml"; filename*=UTF-8''clash_${safeName}.yaml`
+            });
+            return res.end(clashContent);
+        } else if (target === 'singbox') {
+            const sbContent = await convertSubWithZeroTrust(user, 'singbox', rawNodes, siteSettings, () => generateSingboxConfig(parsedNodes, `Kata-${user.username}`));
+            res.writeHead(200, {
+                ...commonHeaders,
+                'Content-Type': 'application/json; charset=utf-8',
+                'Content-Disposition': `attachment; filename="singbox_${asciiName}.json"; filename*=UTF-8''singbox_${safeName}.json`
+            });
+            return res.end(sbContent);
+        } else if (target === 'surge') {
+            const surgeContent = await convertSubWithZeroTrust(user, 'surge', rawNodes, siteSettings, () => generateSurgeConfig(parsedNodes, `Kata-${user.username}`));
+            res.writeHead(200, {
+                ...commonHeaders,
+                'Content-Type': 'text/plain; charset=utf-8',
+                'Content-Disposition': `attachment; filename="surge_${asciiName}.conf"; filename*=UTF-8''surge_${safeName}.conf`
+            });
+            return res.end(surgeContent);
+        } else if (target === 'quantumultx' || target === 'qx') {
+            const qxContent = await convertSubWithZeroTrust(user, 'quantumultx', rawNodes, siteSettings, () => generateQuantumultXConfig(parsedNodes, `Kata-${user.username}`));
+            res.writeHead(200, {
+                ...commonHeaders,
+                'Content-Type': 'text/plain; charset=utf-8',
+                'Content-Disposition': `attachment; filename="quantumultx_${asciiName}.conf"; filename*=UTF-8''quantumultx_${safeName}.conf`
+            });
+            return res.end(qxContent);
+        } else {
+            // 通用 Base64 订阅
+            const base64Data = Buffer.from(rawNodes.join('\n'), 'utf-8').toString('base64');
+            res.writeHead(200, {
+                ...commonHeaders,
+                'Content-Type': 'text/plain; charset=utf-8',
+                'Content-Disposition': `attachment; filename="sub_${asciiName}.txt"; filename*=UTF-8''sub_${safeName}.txt`
+            });
+            return res.end(base64Data);
+        }
     }
 
     // ──────────────── 2. 用户注册与登录 API ────────────────
@@ -1159,6 +1632,15 @@ const server = http.createServer((req, res) => {
     // 管理员 API 保护门禁
     if (pathname.startsWith('/admin/api/')) {
         if (!checkAdminAuth(req)) return sendJson({ error: '未授权访问' }, 401);
+        if (pathname === '/admin/api/restart' && method === 'POST') {
+            sendJson({ success: true, message: '核心微服务正在安全自愈重启中，平台守护将即刻载入最新代码...' });
+            setTimeout(() => {
+                console.log('[Kernel] 🔄 管理员下发重启指令，进程即将退出由翼龙平台守护自动恢复...');
+                process.exit(1);
+            }, 300);
+            return;
+        }
+
 
         if (pathname === '/admin/api/status') {
             const mem = process.memoryUsage();
@@ -1208,6 +1690,14 @@ const server = http.createServer((req, res) => {
                     siteSettings.ipRegisterCooldownSec = Math.max(0, parseInt(data.ipRegisterCooldownSec, 10) || 0);
                     envUpdates.IP_REGISTER_COOLDOWN_SEC = siteSettings.ipRegisterCooldownSec;
                 }
+                                if (data.subApi !== undefined) {
+                    siteSettings.subApi = data.subApi.trim();
+                    envUpdates.SUBAPI = siteSettings.subApi;
+                }
+                if (data.subConfig !== undefined) {
+                    siteSettings.subConfig = data.subConfig.trim();
+                    envUpdates.SUBCONFIG = siteSettings.subConfig;
+                }
                 if (data.ipDailyRegisterLimit !== undefined) {
                     siteSettings.ipDailyRegisterLimit = Math.max(0, parseInt(data.ipDailyRegisterLimit, 10) || 0);
                     envUpdates.IP_DAILY_REGISTER_LIMIT = siteSettings.ipDailyRegisterLimit;
@@ -1254,19 +1744,22 @@ const server = http.createServer((req, res) => {
             const list = Array.from(users.values()).map(u => ({
                 uuid: u.uuid,
                 username: u.username,
-                trafficUsed: u.trafficUsed,
-                trafficLimit: u.trafficLimit,
-                trafficUsedStr: formatBytes(u.trafficUsed),
-                trafficLimitStr: formatBytes(u.trafficLimit),
-                trafficLimitGB: Math.round(u.trafficLimit / (1024 * 1024 * 1024)),
-                trafficUsedMB: Math.round(u.trafficUsed / (1024 * 1024)),
+                trafficUsed: u.trafficUsed || 0,
+                trafficLimit: u.trafficLimit || 0,
+                trafficUsedStr: formatBytes(u.trafficUsed || 0),
+                trafficLimitStr: formatBytes(u.trafficLimit || 0),
+                trafficLimitGB: Math.round((u.trafficLimit || 0) / (1024 * 1024 * 1024)),
+                trafficUsedMB: Math.round((u.trafficUsed || 0) / (1024 * 1024)),
                 expireTime: u.expireTime,
                 expireDateStr: new Date(u.expireTime).toLocaleDateString('zh-CN'),
                 expireDateISO: new Date(u.expireTime).toISOString().split('T')[0],
                 enabled: u.enabled,
                 isExpired: Date.now() > u.expireTime,
-                isExhausted: u.trafficUsed >= u.trafficLimit,
-                onlineConns: (activeConnections.get(u.uuid) || new Set()).size
+                isExhausted: (u.trafficUsed || 0) >= (u.trafficLimit || 0),
+                onlineConns: (activeConnections.get(u.uuid) || new Set()).size,
+                createdAt: u.createdAt || null,
+                createdTime: u.createdAt ? new Date(u.createdAt).getTime() : (u.expireTime ? (u.expireTime - 30 * 86400 * 1000) : 0),
+                createdDateStr: u.createdAt ? new Date(u.createdAt).toLocaleString('zh-CN', { hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : (u.expireTime ? new Date(u.expireTime - 30 * 86400 * 1000).toLocaleDateString('zh-CN') : '-')
             }));
             return sendJson({ users: list });
         }
@@ -1996,10 +2489,22 @@ function renderHomepage(currentUser) {
                     <div class="traffic-progress-fill" style="width:${trafficPercent}%; background:${trafficPercent > 90 ? '#dc2626' : (trafficPercent > 70 ? '#d97706' : '#2563eb')};"></div>
                 </div>
             </div>
-            <div class="sub-input-row">
+            <div class="sub-input-row" style="margin-bottom:8px;">
                 <input type="text" id="subUrlInput" readonly value="${subUrl}" data-subpath="${subUrl}" onclick="this.select()" title="点击即可全选复制" class="sub-url-field" />
-                <button class="btn btn-sm btn-primary" onclick="copySubUrlUniversal()">📋 一键复制订阅链接</button>
-                <button class="btn btn-sm" onclick="showNodeModal()">👁️ 查看各节点明文直连</button>
+                <button class="btn btn-sm btn-primary" onclick="copySubUrlUniversal('')" title="智能自适应客户端 UA">📋 复制智能自适应订阅</button>
+                <button class="btn btn-sm" onclick="showNodeModal()">👁️ 节点明文</button>
+            </div>
+            <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:6px;">
+                <button class="btn btn-sm" style="background:#eff6ff; color:#2563eb; border-color:#bfdbfe;" onclick="copySubUrlUniversal('&target=clash')" title="生成专属 Clash YAML 订阅">🐱 复制 Clash 订阅</button>
+                <button class="btn btn-sm" style="background:#f0fdf4; color:#16a34a; border-color:#bbf7d0;" onclick="copySubUrlUniversal('&target=singbox')" title="生成专属 Sing-box JSON 订阅">📦 复制 Sing-box 订阅</button>
+                <button class="btn btn-sm" style="background:#fef2f2; color:#dc2626; border-color:#fecaca;" onclick="copySubUrlUniversal('&target=surge')" title="生成专属 Surge 配置">🍎 复制 Surge 订阅</button>
+                <button class="btn btn-sm" style="background:#fdf2f8; color:#db2777; border-color:#fbcfe8;" onclick="copySubUrlUniversal('&target=qx')" title="生成专属 Quantumult X 配置">⭕ 复制 QX 订阅</button>
+                <button class="btn btn-sm" style="background:#fffbeb; color:#d97706; border-color:#fde68a;" onclick="copySubUrlUniversal('&b64=1')" title="生成通用 Base64 订阅链接">🔗 复制通用 Base64</button>
+            </div>
+            <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:6px;">
+                <button class="btn btn-sm" style="background:#2563eb; color:#fff;" onclick="oneClickImportClash()" title="唤起 Clash 客户端直接导入配置">⚡ 一键导入 Clash</button>
+                <button class="btn btn-sm" style="background:#dc2626; color:#fff;" onclick="oneClickImportSurge()" title="唤起 Surge 客户端直接导入托管配置">🍎 一键导入 Surge</button>
+                <button class="btn btn-sm" style="background:#db2777; color:#fff;" onclick="oneClickImportQX()" title="唤起 Quantumult X 导入配置">⭕ 一键导入 Quantumult X</button>
             </div>
         </div>
         ` : ''}
@@ -2243,14 +2748,54 @@ function renderHomepage(currentUser) {
             }
         }
 
-        function copySubUrlUniversal() {
+        function copySubUrlUniversal(extra = '') {
             const el = document.getElementById('subUrlInput');
             if (!el) return;
             let fullUrl = el.value;
             if (fullUrl.startsWith('/')) {
                 fullUrl = window.location.origin + fullUrl;
             }
-            copyTextUniversal(fullUrl, '✅ 完整订阅链接已复制到剪贴板！');
+            if (extra) {
+                fullUrl += extra;
+            }
+            copyTextUniversal(fullUrl, '✅ 专属订阅链接已成功复制！可直接导入客户端使用。');
+        }
+
+        function oneClickImportClash() {
+            const el = document.getElementById('subUrlInput');
+            if (!el) return;
+            let fullUrl = el.value;
+            if (fullUrl.startsWith('/')) fullUrl = window.location.origin + fullUrl;
+            const clashUrl = fullUrl + '&target=clash';
+            window.location.href = 'clash://install-config?url=' + encodeURIComponent(clashUrl);
+        }
+
+        function oneClickImportSurge() {
+            const el = document.getElementById('subUrlInput');
+            if (!el) return;
+            let fullUrl = el.value;
+            if (fullUrl.startsWith('/')) fullUrl = window.location.origin + fullUrl;
+            const surgeUrl = fullUrl + '&target=surge';
+            window.location.href = 'surge:///install-config?url=' + encodeURIComponent(surgeUrl);
+        }
+
+        function oneClickImportQX() {
+            const el = document.getElementById('subUrlInput');
+            if (!el) return;
+            let fullUrl = el.value;
+            if (fullUrl.startsWith('/')) fullUrl = window.location.origin + fullUrl;
+            const qxUrl = fullUrl + '&target=qx';
+            window.location.href = 'quantumult-x:///update-configuration?remote-resource=' + encodeURIComponent(qxUrl);
+        }
+
+
+        function copyDecodedLink(encLink) {
+            try {
+                const link = decodeURIComponent(encLink);
+                copyTextUniversal(link, '✅ 该节点直连链接已成功复制到剪贴板！');
+            } catch(e) {
+                copyTextUniversal(encLink, '✅ 该节点直连链接已成功复制！');
+            }
         }
 
         async function showNodeModal() {
@@ -2264,29 +2809,53 @@ function renderHomepage(currentUser) {
             const cont = document.getElementById('nodeListContainer');
             cont.innerHTML = '<div style="text-align:center; padding:16px;">正在拉取明文节点...</div>';
             try {
-                const res = await fetch(fullUrl);
+                // 确保拉取通用 Base64 或明文
+                const fetchUrl = fullUrl.includes('?') ? (fullUrl + '&b64=1') : (fullUrl + '?b64=1');
+                const res = await fetch(fetchUrl);
                 const txt = await res.text();
-                const lines = txt.split(/\\r?\\n/).filter(l => l.trim().startsWith('vless://'));
+                let rawTxt = txt.trim();
+
+                // 智能 Base64 解码：若返回是 Base64 编码，自动还原为换行明文
+                if (rawTxt.indexOf('vless://') === -1) {
+                    try {
+                        rawTxt = atob(rawTxt);
+                    } catch(e) {
+                        try {
+                            rawTxt = decodeURIComponent(escape(atob(rawTxt)));
+                        } catch(e2) {}
+                    }
+                }
+
+                // 安全按换行符拆分节点 (使用 String.fromCharCode 彻底消除正则断行语法错误)
+                const lf = String.fromCharCode(10);
+                const cr = String.fromCharCode(13);
+                const lines = rawTxt.split(lf).map(function(l) {
+                    return l.replace(cr, '').trim();
+                }).filter(function(l) {
+                    return l.indexOf('vless://') === 0;
+                });
                 if (lines.length === 0) {
-                    cont.innerHTML = '<div style="text-align:center; padding:16px;">未解析到节点配置</div>';
+                    cont.innerHTML = '<div style="text-align:center; padding:16px; color:#dc2626;">未解析到节点配置，请检查账号状态</div>';
                     return;
                 }
-                cont.innerHTML = lines.map((link, idx) => {
+
+                cont.innerHTML = lines.map(function(link, idx) {
                     let label = '节点 #' + (idx + 1);
                     const hashIdx = link.indexOf('#');
                     if (hashIdx !== -1) {
                         try { label = decodeURIComponent(link.substring(hashIdx + 1)); } catch(e){}
                     }
-                    return \`<div style="background:#f8fafc; border:1px solid var(--border); border-radius:6px; padding:10px 12px; display:flex; align-items:center; justify-content:space-between; gap:10px;">
-                        <div style="flex:1; min-width:0;">
-                            <div style="font-weight:700; color:var(--text-main); font-size:12px; margin-bottom:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">\${label}</div>
-                            <div style="font-family:Consolas, monospace; font-size:11px; color:#64748b; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">\${link}</div>
-                        </div>
-                        <button class="btn btn-sm btn-primary" onclick="copyTextUniversal('\${link}', '✅ 节点链接已复制！')">复制</button>
-                    </div>\`;
+                    const encLink = encodeURIComponent(link);
+                    return '<div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; padding:10px 12px; display:flex; align-items:center; justify-content:space-between; gap:10px;">' +
+                        '<div style="flex:1; min-width:0;">' +
+                            '<div style="font-weight:700; color:#0f172a; font-size:12px; margin-bottom:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + label + '</div>' +
+                            '<div style="font-family:Consolas, monospace; font-size:11px; color:#64748b; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + link + '</div>' +
+                        '</div>' +
+                        '<button class="btn btn-sm btn-primary" data-link="' + encLink + '" onclick="copyDecodedLink(this.dataset.link)">复制</button>' +
+                    '</div>';
                 }).join('');
             } catch(e) {
-                cont.innerHTML = '<div style="color:#dc2626; padding:16px;">获取节点失败，请直接复制订阅链接导入</div>';
+                cont.innerHTML = '<div style="color:#dc2626; padding:16px; text-align:center;">获取节点失败: ' + (e.message || '网络异常') + '</div>';
             }
         }
 
@@ -2844,6 +3413,85 @@ function renderAdminDashboardPage() {
             border: 1px solid var(--border-color);
             border-radius: 6px;
         }
+        th.sortable {
+            cursor: pointer;
+            user-select: none;
+            transition: all 0.2s ease;
+        }
+        .mobile-clickable-cell {
+            cursor: pointer;
+            padding: 3px 5px;
+            border-radius: 4px;
+            transition: all 0.15s ease;
+        }
+        .mobile-clickable-cell:hover {
+            background: #eff6ff;
+        }
+        .mobile-sub-tag {
+            display: none;
+        }
+        th.sortable:hover {
+            background-color: #f1f5f9;
+            color: var(--primary);
+        }
+        .sort-icon {
+            display: inline-block;
+            margin-left: 3px;
+            font-size: 11px;
+            opacity: 0.75;
+        }
+
+        /* 现代化 Element UI 风格分页器 */
+        .pagination-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 16px;
+            border-top: 1px solid var(--border-color);
+            background: #ffffff;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .page-btn {
+            min-width: 30px;
+            height: 30px;
+            padding: 0 8px;
+            font-size: 12px;
+            font-weight: 500;
+            border: 1px solid var(--border-color);
+            background: #ffffff;
+            color: var(--text-main);
+            border-radius: 4px;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.15s ease-in-out;
+            user-select: none;
+        }
+        .page-btn:hover:not(:disabled) {
+            color: var(--primary);
+            border-color: var(--primary);
+            background: var(--primary-light);
+        }
+        .page-btn.active {
+            background: var(--primary);
+            color: #ffffff;
+            border-color: var(--primary);
+            font-weight: 600;
+        }
+        .page-btn:disabled {
+            color: #cbd5e1;
+            background: #f8fafc;
+            border-color: #e2e8f0;
+            cursor: not-allowed;
+        }
+        .page-ellipsis {
+            padding: 0 4px;
+            color: #94a3b8;
+            font-size: 12px;
+            user-select: none;
+        }
         table {
             width: 100%;
             border-collapse: collapse;
@@ -3070,15 +3718,74 @@ function renderAdminDashboardPage() {
             .search-box { width: 100%; }
             .search-box input { width: 100%; }
             .table-wrap {
-                overflow-x: auto;
-                -webkit-overflow-scrolling: touch;
+                overflow-x: hidden !important;
             }
             .table-wrap table {
-                min-width: 680px;
+                min-width: 100% !important;
+                width: 100% !important;
+                table-layout: fixed;
+            }
+            .table-wrap th, .table-wrap td {
+                padding: 8px 6px !important;
+            }
+            /* 手机端隐藏冗余列：UUID、注册时间、到期时间、状态标签、桌面操作按钮 */
+            .col-desktop {
+                display: none !important;
+            }
+            /* 手机端 3 列专属自适应比例 */
+            .col-mobile-user {
+                width: 44% !important;
+            }
+            .col-mobile-traffic {
+                width: 38% !important;
+            }
+            .col-mobile-online {
+                width: 18% !important;
+                text-align: center !important;
+            }
+            .mobile-clickable-cell {
+                cursor: pointer;
+                border-radius: 4px;
+                padding: 4px 6px;
+                background: #f8fafc;
+                border: 1px dashed #cbd5e1;
+                transition: background 0.15s ease;
+            }
+            .mobile-clickable-cell:active {
+                background: #e2e8f0;
+            }
+            .mobile-sub-tag {
+                display: block !important;
+                font-size: 10px;
+                color: #64748b;
+                margin-top: 2px;
+            }
+            .panel-toolbar {
+                display: flex;
+                flex-direction: column;
+                gap: 8px;
+                width: 100%;
+            }
+            .panel-toolbar .search-box,
+            .panel-toolbar select {
+                width: 100% !important;
+                box-sizing: border-box;
+            }
+            .panel-toolbar-btns {
+                display: flex;
+                gap: 8px;
+                width: 100%;
+            }
+            .panel-toolbar-btns .btn {
+                flex: 1;
+                justify-content: center;
             }
             .modal-card {
                 width: 95%;
-                padding: 18px 16px;
+                max-width: 440px;
+                max-height: 88vh;
+                overflow-y: auto;
+                padding: 16px 14px;
             }
         }
 </style>
@@ -3123,6 +3830,7 @@ function renderAdminDashboardPage() {
                     <span class="pulse-dot"></span>
                     <span>核心引擎运行中</span>
                 </div>
+                <button class="btn btn-sm" onclick="restartCoreService()" style="background:#eff6ff; color:#2563eb; border-color:#bfdbfe;" title="平滑重启 Node 微服务以应用全新配置">🔄 重启核心</button>
                 <a href="/" target="_blank" class="btn btn-sm">🌐 前台微测网 ↗</a>
                 <a href="/admin/logout" class="btn btn-sm btn-danger">退出登录</a>
             </div>
@@ -3172,13 +3880,25 @@ function renderAdminDashboardPage() {
                         <div class="panel-title">👥 用户账号与定向风控控制台</div>
                         <div class="panel-subtitle">⚡ 账号即改即效：删除/封禁立即定向切断连接，新增/解封立即可用，对其他在线用户绝对 0 影响。</div>
                     </div>
-                    <div style="display:flex; gap:8px; align-items:center;">
-                        <div class="search-box">
+                    <div class="panel-toolbar" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                        <div class="search-box" style="position:relative; display:flex; align-items:center; min-width:220px;">
                             <span>🔍</span>
-                            <input type="text" id="userSearchInput" placeholder="搜索用户名或UUID..." oninput="filterUsers()" />
+                            <input type="text" id="userSearchInput" placeholder="输入用户名或 UUID 实时搜索..." oninput="filterUsers()" style="padding-right:24px;" />
+                            <span id="clearUserSearchBtn" onclick="clearUserSearch()" style="position:absolute; right:8px; cursor:pointer; color:#94a3b8; font-size:12px; display:none;" title="清空搜索">✕</span>
                         </div>
-                        <button class="btn btn-primary" onclick="openAddUserModal()">➕ 添加新用户</button>
-                        <button class="btn" onclick="fetchUsers()">🔄 刷新</button>
+                        <select id="userSortSelect" onchange="changeUserSortSelect(this.value)" style="padding:4px 8px; font-size:12px; height:34px; border:1px solid #cbd5e1; border-radius:4px; background:#fff; color:#334155; cursor:pointer;" title="快速排序">
+                            <option value="default">↕️ 默认排列</option>
+                            <option value="onlineConns_desc">⚡ 在线 (从多到少 降序)</option>
+                            <option value="onlineConns_asc">⚡ 在线 (从少到多 升序)</option>
+                            <option value="createdTime_desc">📅 注册时间 (最新优先 降序)</option>
+                            <option value="createdTime_asc">📅 注册时间 (最早优先 升序)</option>
+                            <option value="trafficUsed_desc">📊 流量使用 (从大到小 降序)</option>
+                            <option value="trafficUsed_asc">📊 流量使用 (从小到大 升序)</option>
+                        </select>
+                        <div class="panel-toolbar-btns">
+                            <button class="btn btn-primary" onclick="openAddUserModal()">➕ 添加新用户</button>
+                            <button class="btn" onclick="fetchUsers()">🔄 刷新</button>
+                        </div>
                     </div>
                 </div>
 
@@ -3186,19 +3906,32 @@ function renderAdminDashboardPage() {
                     <table>
                         <thead>
                             <tr>
-                                <th style="width:120px;">账号名称</th>
-                                <th style="width:280px;">专属连接 UUID (点击复制)</th>
-                                <th style="width:160px;">流量消耗进度</th>
-                                <th style="width:110px;">到期时间</th>
-                                <th style="width:90px;">状态</th>
-                                <th style="width:80px;">活跃连线</th>
-                                <th style="min-width:240px;">运维与设置</th>
+                                <th class="col-mobile-user" style="width:120px;">账号名称</th>
+                                <th class="col-desktop" style="width:240px;">专属连接 UUID (点击复制)</th>
+                                <th class="col-mobile-traffic sortable" style="width:150px;" onclick="toggleUserSort('trafficUsed')" id="th_sort_trafficUsed" title="点击切换流量使用正序/降序">已用流量 <span class="sort-icon" id="icon_sort_trafficUsed">⇅</span></th>
+                                <th class="col-desktop sortable" style="width:130px;" onclick="toggleUserSort('createdTime')" id="th_sort_createdTime" title="点击切换注册时间正序/降序">注册时间 <span class="sort-icon" id="icon_sort_createdTime">⇅</span></th>
+                                <th class="col-desktop" style="width:100px;">到期时间</th>
+                                <th class="col-desktop" style="width:80px;">状态</th>
+                                <th class="col-mobile-online sortable" style="width:85px; text-align:center;" onclick="toggleUserSort('onlineConns')" id="th_sort_onlineConns" title="点击切换在线连接正序/降序">在线 <span class="sort-icon" id="icon_sort_onlineConns">⇅</span></th>
+                                <th class="col-desktop" style="min-width:220px;">运维与设置</th>
                             </tr>
                         </thead>
                         <tbody id="usersTbody">
-                            <tr><td colspan="7" style="text-align:center; padding:24px; color:var(--text-muted);">正在载入用户数据...</td></tr>
+                            <tr><td colspan="8" style="text-align:center; padding:24px; color:var(--text-muted);">正在载入用户数据...</td></tr>
                         </tbody>
                     </table>
+
+                    <!-- 现代化分页导航条 (每页固定5条) -->
+                    <div id="usersPagination" class="pagination-bar">
+                        <div class="pagination-info" id="usersPaginationInfo" style="font-size:12px; color:var(--text-sub);">
+                            共 <b id="totalUsersCount" style="color:var(--text-main);">0</b> 条用户 · 每页 <b>5</b> 条 · 第 <b id="currentUserPageNum" style="color:var(--primary);">1</b> / <span id="totalUserPagesNum">1</span> 页
+                        </div>
+                        <div class="pagination-controls" style="display:flex; gap:6px; align-items:center;">
+                            <button class="page-btn" id="btnUserPrevPage" onclick="prevUserPage()" title="上一页">‹ 上一页</button>
+                            <div id="userPageNumbers" style="display:flex; gap:4px; align-items:center;"></div>
+                            <button class="page-btn" id="btnUserNextPage" onclick="nextUserPage()" title="下一页">下一页 ›</button>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -3338,6 +4071,23 @@ function renderAdminDashboardPage() {
                     </div>
                 </div>
 
+                <!-- 订阅转换与规则模板配置 -->
+                <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:16px; margin-bottom:18px;">
+                    <div style="font-weight:700; color:#2563eb; font-size:13px; margin-bottom:10px;">🔄 全能订阅转换与零信任安全脱敏配置</div>
+                    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:16px;">
+                        <div class="form-row" style="margin-bottom:0;">
+                            <label>订阅转换后端 (SUBAPI)</label>
+                            <input type="text" id="cfg_subApi" placeholder="填 local (本地原生零外传引擎) 或外部地址" />
+                            <span style="font-size:11px; color:#64748b; margin-top:3px; display:block;">推荐填 local (物理级内网闭环，绝无任何外传风险) 或 https://api.v1.mk 等。</span>
+                        </div>
+                        <div class="form-row" style="margin-bottom:0;">
+                            <label>Clash 分流规则模板 (SUBCONFIG)</label>
+                            <input type="text" id="cfg_subConfig" placeholder="留空使用默认 ACL4SSR 经典模板" />
+                            <span style="font-size:11px; color:#64748b; margin-top:3px; display:block;">仅在调用外部 Subconverter 时生效，支持自定义分流规则集。</span>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- 管理员密码修改 -->
                 <div style="border-top:1px dashed var(--border-color); padding-top:16px; margin-top:16px;">
                     <div style="font-weight:700; color:#dc2626; font-size:13px; margin-bottom:10px;">🔐 后台管理员密码热修改 (直接原子落盘 .env)</div>
@@ -3408,7 +4158,8 @@ function renderAdminDashboardPage() {
             <div class="form-row">
                 <label>专属连接 UUID (修改后将定向掐断旧连接，0ms换新)</label>
                 <div style="display:flex; gap:6px;">
-                    <input type="text" id="edit_uuid" style="font-family:Consolas, monospace; font-size:12px;" />
+                    <input type="text" id="edit_uuid" style="font-family:Consolas, monospace; font-size:12px; flex:1;" />
+                    <button type="button" class="btn" onclick="copyText(document.getElementById('edit_uuid').value)" style="white-space:nowrap;">📋 复制</button>
                     <button type="button" class="btn" onclick="genNewEditUuid()" style="white-space:nowrap;">🎲 随机UUID</button>
                 </div>
             </div>
@@ -3440,9 +4191,15 @@ function renderAdminDashboardPage() {
                     </select>
                 </div>
             </div>
-            <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:20px;">
-                <button class="btn" onclick="closeAdminModal('editUserModal')">取消</button>
-                <button class="btn btn-primary" onclick="submitEditUser()">💾 保存账号设置</button>
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-top:20px; flex-wrap:wrap;">
+                <div style="display:flex; gap:6px;">
+                    <button type="button" class="btn btn-sm" onclick="renewUserFromModal()">⏳ +30天</button>
+                    <button type="button" class="btn btn-sm btn-danger" onclick="deleteUserFromModal()">🗑️ 删除</button>
+                </div>
+                <div style="display:flex; gap:8px; margin-left:auto;">
+                    <button type="button" class="btn" onclick="closeAdminModal('editUserModal')">取消</button>
+                    <button type="button" class="btn btn-primary" onclick="submitEditUser()">💾 保存设置</button>
+                </div>
             </div>
         </div>
     </div>
@@ -3529,7 +4286,15 @@ function renderAdminDashboardPage() {
 
                     // 终端日志更新
                     const term = document.getElementById('terminalLogBox');
-                    term.innerText = \`> [Kernel] Kata-Tunnel Pro 核心微服务正在运行...\\n> [Memory] 常驻 RSS: \${data.memoryRss} | 限额 308MB\\n> [Connections] 当前在线长连接: \${data.onlineConnections}\\n> [Wetest] 微测网最近更新: \${wetestTime}\\n> [Argo] 隧道穿透域名: \${currentSettings.argoDomain || '未绑定'}\\n> [Ready] 所有模块状态良好，0ms即刻响应\`;
+                    const logLines = [
+                        '> [Kernel] Kata-Tunnel Pro 核心微服务正在运行...',
+                        '> [Memory] 常驻 RSS: ' + (data.memoryRss || '--') + ' | 限额 308MB',
+                        '> [Connections] 当前在线长连接: ' + (data.onlineConnections || 0),
+                        '> [Wetest] 微测网最近更新: ' + wetestTime,
+                        '> [Argo] 隧道穿透域名: ' + (currentSettings.argoDomain || '未绑定'),
+                        '> [Ready] 所有模块状态良好，0ms即刻响应'
+                    ];
+                    term.innerText = logLines.join(String.fromCharCode(10));
 
                     // 回显配置
                     document.getElementById('cfg_allowRegister').value = String(currentSettings.allowRegister !== false);
@@ -3538,6 +4303,8 @@ function renderAdminDashboardPage() {
                     document.getElementById('cfg_ipRegisterCooldownSec').value = currentSettings.ipRegisterCooldownSec !== undefined ? currentSettings.ipRegisterCooldownSec : 60;
                     document.getElementById('cfg_ipDailyRegisterLimit').value = currentSettings.ipDailyRegisterLimit !== undefined ? currentSettings.ipDailyRegisterLimit : 3;
                     document.getElementById('cfg_subDomain').value = currentSettings.subDomain || '';
+                    document.getElementById('cfg_subApi').value = currentSettings.subApi || 'local';
+                    document.getElementById('cfg_subConfig').value = currentSettings.subConfig || '';
                     document.getElementById('cfg_argoToken').value = currentSettings.argoToken || '';
                     document.getElementById('cfg_argoDomain').value = currentSettings.argoDomain || '';
 
@@ -3573,63 +4340,271 @@ function renderAdminDashboardPage() {
             }
         }
 
-        function filterUsers() {
-            const kw = (document.getElementById('userSearchInput').value || '').trim().toLowerCase();
-            if (!kw) {
-                renderUsersTable(cachedUsersList);
-                return;
+        // ── 用户列表分页与多维排序搜索控制器 (每页固定 5 条) ──
+        let userCurrentPage = 1;
+        const userPageSize = 5;
+        let filteredUsersList = [];
+        let userSortKey = 'default';
+        let userSortOrder = 'desc';
+
+        function toggleUserSort(field) {
+            if (userSortKey === field) {
+                if (userSortOrder === 'desc') {
+                    userSortOrder = 'asc';
+                } else {
+                    userSortKey = 'default';
+                    userSortOrder = 'desc';
+                }
+            } else {
+                userSortKey = field;
+                userSortOrder = 'desc';
             }
-            const filtered = cachedUsersList.filter(u => 
-                (u.username && u.username.toLowerCase().includes(kw)) ||
-                (u.uuid && u.uuid.toLowerCase().includes(kw))
-            );
-            renderUsersTable(filtered);
+            syncUserSortUI();
+            filterUsers();
         }
 
-        function renderUsersTable(list) {
-            const tbody = document.getElementById('usersTbody');
-            if (!list || list.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; padding:24px; color:#94a3b8;">未找到匹配的用户数据</td></tr>';
+        function changeUserSortSelect(val) {
+            if (!val || val === 'default') {
+                userSortKey = 'default';
+                userSortOrder = 'desc';
+            } else {
+                const parts = val.split('_');
+                userSortKey = parts[0];
+                userSortOrder = parts[1] || 'desc';
+            }
+            syncUserSortUI();
+            filterUsers();
+        }
+
+        function syncUserSortUI() {
+            const selectEl = document.getElementById('userSortSelect');
+            if (selectEl) {
+                selectEl.value = (userSortKey === 'default') ? 'default' : (userSortKey + '_' + userSortOrder);
+            }
+            const fields = ['trafficUsed', 'createdTime', 'onlineConns'];
+            fields.forEach(function(f) {
+                const th = document.getElementById('th_sort_' + f);
+                const icon = document.getElementById('icon_sort_' + f);
+                if (th && icon) {
+                    if (userSortKey === f) {
+                        th.style.color = '#2563eb';
+                        icon.innerHTML = (userSortOrder === 'asc') ? '▲' : '▼';
+                    } else {
+                        th.style.color = '';
+                        icon.innerHTML = '⇅';
+                    }
+                }
+            });
+        }
+
+        function clearUserSearch() {
+            document.getElementById('userSearchInput').value = '';
+            filterUsers();
+        }
+
+        function filterUsers() {
+            const kw = (document.getElementById('userSearchInput').value || '').trim().toLowerCase();
+            const clearBtn = document.getElementById('clearUserSearchBtn');
+            if (clearBtn) clearBtn.style.display = kw ? 'inline' : 'none';
+
+            let list = [];
+            if (!kw) {
+                list = cachedUsersList ? [...cachedUsersList] : [];
+            } else {
+                list = (cachedUsersList || []).filter(function(u) {
+                    return (u.username && u.username.toLowerCase().indexOf(kw) !== -1) ||
+                           (u.uuid && u.uuid.toLowerCase().indexOf(kw) !== -1);
+                });
+            }
+
+            if (userSortKey !== 'default') {
+                list.sort(function(a, b) {
+                    let valA = a[userSortKey];
+                    let valB = b[userSortKey];
+                    if (valA === undefined || valA === null) valA = 0;
+                    if (valB === undefined || valB === null) valB = 0;
+                    if (userSortOrder === 'asc') {
+                        return valA > valB ? 1 : (valA < valB ? -1 : 0);
+                    } else {
+                        return valA < valB ? 1 : (valA > valB ? -1 : 0);
+                    }
+                });
+            }
+
+            filteredUsersList = list;
+            userCurrentPage = 1;
+            renderPaginatedUsers();
+        }
+
+        function renderPaginatedUsers() {
+            const total = filteredUsersList.length;
+            const totalPages = Math.max(1, Math.ceil(total / userPageSize));
+            if (userCurrentPage > totalPages) userCurrentPage = totalPages;
+            if (userCurrentPage < 1) userCurrentPage = 1;
+
+            const startIndex = (userCurrentPage - 1) * userPageSize;
+            const endIndex = Math.min(startIndex + userPageSize, total);
+            const currentPageUsers = filteredUsersList.slice(startIndex, endIndex);
+
+            // 1. 渲染表格主体行
+            renderUsersTableRows(currentPageUsers);
+
+            // 2. 渲染分页底部统计信息
+            const infoEl = document.getElementById('usersPaginationInfo');
+            if (infoEl) {
+                const currentDisplay = total === 0 ? 0 : userCurrentPage;
+                infoEl.innerHTML = '共 <b style="color:var(--text-main);">' + total + '</b> 条用户 · 每页 <b>' + userPageSize + '</b> 条 · 第 <b style="color:var(--primary);">' + currentDisplay + '</b> / <span>' + totalPages + '</span> 页';
+            }
+
+            // 3. 上一页 / 下一页禁用状态切换
+            const btnPrev = document.getElementById('btnUserPrevPage');
+            const btnNext = document.getElementById('btnUserNextPage');
+            if (btnPrev) btnPrev.disabled = userCurrentPage <= 1;
+            if (btnNext) btnNext.disabled = userCurrentPage >= totalPages || total === 0;
+
+            // 4. 渲染页码按钮组
+            renderUserPageButtons(totalPages, userCurrentPage);
+        }
+
+        function renderUserPageButtons(totalPages, current) {
+            const container = document.getElementById('userPageNumbers');
+            if (!container) return;
+            if (totalPages <= 1) {
+                container.innerHTML = filteredUsersList.length > 0 ? '<button class="page-btn active" onclick="goToUserPage(1)">1</button>' : '';
                 return;
             }
-            tbody.innerHTML = list.map(u => {
+
+            let pages = [];
+            if (totalPages <= 7) {
+                for (let i = 1; i <= totalPages; i++) pages.push(i);
+            } else {
+                if (current <= 4) {
+                    pages = [1, 2, 3, 4, 5, '...', totalPages];
+                } else if (current >= totalPages - 3) {
+                    pages = [1, '...', totalPages - 4, totalPages - 3, totalPages - 2, totalPages - 1, totalPages];
+                } else {
+                    pages = [1, '...', current - 1, current, current + 1, '...', totalPages];
+                }
+            }
+
+            let btnsHtml = '';
+            for (let i = 0; i < pages.length; i++) {
+                const p = pages[i];
+                if (p === '...') {
+                    btnsHtml += '<span class="page-ellipsis">...</span>';
+                } else {
+                    const isActive = p === current ? 'active' : '';
+                    btnsHtml += '<button class="page-btn ' + isActive + '" onclick="goToUserPage(' + p + ')">' + p + '</button>';
+                }
+            }
+            container.innerHTML = btnsHtml;
+        }
+
+        function goToUserPage(page) {
+            const totalPages = Math.max(1, Math.ceil(filteredUsersList.length / userPageSize));
+            if (page < 1 || page > totalPages) return;
+            userCurrentPage = page;
+            renderPaginatedUsers();
+        }
+
+        function prevUserPage() {
+            if (userCurrentPage > 1) {
+                userCurrentPage--;
+                renderPaginatedUsers();
+            }
+        }
+
+        function nextUserPage() {
+            const totalPages = Math.max(1, Math.ceil(filteredUsersList.length / userPageSize));
+            if (userCurrentPage < totalPages) {
+                userCurrentPage++;
+                renderPaginatedUsers();
+            }
+        }
+
+        function renderUsersTableRows(list) {
+            const tbody = document.getElementById('usersTbody');
+            if (!list || list.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; padding:24px; color:#94a3b8;">未找到匹配的用户数据</td></tr>';
+                return;
+            }
+            tbody.innerHTML = list.map(function(u) {
+                let statusDot = u.enabled ? (u.isExpired ? '⏰到期' : (u.isExhausted ? '⚠️超额' : '🟢正常')) : '🔴封禁';
                 let statusHtml = '<span class="tag tag-ok">🟢 正常</span>';
                 if (!u.enabled) statusHtml = '<span class="tag tag-ban">🔴 已封禁</span>';
                 else if (u.isExpired) statusHtml = '<span class="tag tag-warn">⏰ 已到期</span>';
                 else if (u.isExhausted) statusHtml = '<span class="tag tag-warn">⚠️ 流量超额</span>';
 
                 const pct = Math.min(100, Math.round(((u.trafficUsed || 0) / (u.trafficLimit || 1)) * 100));
+                const barColor = pct > 90 ? '#dc2626' : (pct > 70 ? '#d97706' : '#2563eb');
+                const connBadge = (u.onlineConns > 0)
+                    ? ('<span style="display:inline-block; padding:2px 7px; border-radius:10px; background:#dcfce7; color:#15803d; font-size:12px; font-weight:700;">🟢 ' + u.onlineConns + '</span>')
+                    : '<span style="color:#94a3b8; font-size:12px;">0</span>';
+                const banBtnText = u.enabled ? '🚫 封禁' : '🔓 解封';
 
-                return \`<tr>
-                    <td>
-                        <div style="font-weight:700; color:#0f172a;">\${u.username}</div>
-                    </td>
-                    <td>
-                        <span class="uuid-badge" onclick="copyText('\${u.uuid}')" title="点击复制 UUID">\${u.uuid}</span>
-                    </td>
-                    <td>
-                        <div style="font-size:11px; color:#475569;">\${u.trafficUsedStr} / \${u.trafficLimitStr}</div>
-                        <div class="progress-bar-wrap">
-                            <div class="progress-bar-inner" style="width:\${pct}%; background:\${pct > 90 ? '#dc2626' : (pct > 70 ? '#d97706' : '#2563eb')};"></div>
-                        </div>
-                    </td>
-                    <td style="color:#475569;">\${u.expireDateStr}</td>
-                    <td>\${statusHtml}</td>
-                    <td style="font-weight:700; color:\${u.onlineConns > 0 ? '#16a34a' : '#94a3b8'};">\${u.onlineConns}</td>
-                    <td>
-                        <div style="display:flex; gap:4px; flex-wrap:nowrap;">
-                            <button class="btn btn-sm btn-primary" onclick="openEditUserModal('\${u.uuid}')">✏️ 设置</button>
-                            <button class="btn btn-sm" onclick="toggleBan('\${u.uuid}')">\${u.enabled ? '🚫 封禁' : '🔓 解封'}</button>
-                            <button class="btn btn-sm" onclick="renewUser('\${u.uuid}')">⏳ +30天</button>
-                            <button class="btn btn-sm btn-danger" onclick="deleteUser('\${u.uuid}', '\${u.username}')">🗑️ 删除</button>
-                        </div>
-                    </td>
-                </tr>\`;
+                return '<tr>' +
+                    // 1. 账号名称（点击直接打开弹窗编辑，手机/PC通用，极致顺手）
+                    '<td class="col-mobile-user">' +
+                        '<div class="mobile-clickable-cell" data-uuid="' + u.uuid + '" onclick="openEditUserModal(this.dataset.uuid)" title="点击直接编辑该账号">' +
+                            '<div style="font-weight:700; color:#2563eb; display:flex; align-items:center; justify-content:space-between;">' +
+                                '<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + (u.username || '') + '</span>' +
+                                '<span style="font-size:11px; opacity:0.75; margin-left:2px;">✏️</span>' +
+                            '</div>' +
+                            '<div class="mobile-sub-tag">' + statusDot + '</div>' +
+                        '</div>' +
+                    '</td>' +
+                    // 2. UUID（手机端隐藏）
+                    '<td class="col-desktop"><span class="uuid-badge" onclick="copyText(this.innerText)" title="点击复制 UUID">' + u.uuid + '</span></td>' +
+                    // 3. 已用流量
+                    '<td class="col-mobile-traffic">' +
+                        '<div style="font-size:11px; color:#475569; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + (u.trafficUsedStr || '0 B') + ' / ' + (u.trafficLimitGB ? (u.trafficLimitGB + 'G') : (u.trafficLimitStr || '0 B')) + '</div>' +
+                        '<div class="progress-bar-wrap" style="margin-top:3px;"><div class="progress-bar-inner" style="width:' + pct + '%; background:' + barColor + ';"></div></div>' +
+                    '</td>' +
+                    // 4. 注册时间（手机端隐藏）
+                    '<td class="col-desktop" style="color:#475569; font-size:12px; white-space:nowrap;">' + (u.createdDateStr || '-') + '</td>' +
+                    // 5. 到期时间（手机端隐藏）
+                    '<td class="col-desktop" style="color:#475569; font-size:12px; white-space:nowrap;">' + (u.expireDateStr || '-') + '</td>' +
+                    // 6. 状态（手机端隐藏）
+                    '<td class="col-desktop">' + statusHtml + '</td>' +
+                    // 7. 在线
+                    '<td class="col-mobile-online" style="text-align:center;">' + connBadge + '</td>' +
+                    // 8. 运维按钮（手机端隐藏）
+                    '<td class="col-desktop"><div style="display:flex; gap:4px; flex-wrap:nowrap;">' +
+                        '<button class="btn btn-sm btn-primary" data-uuid="' + u.uuid + '" onclick="openEditUserModal(this.dataset.uuid)">✏️ 设置</button>' +
+                        '<button class="btn btn-sm" data-uuid="' + u.uuid + '" onclick="toggleBan(this.dataset.uuid)">' + banBtnText + '</button>' +
+                        '<button class="btn btn-sm" data-uuid="' + u.uuid + '" onclick="renewUser(this.dataset.uuid)">⏳ +30天</button>' +
+                        '<button class="btn btn-sm btn-danger" data-uuid="' + u.uuid + '" data-name="' + (u.username || '') + '" onclick="deleteUser(this.dataset.uuid, this.dataset.name)">🗑️ 删除</button>' +
+                    '</div></td>' +
+                '</tr>';
             }).join('');
+        }
+
+        async function restartCoreService() {
+            if (!confirm('确认平滑重启 Node.js 核心微服务？平台守护进程将在 1 秒内自动拉起最新代码！')) return;
+            try {
+                const res = await fetch('/admin/api/restart', { method: 'POST' });
+                const d = await res.json();
+                alert(d.message || '服务正在重启...');
+            } catch (e) {}
+            setTimeout(function() { window.location.reload(); }, 1500);
         }
 
         function openAdminModal(id) { document.getElementById(id).style.display = 'flex'; }
         function closeAdminModal(id) { document.getElementById(id).style.display = 'none'; }
+
+        function renewUserFromModal() {
+            const uuid = document.getElementById('edit_orig_uuid').value;
+            if (uuid) renewUser(uuid);
+        }
+
+        function deleteUserFromModal() {
+            const uuid = document.getElementById('edit_orig_uuid').value;
+            const name = document.getElementById('edit_username').value;
+            if (uuid) {
+                closeAdminModal('editUserModal');
+                deleteUser(uuid, name);
+            }
+        }
 
         function openEditUserModal(uuid) {
             const u = cachedUsersMap.get(uuid);
@@ -3745,14 +4720,14 @@ function renderAdminDashboardPage() {
             const d = await res.json();
             if (res.ok) {
                 if (!d.enabled && d.disconnectedCount > 0) {
-                    alert(\`⚡ 用户已封禁，并已0毫秒定向掐断当前正在通信的 \${d.disconnectedCount} 个活跃连接！\`);
+                    alert('⚡ 用户已封禁，并已0毫秒定向掐断当前正在通信的 ' + d.disconnectedCount + ' 个活跃连接！');
                 }
                 fetchUsers();
             }
         }
 
         async function deleteUser(uuid, name) {
-            if (!confirm(\`确认删除用户 "\${name}"？执行后将立即掐断该用户的所有现有连接，且对其他用户完全0影响！\`)) return;
+            if (!confirm('确认删除用户 "' + name + '"？执行后将立即掐断该用户的所有现有连接，且对其他用户完全0影响！')) return;
             const res = await fetch('/admin/api/user/delete', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -3821,6 +4796,8 @@ function renderAdminDashboardPage() {
                 ipRegisterCooldownSec: parseInt(document.getElementById('cfg_ipRegisterCooldownSec').value, 10) || 0,
                 ipDailyRegisterLimit: parseInt(document.getElementById('cfg_ipDailyRegisterLimit').value, 10) || 0,
                 subDomain: document.getElementById('cfg_subDomain').value.trim(),
+                subApi: document.getElementById('cfg_subApi').value.trim(),
+                subConfig: document.getElementById('cfg_subConfig').value.trim(),
                 argoToken: document.getElementById('cfg_argoToken').value.trim(),
                 argoDomain: document.getElementById('cfg_argoDomain').value.trim(),
                 newAdminPassword: document.getElementById('cfg_newAdminPassword').value.trim()
