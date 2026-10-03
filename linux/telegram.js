@@ -823,8 +823,9 @@ class TelegramBotManager {
         const allUsers = this.getUsers();
         const user = allUsers.find((u) => u.telegramId && String(u.telegramId).trim() === String(from.id));
 
+        const botTitle = (this.botInfo && this.botInfo.first_name) ? this.botInfo.first_name : "S5加速器官方节点中枢";
         const welcomeText =
-            `🚀 *欢迎使用极速云全球多协议网络加速中枢！*
+            `🚀 *欢迎使用 ${botTitle}！*
 
 你好，*${this.escapeMd(from.first_name || "朋友")}*！
 本服务为官方交流群专属福利，已实现全协议智能调度与机器人全自动开通。
@@ -842,14 +843,18 @@ _例如：\`/reg test888 12345678\` (留空密码将自动生成随机密码)_
 
 💡 *当前状态*：${user ? `已开通账号 (\`${user.username}\`)` : "未开通，请发送 /reg 注册"}`;
 
-        // 现代高质感按钮矩阵
+        // 现代标准对称按钮矩阵
         const inlineRows = [];
         if (!user) {
             inlineRows.push([{ text: "🚀 一键极速开通节点 (无需输入)", callback_data: "cmd_quick_reg" }]);
+            inlineRows.push([
+                { text: `💬 官方交流群 ${groupName}`, url: groupLink },
+                { text: "🌐 节点矩阵状态", callback_data: "cmd_nodes" }
+            ]);
         } else {
             inlineRows.push([
-                { text: "📦 我的节点面板 (/my)", callback_data: "cmd_my" },
-                { text: "🔗 提取通用订阅", callback_data: "cmd_copy_sub" }
+                { text: "📦 提取我的订阅 (/my)", callback_data: "cmd_my" },
+                { text: "🎁 每日签到领流量", callback_data: "cmd_checkin" }
             ]);
             const clashJumpUrl = (this.getAppImportUrl && user.uuid) ? this.getAppImportUrl(user.uuid, "clash") : "";
             const rocketJumpUrl = (this.getAppImportUrl && user.uuid) ? this.getAppImportUrl(user.uuid, "rocket") : "";
@@ -857,15 +862,18 @@ _例如：\`/reg test888 12345678\` (留空密码将自动生成随机密码)_
             if (rocketJumpUrl) quickRow.push({ text: "🚀 一键导入小火箭", url: rocketJumpUrl });
             if (clashJumpUrl) quickRow.push({ text: "⚡ 一键导入 Clash", url: clashJumpUrl });
             if (quickRow.length > 0) inlineRows.push(quickRow);
+
+            inlineRows.push([
+                { text: "🔗 提取通用订阅", callback_data: "cmd_copy_sub" },
+                { text: "🌐 节点矩阵状态", callback_data: "cmd_nodes" }
+            ]);
+            inlineRows.push([
+                { text: `💬 官方交流群 ${groupName}`, url: groupLink }
+            ]);
         }
-        inlineRows.push([{ text: `👉 官方交流群 ${groupName}`, url: groupLink }]);
-        inlineRows.push([
-            { text: "🎁 每日签到打卡", callback_data: "cmd_checkin" },
-            { text: "🌐 节点矩阵状态", callback_data: "cmd_nodes" }
-        ]);
-        inlineRows.push([
-            { text: "💬 联系客服支持", url: groupLink }
-        ]);
+        if (this.adminId && String(from.id) === this.adminId) {
+            inlineRows.push([{ text: "👑 站长管理控制台", callback_data: "cmd_admin_panel" }]);
+        }
 
         const keyboard = { inline_keyboard: inlineRows };
 
