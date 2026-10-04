@@ -503,6 +503,22 @@ const DEFAULT_SETTINGS = {
     enableOptCM: true,
     autoSyncWetest: true,
 
+    // 🚀 自定义批量优选域名池 (支持纯域名、域名#备注、域名:端口#备注、域名:端口)
+    enableCustomDomains: false,
+    customDomainsText: '',
+
+    // 🚀 CM佬 Cloudflare 三网优选订阅器 (cf.090227.xyz)
+    enableOptCMApi: true,
+    cmApiCountCT: 6,
+    cmApiCountCU: 8,
+    cmApiCountCM: 8,
+    cmApiSyncTime: '未同步',
+    cmNodes: {
+        ct: [],
+        cu: [],
+        cm: []
+    },
+
     // 各运营商覆盖首选 IP
     optOfficialIp: '',
     optCTIp: '104.25.18.145',
@@ -779,6 +795,109 @@ setTimeout(() => { fetchWetestCleanIps(); }, 5000);
 setInterval(() => {
     if (siteSettings.autoSyncWetest !== false) {
         fetchWetestCleanIps();
+    }
+}, 30 * 60 * 1000);
+
+// ==========================================
+// 5.1 🚀 CM佬三网优选 (cf.090227.xyz) 异步拉取引擎
+// ==========================================
+function parseCmApiLines(text) {
+    if (!text || typeof text !== 'string') return [];
+    return text.split(/\r?\n/).map(line => {
+        let trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//')) return null;
+        let hostPart = trimmed;
+        const hashIdx = trimmed.indexOf('#');
+        if (hashIdx !== -1) {
+            hostPart = trimmed.substring(0, hashIdx).trim();
+        }
+        if (!hostPart) return null;
+        let ip = hostPart;
+        let port = 443;
+        const colonIdx = hostPart.lastIndexOf(':');
+        if (colonIdx !== -1 && !hostPart.endsWith(']')) {
+            const p = parseInt(hostPart.substring(colonIdx + 1), 10);
+            if (!isNaN(p) && p > 0 && p <= 65535) {
+                port = p;
+                ip = hostPart.substring(0, colonIdx).trim();
+            }
+        }
+        if (!ip || !/^[\d\.]+$/.test(ip)) return null;
+        return { ip, port };
+    }).filter(Boolean);
+}
+
+async function fetchCmApiIps() {
+    console.log('[CMApi] 开始从 cf.090227.xyz 动态拉取三网优选 IP...');
+    const ctCount = Math.max(1, parseInt(siteSettings.cmApiCountCT, 10) || 6);
+    const cuCount = Math.max(1, parseInt(siteSettings.cmApiCountCU, 10) || 8);
+    const cmCount = Math.max(1, parseInt(siteSettings.cmApiCountCM, 10) || 8);
+
+    const ctUrl = `https://cf.090227.xyz/ct?ips=${ctCount}`;
+    const cuUrl = `https://cf.090227.xyz/cu?ips=${cuCount}`;
+    const cmUrl = `https://cf.090227.xyz/cmcc?ips=${cmCount}`;
+
+    try {
+        const fetchText = (urlStr) => new Promise((resolve, reject) => {
+            const parsed = new url.URL(urlStr);
+            const client = parsed.protocol === 'https:' ? require('https') : require('http');
+            const req = client.get(urlStr, { timeout: 10000, headers: { 'User-Agent': 'curl/7.88.1' } }, (res) => {
+                let data = '';
+                res.on('data', chunk => data += chunk);
+                res.on('end', () => resolve(data));
+            });
+            req.on('timeout', () => { req.destroy(); reject(new Error('请求超时')); });
+            req.on('error', err => reject(err));
+        });
+
+        const [ctText, cuText, cmText] = await Promise.allSettled([
+            fetchText(ctUrl),
+            fetchText(cuUrl),
+            fetchText(cmUrl)
+        ]);
+
+        let updated = false;
+        if (ctText.status === 'fulfilled') {
+            const list = parseCmApiLines(ctText.value);
+            if (list.length > 0) {
+                siteSettings.cmNodes.ct = list;
+                updated = true;
+            }
+        }
+        if (cuText.status === 'fulfilled') {
+            const list = parseCmApiLines(cuText.value);
+            if (list.length > 0) {
+                siteSettings.cmNodes.cu = list;
+                updated = true;
+            }
+        }
+        if (cmText.status === 'fulfilled') {
+            const list = parseCmApiLines(cmText.value);
+            if (list.length > 0) {
+                siteSettings.cmNodes.cm = list;
+                updated = true;
+            }
+        }
+
+        if (updated) {
+            siteSettings.cmApiSyncTime = new Date().toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' });
+            saveSettings();
+            console.log(`[CMApi] ✅ CM佬三网 IP 抓取成功！CT:${siteSettings.cmNodes.ct.length}, CU:${siteSettings.cmNodes.cu.length}, CM:${siteSettings.cmNodes.cm.length}`);
+            return { success: true, settings: siteSettings };
+        } else {
+            throw new Error('未获取到有效的 IP 列表');
+        }
+    } catch (e) {
+        console.error('[CMApi] ❌ 抓取失败:', e.message);
+        return { success: false, error: e.message };
+    }
+}
+
+// 启动 6 秒后初次抓取，之后每 30 分钟自愈刷新
+setTimeout(() => { fetchCmApiIps(); }, 6000);
+setInterval(() => {
+    if (siteSettings.enableOptCMApi !== false) {
+        fetchCmApiIps();
     }
 }, 30 * 60 * 1000);
 
@@ -1116,6 +1235,48 @@ function handleVlessWebSocket(clientSocket, head) {
 // 🚀 核心优化: 定时 30 秒执行纯异步非阻塞脏检查落盘 (无变动 0ms 跳过，绝不阻塞主事件循环)
 setInterval(() => { saveUsersAsync(); }, 30000);
 
+/**
+ * 🚀 解析自定义优选域名单行规则
+ * 支持格式：
+ *   1. 纯域名：cf.090227.xyz
+ *   2. 域名#备注：cf.090227.xyz#香港优选CDN
+ *   3. 域名:端口#备注：cf.090227.xyz:8443#香港高防8443
+ *   4. 域名:端口：cf.090227.xyz:2053
+ */
+function parseCustomDomainLine(line) {
+    let trimmed = (line || '').trim();
+    if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith(';')) return null;
+
+    let remark = '';
+    const hashIdx = trimmed.indexOf('#');
+    if (hashIdx !== -1) {
+        remark = trimmed.substring(hashIdx + 1).trim();
+        trimmed = trimmed.substring(0, hashIdx).trim();
+    }
+    if (!trimmed) return null;
+
+    let host = trimmed;
+    let port = 443;
+
+    // 处理域名:端口 (如 domain.com:8443 或 [2001:db8::1]:8443)
+    const colonIdx = trimmed.lastIndexOf(':');
+    if (colonIdx !== -1 && !trimmed.endsWith(']')) {
+        const portStr = trimmed.substring(colonIdx + 1).trim();
+        const p = parseInt(portStr, 10);
+        if (!isNaN(p) && p > 0 && p <= 65535) {
+            port = p;
+            host = trimmed.substring(0, colonIdx).trim();
+        }
+    }
+    if (!host) return null;
+
+    return {
+        host,
+        port,
+        remark: remark || (port === 443 ? host : `${host}:${port}`)
+    };
+}
+
 // ==========================================
 // 8. 订阅链接生成引擎 (Base64 / 节点格式)
 // ==========================================
@@ -1175,6 +1336,34 @@ function generateUserNodes(user) {
             const rtt = n.rtt ? `·${n.rtt}ms` : '';
             const tag = `【${geoTag}·移动优选${idx + 1}${colo}${rtt}】-VLESS-WS`;
             list.push(`vless://${user.uuid}@${ip}:443?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F#${encodeURIComponent(tag)}`);
+        });
+    }
+
+    // 5.1 🚀 CM佬三网优选 API 节点 (严格按 CM电信1, CM联通1, CM移动1 命名)
+    if (siteSettings.enableOptCMApi !== false && siteSettings.cmNodes) {
+        (siteSettings.cmNodes.ct || []).forEach((n, idx) => {
+            const tag = `【${geoTag}·CM电信${idx + 1}】-VLESS-WS`;
+            list.push(`vless://${user.uuid}@${n.ip}:${n.port || 443}?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F#${encodeURIComponent(tag)}`);
+        });
+        (siteSettings.cmNodes.cu || []).forEach((n, idx) => {
+            const tag = `【${geoTag}·CM联通${idx + 1}】-VLESS-WS`;
+            list.push(`vless://${user.uuid}@${n.ip}:${n.port || 443}?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F#${encodeURIComponent(tag)}`);
+        });
+        (siteSettings.cmNodes.cm || []).forEach((n, idx) => {
+            const tag = `【${geoTag}·CM移动${idx + 1}】-VLESS-WS`;
+            list.push(`vless://${user.uuid}@${n.ip}:${n.port || 443}?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F#${encodeURIComponent(tag)}`);
+        });
+    }
+
+    // 6. 🚀 自定义批量优选域名池 (纯域名、域名#备注、域名:端口#备注、域名:端口)
+    if (siteSettings.enableCustomDomains && siteSettings.customDomainsText) {
+        const lines = siteSettings.customDomainsText.split(/\r?\n/);
+        lines.forEach(line => {
+            const item = parseCustomDomainLine(line);
+            if (item) {
+                const tag = `【${geoTag}·${item.remark}】-VLESS-WS`;
+                list.push(`vless://${user.uuid}@${item.host}:${item.port}?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F#${encodeURIComponent(tag)}`);
+            }
         });
     }
 
@@ -1976,6 +2165,17 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
             return;
         }
 
+        if (pathname === '/admin/api/sync-cm' && method === 'POST') {
+            fetchCmApiIps().then(result => {
+                if (result.success) {
+                    sendJson({ success: true, message: 'CM佬三网优选 IP 全量更新成功', settings: siteSettings });
+                } else {
+                    sendJson({ error: result.error || '同步失败' }, 500);
+                }
+            });
+            return;
+        }
+
         if (pathname === '/admin/api/settings' && method === 'POST') {
             readBody(data => {
                 const envUpdates = {};
@@ -2022,12 +2222,20 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
                     envUpdates.ARGO_DOMAIN = siteSettings.argoDomain;
                 }
 
-                // 4. 三网优选开关
+                // 4. 三网优选与自定义域名开关
                 if (data.enableOptOfficial !== undefined) siteSettings.enableOptOfficial = Boolean(data.enableOptOfficial);
                 if (data.enableOptCT !== undefined) siteSettings.enableOptCT = Boolean(data.enableOptCT);
                 if (data.enableOptCU !== undefined) siteSettings.enableOptCU = Boolean(data.enableOptCU);
                 if (data.enableOptCM !== undefined) siteSettings.enableOptCM = Boolean(data.enableOptCM);
                 if (data.autoSyncWetest !== undefined) siteSettings.autoSyncWetest = Boolean(data.autoSyncWetest);
+                if (data.enableCustomDomains !== undefined) siteSettings.enableCustomDomains = Boolean(data.enableCustomDomains);
+                if (data.customDomainsText !== undefined) siteSettings.customDomainsText = String(data.customDomainsText).trim();
+
+                // 🚀 CM佬 API 参数配置
+                if (data.enableOptCMApi !== undefined) siteSettings.enableOptCMApi = Boolean(data.enableOptCMApi);
+                if (data.cmApiCountCT !== undefined) siteSettings.cmApiCountCT = Math.max(1, parseInt(data.cmApiCountCT, 10) || 6);
+                if (data.cmApiCountCU !== undefined) siteSettings.cmApiCountCU = Math.max(1, parseInt(data.cmApiCountCU, 10) || 8);
+                if (data.cmApiCountCM !== undefined) siteSettings.cmApiCountCM = Math.max(1, parseInt(data.cmApiCountCM, 10) || 8);
 
                 if (data.optOfficialIp !== undefined) siteSettings.optOfficialIp = data.optOfficialIp.trim();
                 if (data.optCTIp !== undefined) siteSettings.optCTIp = data.optCTIp.trim();
@@ -4313,7 +4521,66 @@ function renderAdminDashboardPage() {
                     </div>
                 </div>
 
-                <button class="btn btn-primary" style="padding:8px 20px;" onclick="saveCdnSettings()">💾 保存三网优选策略</button>
+                <!-- 🚀 批量自定义优选域名池 -->
+                <div class="carrier-card" style="border-left:4px solid #8b5cf6; margin-top:16px;">
+                    <div class="carrier-card-header">
+                        <div>
+                            <span style="font-weight:700; color:#6d28d9; font-size:14px;">🚀 批量自定义优选域名池 (Custom Optimal Domains)</span>
+                            <div style="font-size:12px; color:#64748b; margin-top:2px;">支持批量添加 CDN 优选加速域名或自定义端口，自动生成订阅节点</div>
+                        </div>
+                        <label style="display:flex; align-items:center; gap:6px; font-weight:600; cursor:pointer;">
+                            <input type="checkbox" id="cfg_enableCustomDomains" /> <span style="color:#6d28d9;">启用域名下发</span>
+                        </label>
+                    </div>
+                    <div class="form-row" style="margin-bottom:0;">
+                        <label style="display:flex; justify-content:space-between; align-items:center;">
+                            <span>优选域名列表 (每行一个)</span>
+                            <span style="font-weight:normal; color:#8b5cf6; font-size:12px;" id="custom_domains_count_badge">共 0 个有效域名</span>
+                        </label>
+                        <textarea id="cfg_customDomainsText" rows="6" placeholder="支持批量添加，每行一个，支持以下格式：&#10;1. 纯域名：cf.090227.xyz&#10;2. 域名#备注：cf.090227.xyz#香港优选CDN&#10;3. 域名:端口#备注：cf.090227.xyz:8443#香港高防8443&#10;4. 域名:端口：cf.090227.xyz:2053" style="font-family:Consolas, Monaco, monospace; font-size:13px; line-height:1.5;" oninput="updateCustomDomainsCount()"></textarea>
+                        <div style="font-size:11px; color:#64748b; margin-top:6px; line-height:1.6;">
+                            💡 <b>格式规范</b>：<br/>
+                            • <b>纯域名</b>：默认使用 443 端口与 TLS，别名自动采用域名（如 <code>cf.090227.xyz</code>）<br/>
+                            • <b>域名#备注</b>：指定个性化节点别名（如 <code>hk.example.com#香港优质CDN</code>）<br/>
+                            • <b>域名:端口#备注</b>：支持自定义非标准 TLS 端口（如 <code>hk.example.com:8443#高防8443</code>）<br/>
+                            • <b>域名:端口</b>：如 <code>hk.example.com:2053</code><br/>
+                            • <b>穿透回源</b>：系统自动绑定后端主隧道域名为 SNI & Host，确保 CDN 优选流量稳定回源！
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ⚡ CM 佬三网优选订阅器 API -->
+                <div class="carrier-card" style="border-left:4px solid #0284c7; margin-top:16px;">
+                    <div class="carrier-card-header">
+                        <div>
+                            <span style="font-weight:700; color:#0369a1; font-size:14px;">⚡ CM佬 Cloudflare 三网优选订阅器 (cf.090227.xyz)</span>
+                            <div style="font-size:12px; color:#64748b; margin-top:2px;">极速纯文本接口直拉，节点将自动格式化命名为 CM电信 / CM联通 / CM移动</div>
+                        </div>
+                        <label style="display:flex; align-items:center; gap:6px; font-weight:600; cursor:pointer;">
+                            <input type="checkbox" id="cfg_enableOptCMApi" /> <span style="color:#0369a1;">启用 CM佬优选</span>
+                        </label>
+                    </div>
+                    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(140px, 1fr)); gap:12px; margin-bottom:12px;">
+                        <div class="form-row" style="margin-bottom:0;">
+                            <label>电信拉取数量 (ips)</label>
+                            <input type="number" id="cfg_cmApiCountCT" min="1" max="50" value="6" />
+                        </div>
+                        <div class="form-row" style="margin-bottom:0;">
+                            <label>联通拉取数量 (ips)</label>
+                            <input type="number" id="cfg_cmApiCountCU" min="1" max="50" value="8" />
+                        </div>
+                        <div class="form-row" style="margin-bottom:0;">
+                            <label>移动拉取数量 (ips)</label>
+                            <input type="number" id="cfg_cmApiCountCM" min="1" max="50" value="8" />
+                        </div>
+                    </div>
+                    <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; margin-top:10px;">
+                        <button class="btn btn-secondary" style="padding:6px 14px; font-size:12px; color:#0284c7; border-color:#bae6fd;" id="btn_sync_cm" onclick="syncCmApi()">🔄 立即全量拉取 CM佬优选</button>
+                        <span style="font-size:12px; color:#64748b;">上次同步: <b id="cm_sync_time_text" style="color:#0f172a;">未同步</b></span>
+                    </div>
+                </div>
+
+                <button class="btn btn-primary" style="padding:8px 20px; margin-top:16px;" onclick="saveCdnSettings()">💾 保存三网优选策略</button>
             </div>
 
             <!-- PANEL 3: 隧道穿透与系统变量 -->
@@ -4646,6 +4913,17 @@ function renderAdminDashboardPage() {
                     document.getElementById('cfg_optCTIp').value = currentSettings.optCTIp || '';
                     document.getElementById('cfg_optCUIp').value = currentSettings.optCUIp || '';
                     document.getElementById('cfg_optCMIp').value = currentSettings.optCMIp || '';
+
+                    document.getElementById('cfg_enableCustomDomains').checked = currentSettings.enableCustomDomains === true;
+                    document.getElementById('cfg_customDomainsText').value = currentSettings.customDomainsText || '';
+                    updateCustomDomainsCount();
+
+                    // 🚀 CM佬 API 回显
+                    document.getElementById('cfg_enableOptCMApi').checked = currentSettings.enableOptCMApi !== false;
+                    document.getElementById('cfg_cmApiCountCT').value = currentSettings.cmApiCountCT || 6;
+                    document.getElementById('cfg_cmApiCountCU').value = currentSettings.cmApiCountCU || 8;
+                    document.getElementById('cfg_cmApiCountCM').value = currentSettings.cmApiCountCM || 8;
+                    document.getElementById('cm_sync_time_text').innerText = currentSettings.cmApiSyncTime || '未同步';
                 }
             } catch (err) {
                 console.error(err);
@@ -5096,6 +5374,14 @@ function renderAdminDashboardPage() {
             }
         }
 
+        function updateCustomDomainsCount() {
+            const el = document.getElementById('cfg_customDomainsText');
+            const badge = document.getElementById('custom_domains_count_badge');
+            if (!el || !badge) return;
+            const lines = el.value.split(/\r?\n/).map(s => s.trim()).filter(s => s && !s.startsWith('//') && !s.startsWith(';'));
+            badge.innerText = '共 ' + lines.length + ' 个有效域名';
+        }
+
         async function saveCdnSettings() {
             const payload = {
                 autoSyncWetest: document.getElementById('cfg_autoSyncWetest').checked,
@@ -5106,7 +5392,13 @@ function renderAdminDashboardPage() {
                 optOfficialIp: document.getElementById('cfg_optOfficialIp').value.trim(),
                 optCTIp: document.getElementById('cfg_optCTIp').value.trim(),
                 optCUIp: document.getElementById('cfg_optCUIp').value.trim(),
-                optCMIp: document.getElementById('cfg_optCMIp').value.trim()
+                optCMIp: document.getElementById('cfg_optCMIp').value.trim(),
+                enableCustomDomains: document.getElementById('cfg_enableCustomDomains').checked,
+                customDomainsText: document.getElementById('cfg_customDomainsText').value.trim(),
+                enableOptCMApi: document.getElementById('cfg_enableOptCMApi').checked,
+                cmApiCountCT: parseInt(document.getElementById('cfg_cmApiCountCT').value, 10) || 6,
+                cmApiCountCU: parseInt(document.getElementById('cfg_cmApiCountCU').value, 10) || 8,
+                cmApiCountCM: parseInt(document.getElementById('cfg_cmApiCountCM').value, 10) || 8
             };
             const res = await fetch('/admin/api/settings', {
                 method: 'POST',
@@ -5114,6 +5406,25 @@ function renderAdminDashboardPage() {
                 body: JSON.stringify(payload)
             });
             if (res.ok) alert('✅ 三网优选策略已保存并即时生效！');
+        }
+
+        async function syncCmApi() {
+            const btn = document.getElementById('btn_sync_cm');
+            btn.disabled = true;
+            btn.innerText = '⏳ 正在极速拉取 CM佬优选...';
+            try {
+                const res = await fetch('/admin/api/sync-cm', { method: 'POST' });
+                const d = await res.json();
+                if (res.ok) {
+                    alert('✅ CM佬三网优选 IP 已全量更新成功！');
+                    fetchStatus();
+                } else {
+                    alert('同步失败: ' + d.error);
+                }
+            } finally {
+                btn.disabled = false;
+                btn.innerText = '🔄 立即全量拉取 CM佬优选';
+            }
         }
 
         async function saveSystemSettings() {
