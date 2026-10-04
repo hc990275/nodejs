@@ -1,0 +1,23 @@
+[Unit]
+Description=VPS-Tunnel High Performance Native Node.js VLESS Proxy & Wetest Hub
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/vps-tunnel
+EnvironmentFile=-/opt/vps-tunnel/.env
+ExecStart=/usr/bin/node index.js
+Restart=always
+RestartSec=5s
+LimitNOFILE=65535
+LimitNPROC=65535
+
+# 资源保护与安全基线
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vps-tunnel
+
+[Install]
+WantedBy=multi-user.target

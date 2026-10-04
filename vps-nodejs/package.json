@@ -1,0 +1,12 @@
+{
+  "name": "vps-tunnel",
+  "version": "1.0.0",
+  "description": "High-performance Pure Native Node.js VLESS-WebSocket Tunnel & Wetest 3-Carrier Engine for Linux VPS",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "author": "Antigravity",
+  "license": "MIT",
+  "dependencies": {}
+}
