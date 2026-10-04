@@ -55,3 +55,30 @@
   3. 编写 `/etc/init.d/vps-tunnel` OpenRC 守护脚本与 `start-stop-daemon`，支持 Alpine 守护进程与开机自启；
   4. 原生兼容 Cloudflare Argo 穿透，自动读取 `ARGO_TOKEN` 与域名，直接将本地端口穿透至 `aaa.abcai.online`，免除 NAT 端口记忆烦恼。
 
+---
+
+## 6. 连接池双重注册导致的内存冗余与事件监听器泄漏
+- **问题现象**：高并发代理请求下，活跃连接池中对象数量翻倍，且 Node.js 控制台偶发 `MaxListenersExceededWarning: Possible EventEmitter memory leak detected`。
+- **原因剖析**：`handleVlessWebSocket` 在出站连接发起前注册了一次 `{ clientSocket, null }`，在出站连接建立后又重复注册了一次 `{ clientSocket, targetSocket }`，导致同一个 `clientSocket` 上挂载了重复的 `once('close')` 与 `once('error')` 清理监听器。
+- **解决方案**：重构为单次原子注册机制。握手成功后只注册一次上下文，出站连接成功后通过 `bindTargetSocket` 原地绑定，消灭重复包装对象与监听器残留。
+
+---
+
+## 7. 定时器同步 I/O (fs.writeFileSync) 阻塞主事件循环与无意义盲写
+- **问题现象**：每隔 30 秒进行大吞吐测速或高清视频播放时，偶尔出现微小的丢包或速度抖动顿挫。
+- **原因剖析**：系统通过 `setInterval(saveUsers, 30000)` 每 30 秒无条件执行同步序列化 `JSON.stringify` 并调用 `fs.writeFileSync` / `fs.renameSync` 阻塞主线程 I/O，阻塞期间全服所有在线用户的 WebSocket 转发瞬间被冻结。
+- **解决方案**：
+  1. 引入 `isUsersDirty` 脏标记引擎，仅当实际产生流量消耗或用户信息更新时才触发写盘；
+  2. 全面改用纯异步非阻塞 `fs.promises.writeFile` 与 `fs.promises.rename`，彻底释放主事件循环，代理通信零顿挫。
+
+---
+
+## 8. WebSocket 逐字节单循环解掩码与 VLESS UUID 堆对象碎片风暴
+- **问题现象**：高并发上行测速（100M/1G 上传）时 CPU 迅速冲顶，且 V8 频繁触发垃圾回收（GC），吞吐受限。
+- **原因剖析**：
+  1. RFC 6455 客户端上行数据必须带 Mask 掩码，原有代码采用 `for` 循环逐字节取模异或，并频繁分配 `Buffer.allocUnsafe`；
+  2. 每次 VLESS 握手为了拼出 36 位 UUID，连续创建 5 个子 Buffer 切片、5 个十六进制小字符串并 `join`，产生 11 个临时堆对象。
+- **解决方案**：
+  1. 引入 32 位整型批量就地异或（In-Place 32-bit XOR Fast Unmasking），彻底实现 0 内存分配与 4 字节步长批量解码；
+  2. 预分配 256 元素字节映射表 `byteToHex`，单次纯查表快速解析 UUID，消灭堆碎片。
+
