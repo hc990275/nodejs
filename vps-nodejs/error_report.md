@@ -82,3 +82,36 @@
   1. 引入 32 位整型批量就地异或（In-Place 32-bit XOR Fast Unmasking），彻底实现 0 内存分配与 4 字节步长批量解码；
   2. 预分配 256 元素字节映射表 `byteToHex`，单次纯查表快速解析 UUID，消灭堆碎片。
 
+---
+
+## 9. Cloudflare Bot Fight Mode (5秒盾质询) 拦截客户端导致节点全部测速报 -1
+- **问题现象**：客户端（Clash、V2rayN、Sing-box 等）测速时，所有经由 Cloudflare CDN / 优选 IP / Argo 隧道的节点全部报 `-1`（握手超时/失败）。
+- **原因剖析**：
+  1. 域名所在的 Cloudflare 免费版控制台开启了 `Bot Fight Mode (fight_mode: True)`；
+  2. 代理客户端测速时发送的 HTTP WebSocket Upgrade 探针包由于缺少常规浏览器的完整指纹与 Header，被 Cloudflare 边缘算法判定为“疑似自动化机器人”，返回了 `HTTP/1.1 403 Forbidden`、`Cf-Mitigated: challenge` 响应头以及 `<title>Just a moment...</title>` 的五秒盾 JS 质询页面；
+  3. 客户端无法在无 JS 环境下完成质询，直接判定握手失败报 `-1`。
+- **解决方案**：
+  1. 通过 Cloudflare API 或控制台将 `bot_management` 中的 `fight_mode` 设为 `False`；
+  2. 保持 WAF 自定义规则按需精准拦截，杜绝粗暴的 Bot 全局拦截导致代理流量断流。
+
+---
+
+## 10. 服务端与客户端 UUID 失配导致 [Auth] 拦截
+- **问题现象**：服务端控制台密集报错 `[Auth] ❌ 未知 UUID 请求已被拒: <uuid>`，客户端测速返回 `-1`。
+- **原因剖析**：重新部署或环境迁移后，服务端生成了新的用户 UUID，而用户客户端本地缓存的节点配置依然保留着旧 UUID，且未重新“更新订阅”。
+- **解决方案**：
+  1. 服务端 `users.json` 支持向后兼容录入历史合法 UUID；
+  2. 客户端在节点失效时应及时点击“更新订阅”拉取最新的节点配置。
+
+---
+
+## 11. 出站连接 net.createConnection 自定义 lookup 导致 `Invalid IP address: undefined` 致命熔断
+- **问题现象**：客户端 WebSocket 握手成功（101 Switching Protocols）且收到 VLESS 首帧头，但随后立刻被服务端静默关闭 TCP 连接，无法完成 HTTP 204 探针通信，客户端测速全部报 `-1`。
+- **原因剖析**：
+  1. 为优化 DNS 在 `net.createConnection` 注入了自定义 `lookup: cachedLookup`；
+  2. Node.js `net.Socket` 在某些内部流程或高版本中向 `lookup` 传递了 `{ all: true }`，期望回调返回对象数组 `[{ address, family }]`，而自定义函数硬编码返回了 `callback(null, address, 4)`；
+  3. Node 内部解析 IP 时取 `addresses[0].address` 得到 `undefined`，抛出内核级错误 `Invalid IP address: undefined`，出站连接瞬间被摧毁。
+- **根本解决方案**：
+  1. 移除脆弱的自定义 `lookup` 覆盖，依托系统级配置 `UV_THREADPOOL_SIZE=64`，由 Libuv 纯原生 C++ 线程池并发处理系统 DNS 解析，既稳健又安全；
+  2. 移除出站 Socket 错误的静默忽略，增加完整错误堆栈捕获。
+

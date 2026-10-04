@@ -49,71 +49,6 @@ function parseUuidFromBuffer(buf, offset = 1) {
     );
 }
 
-// ==========================================
-// 🚀 毫秒级内存 DNS 极速解析与非阻塞 c-ares / LRU 缓存引擎
-// ==========================================
-const dnsCache = new Map();
-const DNS_CACHE_TTL = 5 * 60 * 1000; // 5 分钟 TTL
-let customResolver = null;
-try {
-    customResolver = new dns.promises.Resolver();
-    customResolver.setServers(['223.5.5.5', '119.29.29.29', '1.1.1.1', '8.8.8.8']);
-} catch (_) {}
-
-function cachedLookup(hostname, options, callback) {
-    if (typeof options === 'function') {
-        callback = options;
-        options = {};
-    }
-    if (net.isIP(hostname)) {
-        return callback(null, hostname, net.isIPv6(hostname) ? 6 : 4);
-    }
-    const now = Date.now();
-    const cached = dnsCache.get(hostname);
-    if (cached && (now - cached.timestamp < DNS_CACHE_TTL)) {
-        return callback(null, cached.address, cached.family);
-    }
-
-    // 优先采用非阻塞 c-ares 纯异步解析，规避 Libuv 线程池排队瓶颈
-    if (customResolver) {
-        customResolver.resolve4(hostname).then(addresses => {
-            if (addresses && addresses.length > 0) {
-                const address = addresses[0];
-                if (dnsCache.size > 2048) {
-                    const firstKey = dnsCache.keys().next().value;
-                    dnsCache.delete(firstKey);
-                }
-                dnsCache.set(hostname, { address, family: 4, timestamp: now });
-                return callback(null, address, 4);
-            }
-            throw new Error('No IPv4');
-        }).catch(() => {
-            // 回退到系统底层 lookup
-            dns.lookup(hostname, options, (err, address, family) => {
-                if (!err && address) {
-                    if (dnsCache.size > 2048) {
-                        const firstKey = dnsCache.keys().next().value;
-                        dnsCache.delete(firstKey);
-                    }
-                    dnsCache.set(hostname, { address, family, timestamp: now });
-                }
-                callback(err, address, family);
-            });
-        });
-        return;
-    }
-
-    dns.lookup(hostname, options, (err, address, family) => {
-        if (!err && address) {
-            if (dnsCache.size > 2048) {
-                const firstKey = dnsCache.keys().next().value;
-                dnsCache.delete(firstKey);
-            }
-            dnsCache.set(hostname, { address, family, timestamp: now });
-        }
-        callback(err, address, family);
-    });
-}
 
 // ==========================================
 // 1. 路径与持久化目录
@@ -1076,11 +1011,10 @@ function handleVlessWebSocket(clientSocket, head) {
                 const vlessResp = Buffer.from([0x00, 0x00]);
                 clientSocket.write(createWsBinaryFrame(vlessResp));
 
-                // 🚀 建立出站 TCP 连接: 注入毫秒级非阻塞 c-ares / LRU DNS 缓存解析 (cachedLookup)
+                // 🚀 建立出站 TCP 连接 (利用 64 线程 Libuv 极速原生并发解析，消除兼容性隐患)
                 targetSocket = net.createConnection({ 
                     host: header.address, 
-                    port: header.port,
-                    lookup: cachedLookup
+                    port: header.port
                 }, () => {
                     targetConnected = true;
                     // 双向绑定并联动释放
@@ -1143,7 +1077,10 @@ function handleVlessWebSocket(clientSocket, head) {
                     }
                 });
 
-                targetSocket.on('error', () => { clientSocket.destroy(); });
+                targetSocket.on('error', (err) => {
+                    // 若出站连接异常，安全释放客户端 Socket
+                    clientSocket.destroy();
+                });
                 targetSocket.on('close', () => { clientSocket.destroy(); });
             } else {
                 if (currentUser) {
