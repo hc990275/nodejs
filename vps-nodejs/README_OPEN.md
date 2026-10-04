@@ -11,7 +11,7 @@
 - 🔄 **全能客户端适配**：智能下发 Clash YAML、Sing-box JSON、Surge 及通用 Base64 订阅。
 - 🛡️ **0 毫秒单连接隔离断流**：封禁或删除用户立即掐断长连接，对其他在线用户 0 影响、0 闪断。
 - 🖥️ **微测网风格大屏与 Element UI 后台**：可视化用户流量监控与运营风控，支持在线修改密码并即时热落盘。
-- 🐧 **Linux 运维无缝集成**：内置 Systemd 服务、一键安装脚本 (`setup.sh`) 与 BBR 内核调优脚本。
+- 🐧 **全系 Linux 运维无缝集成**：内置 Systemd 与 OpenRC 服务、一键安装脚本 (`setup.sh`)，原生适配 Alpine Linux、Debian、Ubuntu、CentOS 等系统及 BBR 内核调优。
 
 ---
 

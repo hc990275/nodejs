@@ -66,6 +66,8 @@ sudo ./setup.sh
 - 立即启动服务并加入开机自启。
 
 ### 2. 常用管理命令
+
+#### Systemd 环境 (Debian / Ubuntu / CentOS 等)
 ```bash
 # 查看实时运行状态
 sudo systemctl status vps-tunnel
@@ -78,6 +80,21 @@ sudo systemctl restart vps-tunnel
 
 # 停止服务
 sudo systemctl stop vps-tunnel
+```
+
+#### OpenRC 环境 (Alpine Linux)
+```bash
+# 查看服务状态
+rc-service vps-tunnel status
+
+# 查看服务实时日志
+tail -f /var/log/vps-tunnel.log
+
+# 重启服务
+rc-service vps-tunnel restart
+
+# 停止服务
+rc-service vps-tunnel stop
 ```
 
 ---
