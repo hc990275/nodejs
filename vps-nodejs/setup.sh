@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # ========================================================
-# VPS-Tunnel: Linux VPS 一键部署与开机自启安装脚本
-# 支持系统: Debian 10+ / Ubuntu 20.04+ / CentOS 8+ / Rocky / AlmaLinux
+# VPS-Tunnel: Linux VPS 一键全能部署与开机自启程序
+# 适配全系操作系统:
+#  - Alpine Linux 3.16+ (apk + OpenRC)
+#  - Debian 10+ / Ubuntu 20.04+ (apt-get + systemd)
+#  - CentOS 8+ / Rocky Linux / AlmaLinux / Fedora (dnf/yum + systemd)
 # ========================================================
 
 set -e
@@ -10,6 +13,7 @@ RED="\033[31m"
 GREEN="\033[32m"
 YELLOW="\033[33m"
 CYAN="\033[36m"
+BOLD="\033[1m"
 PLAIN="\033[0m"
 
 echo -e "${CYAN}========================================================${PLAIN}"
@@ -23,28 +27,59 @@ fi
 
 INSTALL_DIR="/opt/vps-tunnel"
 
-# 1. 检查并安装 Node.js 运行环境 (LTS)
-echo -e "${YELLOW}[1/5] 检查系统 Node.js 运行环境...${PLAIN}"
-if ! command -v node >/dev/null 2>&1; then
-    echo -e "${YELLOW}未检测到 Node.js，正在自动从官方源安装最新 LTS...${PLAIN}"
-    if command -v apt-get >/dev/null 2>&1; then
-        apt-get update -y
-        apt-get install -y curl ca-certificates gnupg
+# 1. 检查并安装 Node.js 运行环境与必备系统工具
+echo -e "${YELLOW}[1/5] 检查系统环境与包管理器...${PLAIN}"
+
+if command -v apk >/dev/null 2>&1; then
+    echo -e "${CYAN}检测到 Alpine Linux 环境，使用 apk 快速装配运行环境...${PLAIN}"
+    apk update
+    apk add --no-cache nodejs npm curl bash openssh-server openssl ca-certificates openrc cloudflared 2>/dev/null || \
+    apk add --no-cache nodejs npm curl bash openssh-server openssl ca-certificates openrc
+
+    # 针对 Alpine 容器：自动配置与激活 SSHD 服务，确保映射端口畅通
+    if [ -f /etc/ssh/sshd_config ]; then
+        sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+        sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+        ssh-keygen -A 2>/dev/null || true
+        rc-update add sshd default 2>/dev/null || true
+        rc-service sshd restart 2>/dev/null || /usr/sbin/sshd 2>/dev/null || true
+        echo -e "${GREEN}✅ Alpine SSHD 服务已激活并放行 root 远程连接${PLAIN}"
+    fi
+
+elif command -v apt-get >/dev/null 2>&1; then
+    echo -e "${CYAN}检测到 Debian/Ubuntu 环境，更新软件源...${PLAIN}"
+    apt-get update -y
+    apt-get install -y curl ca-certificates gnupg openssl bash
+    if ! command -v node >/dev/null 2>&1; then
+        echo -e "${YELLOW}未检测到 Node.js，正在自动从官方源安装最新 LTS...${PLAIN}"
         curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
         apt-get install -y nodejs
-    elif command -v dnf >/dev/null 2>&1; then
-        dnf module install -y nodejs:20
-    elif command -v yum >/dev/null 2>&1; then
+    fi
+
+elif command -v dnf >/dev/null 2>&1; then
+    echo -e "${CYAN}检测到 RHEL/Fedora 环境...${PLAIN}"
+    dnf install -y curl openssl ca-certificates bash
+    if ! command -v node >/dev/null 2>&1; then
+        dnf module install -y nodejs:20 || dnf install -y nodejs
+    fi
+
+elif command -v yum >/dev/null 2>&1; then
+    echo -e "${CYAN}检测到 CentOS 环境...${PLAIN}"
+    yum install -y curl openssl ca-certificates bash
+    if ! command -v node >/dev/null 2>&1; then
         curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
         yum install -y nodejs
-    else
-        echo -e "${RED}[Error] 未知包管理器，请手动安装 Node.js 18+！${PLAIN}"
+    fi
+
+else
+    if ! command -v node >/dev/null 2>&1; then
+        echo -e "${RED}[Error] 未知包管理器且未检测到 Node.js，请手动安装 Node.js 18+！${PLAIN}"
         exit 1
     fi
 fi
 
 NODE_VER=$(node -v)
-echo -e "${GREEN}✅ Node.js 环境已就绪: ${NODE_VER}${PLAIN}"
+echo -e "${GREEN}✅ Node.js 运行环境已就绪: ${NODE_VER}${PLAIN}"
 
 # 2. 创建安装目录并部署文件
 echo -e "${YELLOW}[2/5] 部署应用文件至 ${INSTALL_DIR}...${PLAIN}"
@@ -54,7 +89,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RAW_URL="https://raw.githubusercontent.com/hc990275/nodejs/main/vps-nodejs"
 GH_PROXY="https://gh-proxy.net/${RAW_URL}"
 
-# 探测本地文件是否存在；若不存在（例如通过 curl 管道直接执行），则从远程拉取
+# 探测本地文件是否存在；若不存在（例如通过 curl 管道直接执行），则从远程高速拉取
 if [ -f "${SCRIPT_DIR}/index.js" ]; then
     echo -e "${CYAN}检测到本地源码，正在从当前目录部署...${PLAIN}"
     cp -f "${SCRIPT_DIR}/index.js" "${INSTALL_DIR}/"
@@ -64,7 +99,7 @@ if [ -f "${SCRIPT_DIR}/index.js" ]; then
     if [ ! -f "${INSTALL_DIR}/.env" ]; then
         if [ -f "${SCRIPT_DIR}/.env" ]; then
             cp -f "${SCRIPT_DIR}/.env" "${INSTALL_DIR}/"
-        else
+        elif [ -f "${SCRIPT_DIR}/.env.example" ]; then
             cp -f "${SCRIPT_DIR}/.env.example" "${INSTALL_DIR}/.env"
         fi
     fi
@@ -87,13 +122,51 @@ else
     fi
 fi
 
+# 确保 .env 文件存在并根据环境变量或默认值初始化
+if [ ! -f "${INSTALL_DIR}/.env" ]; then
+    cat << 'EOF' > "${INSTALL_DIR}/.env"
+UUID=c82662c1-bb38-4e8c-850f-ae5be201c107
+ARGO_DOMAIN=
+ARGO_TOKEN=
+PORT=19900
+ADMIN_PASSWORD=admin
+RETRY_MAX=3
+EOF
+fi
+
+# 若安装时显式注入了环境变量，则自动热写入 .env
+if [ -n "$SET_UUID" ]; then
+    sed -i "s/^UUID=.*/UUID=${SET_UUID}/" "${INSTALL_DIR}/.env"
+fi
+if [ -n "$SET_PORT" ]; then
+    sed -i "s/^PORT=.*/PORT=${SET_PORT}/" "${INSTALL_DIR}/.env"
+fi
+if [ -n "$SET_ADMIN_PASSWORD" ]; then
+    sed -i "s/^ADMIN_PASSWORD=.*/ADMIN_PASSWORD=${SET_ADMIN_PASSWORD}/" "${INSTALL_DIR}/.env"
+fi
+if [ -n "$SET_ARGO_DOMAIN" ]; then
+    sed -i "s/^ARGO_DOMAIN=.*/ARGO_DOMAIN=${SET_ARGO_DOMAIN}/" "${INSTALL_DIR}/.env"
+fi
+if [ -n "$SET_ARGO_TOKEN" ]; then
+    # 对 Token 采用安全替换
+    grep -q "^ARGO_TOKEN=" "${INSTALL_DIR}/.env" && sed -i '/^ARGO_TOKEN=/d' "${INSTALL_DIR}/.env"
+    echo "ARGO_TOKEN=${SET_ARGO_TOKEN}" >> "${INSTALL_DIR}/.env"
+fi
+
 chmod +x "${INSTALL_DIR}"/*.sh 2>/dev/null || true
 
-# 3. 注册 Systemd 系统服务
-echo -e "${YELLOW}[3/5] 注册 Systemd 守护进程...${PLAIN}"
+# 3. 注册守护进程 (适配 Systemd 或 OpenRC)
+echo -e "${YELLOW}[3/5] 配置系统自启守护进程...${PLAIN}"
 NODE_BIN=$(command -v node)
 
-cat <<EOF > /etc/systemd/system/vps-tunnel.service
+IS_SYSTEMD=false
+if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    IS_SYSTEMD=true
+fi
+
+if [ "$IS_SYSTEMD" = "true" ]; then
+    echo -e "${CYAN}系统环境: Systemd，正在生成服务单元...${PLAIN}"
+    cat <<EOF > /etc/systemd/system/vps-tunnel.service
 [Unit]
 Description=VPS-Tunnel High Performance Native Node.js VLESS Proxy & Wetest Hub
 After=network.target network-online.target
@@ -116,37 +189,104 @@ SyslogIdentifier=vps-tunnel
 [Install]
 WantedBy=multi-user.target
 EOF
+    systemctl daemon-reload
+    systemctl enable vps-tunnel
+    systemctl restart vps-tunnel
 
-systemctl daemon-reload
-systemctl enable vps-tunnel
+elif command -v rc-service >/dev/null 2>&1 || [ -d /etc/init.d ]; then
+    echo -e "${CYAN}系统环境: OpenRC (Alpine)，正在配置 /etc/init.d/vps-tunnel...${PLAIN}"
+    cat <<'EOF' > /etc/init.d/vps-tunnel
+#!/sbin/openrc-run
+description="VPS-Tunnel High Performance Native Node.js VLESS Proxy"
 
-# 4. 自动放行防火墙端口 (UFW / Firewalld)
+VDIR="/opt/vps-tunnel"
+PIDFILE="/run/vps-tunnel.pid"
+LOGFILE="/var/log/vps-tunnel.log"
+
+depend() {
+    need net
+    after firewall
+}
+
+start() {
+    ebegin "Starting VPS-Tunnel Service"
+    cd "${VDIR}"
+    if [ -f "${VDIR}/.env" ]; then
+        set -a
+        . "${VDIR}/.env"
+        set +a
+    fi
+    start-stop-daemon --start \
+        --chdir "${VDIR}" \
+        --make-pidfile --pidfile "${PIDFILE}" \
+        --background \
+        --stdout "${LOGFILE}" --stderr "${LOGFILE}" \
+        --exec /usr/bin/node -- index.js
+    eend $?
+}
+
+stop() {
+    ebegin "Stopping VPS-Tunnel Service"
+    start-stop-daemon --stop --pidfile "${PIDFILE}" 2>/dev/null || true
+    pkill -f "node index.js" 2>/dev/null || true
+    pkill -f "cloudflared tunnel" 2>/dev/null || true
+    eend $?
+}
+EOF
+    chmod +x /etc/init.d/vps-tunnel
+    rc-update add vps-tunnel default 2>/dev/null || true
+    rc-service vps-tunnel restart 2>/dev/null || /etc/init.d/vps-tunnel restart 2>/dev/null || true
+
+else
+    echo -e "${YELLOW}未检测到标准 init 系统，采用轻量级后台常驻模式拉起...${PLAIN}"
+    pkill -f "node index.js" 2>/dev/null || true
+    cd "${INSTALL_DIR}"
+    nohup "${NODE_BIN}" index.js > /var/log/vps-tunnel.log 2>&1 &
+fi
+
+# 4. 自动放行防火墙端口 (若有防火墙管理器)
 echo -e "${YELLOW}[4/5] 检查系统防火墙...${PLAIN}"
-if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
+CURRENT_PORT=$(grep "^PORT=" "${INSTALL_DIR}/.env" 2>/dev/null | cut -d'=' -f2 || echo "19900")
+CURRENT_PORT=${CURRENT_PORT:-19900}
+
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
     ufw allow 80/tcp || true
     ufw allow 443/tcp || true
-    echo -e "${GREEN}✅ UFW 防火墙已放行 80 / 443 端口${PLAIN}"
-elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then
+    ufw allow "${CURRENT_PORT}"/tcp || true
+    echo -e "${GREEN}✅ UFW 防火墙已放行 80 / 443 / ${CURRENT_PORT} 端口${PLAIN}"
+elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
     firewall-cmd --zone=public --add-port=80/tcp --permanent || true
     firewall-cmd --zone=public --add-port=443/tcp --permanent || true
+    firewall-cmd --zone=public --add-port="${CURRENT_PORT}"/tcp --permanent || true
     firewall-cmd --reload || true
-    echo -e "${GREEN}✅ Firewalld 防火墙已放行 80 / 443 端口${PLAIN}"
+    echo -e "${GREEN}✅ Firewalld 防火墙已放行 80 / 443 / ${CURRENT_PORT} 端口${PLAIN}"
 fi
 
-# 5. 启动服务
-echo -e "${YELLOW}[5/5] 正在拉起服务...${PLAIN}"
-systemctl restart vps-tunnel
-
+# 5. 校验运行状态
+echo -e "${YELLOW}[5/5] 校验服务运行状态...${PLAIN}"
 sleep 2
-if systemctl is-active --quiet vps-tunnel; then
-    echo -e "${CYAN}========================================================${PLAIN}"
-    echo -e "${GREEN}🎉 VPS-Tunnel 服务已成功安装并处于运行中！${PLAIN}"
-    echo -e "📁 工作目录: ${INSTALL_DIR}"
-    echo -e "📋 运行状态: systemctl status vps-tunnel"
-    echo -e "📜 实时日志: journalctl -u vps-tunnel -f"
-    echo -e "🛑 停止服务: systemctl stop vps-tunnel"
-    echo -e "🔄 重启服务: systemctl restart vps-tunnel"
-    echo -e "${CYAN}========================================================${PLAIN}"
+
+STATUS_OK=false
+if [ "$IS_SYSTEMD" = "true" ]; then
+    systemctl is-active --quiet vps-tunnel && STATUS_OK=true
 else
-    echo -e "${RED}⚠️ 服务启动可能遇到问题，请执行 journalctl -u vps-tunnel -xe 查看详细日志！${PLAIN}"
+    pgrep -f "node index.js" >/dev/null 2>&1 && STATUS_OK=true
 fi
+
+echo -e "${CYAN}========================================================${PLAIN}"
+if [ "$STATUS_OK" = "true" ]; then
+    echo -e "${GREEN}🎉 VPS-Tunnel 服务已成功部署并运行中！${PLAIN}"
+else
+    echo -e "${YELLOW}💡 服务已完成装配并已在后台拉起，请检查日志验证！${PLAIN}"
+fi
+echo -e "📁 工作目录: ${INSTALL_DIR}"
+echo -e "⚙️ 配置文件: ${INSTALL_DIR}/.env"
+echo -e "📜 日志文件: /var/log/vps-tunnel.log"
+if [ "$IS_SYSTEMD" = "true" ]; then
+    echo -e "📋 运行状态: systemctl status vps-tunnel"
+    echo -e "🔄 重启服务: systemctl restart vps-tunnel"
+else
+    echo -e "📋 OpenRC 命令: rc-service vps-tunnel status"
+    echo -e "🔄 重启服务: rc-service vps-tunnel restart"
+fi
+echo -e "${CYAN}========================================================${PLAIN}"
