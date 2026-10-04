@@ -216,6 +216,7 @@ start() {
         . "${VDIR}/.env"
         set +a
     fi
+    export UV_THREADPOOL_SIZE=64
     start-stop-daemon --start \
         --chdir "${VDIR}" \
         --make-pidfile --pidfile "${PIDFILE}" \
