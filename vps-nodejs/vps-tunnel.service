@@ -8,6 +8,7 @@ Type=simple
 User=root
 WorkingDirectory=/opt/vps-tunnel
 EnvironmentFile=-/opt/vps-tunnel/.env
+Environment="UV_THREADPOOL_SIZE=64"
 ExecStart=/usr/bin/node index.js
 Restart=always
 RestartSec=5s
