@@ -41,3 +41,17 @@
 - **风险根源**：一旦用户把项目部署到公网 VPS 且未及时配置 `.env`，公网扫描器可在秒级扫描出暴露的 80 端口并使用默认密码 `admin123` 登入后台接管节点。
 - **根本解决方案**：
   彻底废弃默认回退逻辑。若 `.env` 中 `ADMIN_PASSWORD` 缺失或为空，系统严格执行 **Fail-Closed（安全熔断）**，控制台抛出告警并直接拒绝任何后台登录尝试，坚决消除默认口令后门漏洞。
+
+---
+
+## 5. Alpine Linux NAT VPS (无 Systemd / OpenRC / SSH 未初始化) 部署与穿透适配
+- **问题现象**：Alpine Linux 容器使用 musl libc，无 `systemd`（只有 OpenRC），且新装镜像默认未开启 sshd 或缺少主机密钥，导致外网映射的 19999->22 端口连不上（报超时/拒绝），传统的 `systemctl` 与 `apt-get` 命令全部报 `command not found`。
+- **原因剖析**：
+  1. Alpine 极简镜像没有安装 bash/curl，采用 `apk` 包管理器与 `/sbin/openrc-run`；
+  2. NAT 实例映射的 22 端口在容器初始化后未自动配置 root 密码登录与 sshd 守护进程。
+- **解决方案**：
+  1. `setup.sh` 增加 `apk add --no-cache nodejs npm curl bash openssh-server openssl ca-certificates openrc cloudflared`；
+  2. 自动执行 `ssh-keygen -A`，在 `/etc/ssh/sshd_config` 放行 `PermitRootLogin yes`，激活并加入开机自启；
+  3. 编写 `/etc/init.d/vps-tunnel` OpenRC 守护脚本与 `start-stop-daemon`，支持 Alpine 守护进程与开机自启；
+  4. 原生兼容 Cloudflare Argo 穿透，自动读取 `ARGO_TOKEN` 与域名，直接将本地端口穿透至 `aaa.abcai.online`，免除 NAT 端口记忆烦恼。
+

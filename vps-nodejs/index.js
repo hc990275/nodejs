@@ -198,7 +198,7 @@ async function startArgoTunnel(token) {
     }
     stopArgoTunnel();
 
-    const binPath = path.join(BASE_DIR, 'cloudflared');
+    let binPath = path.join(BASE_DIR, 'cloudflared');
 
     // 智能检测机制：检查本地是否有完整合法的程序 (大于 10MB)
     let needDownload = true;
@@ -210,6 +210,17 @@ async function startArgoTunnel(token) {
                 console.log(`[Argo] ✅ 检测到本地已存在合法的 cloudflared 程序 (${formatBytes(stat.size)})，直接启动，绝不重复下载！`);
             } else {
                 console.log(`[Argo] ⚠️ 本地文件大小异常 (${stat.size} 字节)，将重新拉取`);
+            }
+        } catch (e) {}
+    } else {
+        // 优先检测系统全局是否已安装 cloudflared (如通过 apk/apt/dnf 安装)
+        try {
+            const { execSync } = require('child_process');
+            const sysBin = execSync('which cloudflared 2>/dev/null || command -v cloudflared 2>/dev/null', { encoding: 'utf-8' }).trim();
+            if (sysBin && fs.existsSync(sysBin)) {
+                binPath = sysBin;
+                needDownload = false;
+                console.log(`[Argo] ✅ 检测到系统全局已存在 cloudflared (${sysBin})，直接复用！`);
             }
         } catch (e) {}
     }
