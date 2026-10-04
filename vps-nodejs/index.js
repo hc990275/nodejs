@@ -1429,11 +1429,29 @@ function parseCookies(req) {
     return list;
 }
 
+function generateAdminToken() {
+    const ts = Date.now().toString();
+    const sig = crypto.createHmac('sha256', ADMIN_PASSWORD).update(ts).digest('hex');
+    return `${ts}.${sig}`;
+}
+
+function verifyAdminToken(token) {
+    if (!token || typeof token !== 'string') return false;
+    if (adminSessions.has(token)) return true;
+    const parts = token.split('.');
+    if (parts.length !== 2) return false;
+    const [tsStr, sig] = parts;
+    const ts = parseInt(tsStr, 10);
+    if (isNaN(ts) || Date.now() - ts > 7 * 86400 * 1000) return false;
+    const expectedSig = crypto.createHmac('sha256', ADMIN_PASSWORD).update(tsStr).digest('hex');
+    return sig === expectedSig;
+}
+
 function checkAdminAuth(req) {
     const cookies = parseCookies(req);
-    if (cookies.admin_token && adminSessions.has(cookies.admin_token)) return true;
+    if (cookies.admin_token && verifyAdminToken(cookies.admin_token)) return true;
     const authHeader = req.headers['x-admin-token'];
-    if (authHeader && authHeader === ADMIN_PASSWORD) return true;
+    if (authHeader && (authHeader === ADMIN_PASSWORD || verifyAdminToken(authHeader))) return true;
     const q = url.parse(req.url, true).query;
     if (q.token && q.token === ADMIN_PASSWORD) return true;
     return false;
@@ -1457,26 +1475,35 @@ const server = http.createServer(async (req, res) => {
 
     // 通用 JSON 辅助
     const sendJson = (data, code = 200) => {
-        res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.writeHead(code, { 
+            'Content-Type': 'application/json; charset=utf-8',
+            'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
+            'Pragma': 'no-cache',
+            'Expires': '0'
+        });
         res.end(JSON.stringify(data));
     };
     const sendHtml = (html, code = 200) => {
+        const headers = {
+            'Content-Type': 'text/html; charset=utf-8',
+            'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
+            'Pragma': 'no-cache',
+            'Expires': '0'
+        };
         const acceptEncoding = (req.headers['accept-encoding'] || '').toLowerCase();
         if (acceptEncoding.includes('gzip')) {
             zlib.gzip(Buffer.from(html, 'utf-8'), (err, compressed) => {
                 if (!err && compressed) {
-                    res.writeHead(code, {
-                        'Content-Type': 'text/html; charset=utf-8',
-                        'Content-Encoding': 'gzip',
-                        'Content-Length': compressed.length
-                    });
+                    headers['Content-Encoding'] = 'gzip';
+                    headers['Content-Length'] = compressed.length;
+                    res.writeHead(code, headers);
                     return res.end(compressed);
                 }
-                res.writeHead(code, { 'Content-Type': 'text/html; charset=utf-8' });
+                res.writeHead(code, headers);
                 res.end(html);
             });
         } else {
-            res.writeHead(code, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.writeHead(code, headers);
             res.end(html);
         }
     };
@@ -2106,9 +2133,9 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
         readBody(data => {
             const pwd = (data.password || '').trim();
             if (pwd === ADMIN_PASSWORD) {
-                const sToken = crypto.randomBytes(16).toString('hex');
+                const sToken = generateAdminToken();
                 adminSessions.add(sToken);
-                res.setHeader('Set-Cookie', `admin_token=${sToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400`);
+                res.setHeader('Set-Cookie', `admin_token=${sToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`);
                 return sendJson({ success: true, token: sToken });
             }
             sendJson({ error: '管理员密码错误' }, 401);
@@ -4309,7 +4336,7 @@ function renderAdminDashboardPage() {
         <div class="sidebar-brand">
             <div class="brand-logo">🛡️</div>
             <div class="brand-name">VPS-Tunnel</div>
-            <span class="brand-tag">v2.5 Pro</span>
+            <span class="brand-tag">v2.6 Pro</span>
         </div>
         <ul class="sidebar-menu">
             <li class="menu-item active" id="menu_users" onclick="switchNav('users')">
@@ -4849,7 +4876,11 @@ function renderAdminDashboardPage() {
 
         async function fetchStatus() {
             try {
-                const res = await fetch('/admin/api/status');
+                const res = await fetch('/admin/api/status?_t=' + Date.now());
+                if (res.status === 401) {
+                    window.location.href = '/admin/logout';
+                    return;
+                }
                 const data = await res.json();
                 if (res.ok) {
                     currentSettings = data.settings || {};
@@ -4932,7 +4963,11 @@ function renderAdminDashboardPage() {
 
         async function fetchUsers() {
             try {
-                const res = await fetch('/admin/api/users');
+                const res = await fetch('/admin/api/users?_t=' + Date.now());
+                if (res.status === 401) {
+                    window.location.href = '/admin/logout';
+                    return;
+                }
                 const data = await res.json();
                 if (res.ok) {
                     cachedUsersList = data.users || [];
@@ -4940,9 +4975,12 @@ function renderAdminDashboardPage() {
                     cachedUsersList.forEach(u => cachedUsersMap.set(u.uuid, u));
                     document.getElementById('kpi_user_count').innerText = cachedUsersList.length;
                     filterUsers();
+                } else {
+                    document.getElementById('usersTableBody').innerHTML = '<tr><td colspan="8" style="text-align:center; padding:24px; color:var(--text-muted);">暂无用户数据</td></tr>';
                 }
             } catch (err) {
                 console.error(err);
+                document.getElementById('usersTableBody').innerHTML = '<tr><td colspan="8" style="text-align:center; padding:24px; color:var(--text-muted);">获取数据失败，请刷新重试</td></tr>';
             }
         }
 
@@ -5378,7 +5416,7 @@ function renderAdminDashboardPage() {
             const el = document.getElementById('cfg_customDomainsText');
             const badge = document.getElementById('custom_domains_count_badge');
             if (!el || !badge) return;
-            const lines = el.value.split(/\r?\n/).map(s => s.trim()).filter(s => s && !s.startsWith('//') && !s.startsWith(';'));
+            const lines = (el.value || '').split(String.fromCharCode(10)).map(s => s.trim()).filter(s => s && !s.startsWith('//') && !s.startsWith(';'));
             badge.innerText = '共 ' + lines.length + ' 个有效域名';
         }
 
