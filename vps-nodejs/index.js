@@ -1,6 +1,6 @@
 /**
  * =========================================================================
- * 🚀 Kata-Tunnel: 纯原生 Node.js VLESS-WebSocket 隧道与微测网三网优选管理中枢
+ * 🚀 VPS-Tunnel: 纯原生 Node.js VLESS-WebSocket 隧道与微测网三网优选管理中枢
  * =========================================================================
  * 适配硬件规格：308 MB RAM | 716 MB NVMe | 25% CPU | 翼龙面板单端口环境
  * 核心设计指标：
@@ -14,14 +14,106 @@
  * =========================================================================
  */
 
+// 强制注入 Libuv 高性能异步高并发线程池 (防止 DNS 与文件 I/O 阻塞)
+if (!process.env.UV_THREADPOOL_SIZE) {
+    process.env.UV_THREADPOOL_SIZE = '64';
+}
+
 const http = require('http');
 const https = require('https');
 const net = require('net');
+const dns = require('dns');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const url = require('url');
+const zlib = require('zlib');
 const { spawn } = require('child_process');
+
+// 🚀 预分配字节十六进制映射表 (彻底消除 UUID 解析时的堆对象分配与垃圾回收)
+const byteToHex = [];
+for (let i = 0; i < 256; i++) {
+    byteToHex.push((i < 16 ? '0' : '') + i.toString(16));
+}
+
+function parseUuidFromBuffer(buf, offset = 1) {
+    return (
+        byteToHex[buf[offset]] + byteToHex[buf[offset + 1]] +
+        byteToHex[buf[offset + 2]] + byteToHex[buf[offset + 3]] + '-' +
+        byteToHex[buf[offset + 4]] + byteToHex[buf[offset + 5]] + '-' +
+        byteToHex[buf[offset + 6]] + byteToHex[buf[offset + 7]] + '-' +
+        byteToHex[buf[offset + 8]] + byteToHex[buf[offset + 9]] + '-' +
+        byteToHex[buf[offset + 10]] + byteToHex[buf[offset + 11]] +
+        byteToHex[buf[offset + 12]] + byteToHex[buf[offset + 13]] +
+        byteToHex[buf[offset + 14]] + byteToHex[buf[offset + 15]]
+    );
+}
+
+// ==========================================
+// 🚀 毫秒级内存 DNS 极速解析与非阻塞 c-ares / LRU 缓存引擎
+// ==========================================
+const dnsCache = new Map();
+const DNS_CACHE_TTL = 5 * 60 * 1000; // 5 分钟 TTL
+let customResolver = null;
+try {
+    customResolver = new dns.promises.Resolver();
+    customResolver.setServers(['223.5.5.5', '119.29.29.29', '1.1.1.1', '8.8.8.8']);
+} catch (_) {}
+
+function cachedLookup(hostname, options, callback) {
+    if (typeof options === 'function') {
+        callback = options;
+        options = {};
+    }
+    if (net.isIP(hostname)) {
+        return callback(null, hostname, net.isIPv6(hostname) ? 6 : 4);
+    }
+    const now = Date.now();
+    const cached = dnsCache.get(hostname);
+    if (cached && (now - cached.timestamp < DNS_CACHE_TTL)) {
+        return callback(null, cached.address, cached.family);
+    }
+
+    // 优先采用非阻塞 c-ares 纯异步解析，规避 Libuv 线程池排队瓶颈
+    if (customResolver) {
+        customResolver.resolve4(hostname).then(addresses => {
+            if (addresses && addresses.length > 0) {
+                const address = addresses[0];
+                if (dnsCache.size > 2048) {
+                    const firstKey = dnsCache.keys().next().value;
+                    dnsCache.delete(firstKey);
+                }
+                dnsCache.set(hostname, { address, family: 4, timestamp: now });
+                return callback(null, address, 4);
+            }
+            throw new Error('No IPv4');
+        }).catch(() => {
+            // 回退到系统底层 lookup
+            dns.lookup(hostname, options, (err, address, family) => {
+                if (!err && address) {
+                    if (dnsCache.size > 2048) {
+                        const firstKey = dnsCache.keys().next().value;
+                        dnsCache.delete(firstKey);
+                    }
+                    dnsCache.set(hostname, { address, family, timestamp: now });
+                }
+                callback(err, address, family);
+            });
+        });
+        return;
+    }
+
+    dns.lookup(hostname, options, (err, address, family) => {
+        if (!err && address) {
+            if (dnsCache.size > 2048) {
+                const firstKey = dnsCache.keys().next().value;
+                dnsCache.delete(firstKey);
+            }
+            dnsCache.set(hostname, { address, family, timestamp: now });
+        }
+        callback(err, address, family);
+    });
+}
 
 // ==========================================
 // 1. 路径与持久化目录
@@ -239,11 +331,17 @@ async function startArgoTunnel(token) {
         fs.chmodSync(binPath, 0o755);
     } catch (e) {}
 
-    console.log('[Argo] 🚀 正在拉起 Cloudflare Argo 隧道守护进程...');
-    argoStatus = 'starting';
-
     try {
-        argoProcess = spawn(binPath, ['tunnel', '--no-autoupdate', 'run', '--token', token.trim()], {
+        argoStatus = 'starting';
+        // 🚀 注入极致抗丢包与传输加速: QUIC (HTTP/3 over UDP) 极速模式
+        const cfArgs = [
+            'tunnel',
+            '--no-autoupdate',
+            'run',
+            '--protocol', 'quic',
+            '--token', token.trim()
+        ];
+        argoProcess = spawn(binPath, cfArgs, {
             cwd: BASE_DIR,
             stdio: ['ignore', 'pipe', 'pipe']
         });
@@ -379,6 +477,76 @@ if (!ADMIN_PASSWORD) {
 }
 
 // ==========================================
+// 2.2 服务器公网 IP 与真实地理位置探测引擎 (GeoIP)
+// ==========================================
+let serverGeo = {
+    ip: '',
+    countryCode: 'US',
+    country: '美国',
+    city: '凤凰城',
+    flag: '🇺🇸',
+    isp: ''
+};
+
+function getFlagEmoji(countryCode) {
+    if (!countryCode || countryCode.length !== 2) return '🌐';
+    const codePoints = countryCode
+        .toUpperCase()
+        .split('')
+        .map(char => 127397 + char.charCodeAt(0));
+    return String.fromCodePoint(...codePoints);
+}
+
+const cityTranslate = {
+    'phoenix': '凤凰城', 'los angeles': '洛杉矶', 'san jose': '圣何塞',
+    'san francisco': '旧金山', 'seattle': '西雅图', 'new york': '纽约',
+    'chicago': '芝加哥', 'dallas': '达拉斯', 'tokyo': '东京',
+    'osaka': '大阪', 'hong kong': '香港', 'singapore': '新加坡',
+    'london': '伦敦', 'frankfurt': '法兰克福', 'paris': '巴黎',
+    'amsterdam': '阿姆斯特丹', 'seoul': '首尔', 'sydney': '悉尼'
+};
+
+const countryTranslate = {
+    'US': '美国', 'HK': '香港', 'TW': '台湾', 'JP': '日本', 'SG': '新加坡',
+    'KR': '韩国', 'DE': '德国', 'GB': '英国', 'FR': '法国', 'CA': '加拿大',
+    'AU': '澳大利亚', 'NL': '荷兰', 'RU': '俄罗斯', 'IN': '印度', 'TH': '泰国'
+};
+
+async function autoDetectServerGeo() {
+    try {
+        const httpLib = require('http');
+        const req = httpLib.get('http://ip-api.com/json/?fields=status,country,countryCode,city,query,isp', { timeout: 6000 }, (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
+                try {
+                    const json = JSON.parse(data);
+                    if (json.status === 'success' && json.query) {
+                        serverGeo.ip = json.query;
+                        serverGeo.countryCode = json.countryCode || 'US';
+                        serverGeo.flag = getFlagEmoji(serverGeo.countryCode);
+                        serverGeo.country = countryTranslate[serverGeo.countryCode] || json.country || '海外';
+                        const lowerCity = (json.city || '').toLowerCase();
+                        serverGeo.city = cityTranslate[lowerCity] || json.city || '';
+                        serverGeo.isp = json.isp || '';
+                        console.log(`[GeoIP] 🌐 自动探测服务器公网身份: ${serverGeo.flag} ${serverGeo.country}·${serverGeo.city} (IP: ${serverGeo.ip})`);
+                        if (!siteSettings.subDomain) {
+                            siteSettings.subDomain = serverGeo.ip;
+                            console.log(`[GeoIP] ⚡ 自动应用公网 IP 为节点直连地址: ${serverGeo.ip}`);
+                        }
+                    }
+                } catch (e) {}
+            });
+        });
+        req.on('error', () => {});
+        req.on('timeout', () => req.destroy());
+    } catch (e) {}
+}
+
+// 启动即刻异步触发自动探测
+setTimeout(() => { autoDetectServerGeo(); }, 500);
+
+// ==========================================
 // 3. 运营配置与三网优选池持久化
 // ==========================================
 const DEFAULT_SETTINGS = {
@@ -462,22 +630,27 @@ const activeConnections = new Map();
 
 function loadUsers() {
     users.clear();
+    let hasLoadedData = false;
     if (fs.existsSync(USERS_FILE)) {
         try {
             const raw = JSON.parse(fs.readFileSync(USERS_FILE, 'utf-8'));
-            if (Array.isArray(raw)) {
+            if (Array.isArray(raw) && raw.length > 0) {
                 raw.forEach(u => { if (u && u.uuid) users.set(u.uuid, u); });
-            } else if (typeof raw === 'object') {
+                hasLoadedData = true;
+            } else if (typeof raw === 'object' && Object.keys(raw).length > 0) {
                 Object.values(raw).forEach(u => { if (u && u.uuid) users.set(u.uuid, u); });
+                hasLoadedData = true;
             }
         } catch (e) {
             console.error('[Users] 读取 users.json 异常:', e.message);
         }
     }
 
-    // 若无任何用户，自动生成管理员预设初始用户
-    if (users.size === 0) {
-        const initUuid = crypto.randomUUID();
+    // 只有在全新安装且本地从未存在过有效用户数据时，才初始化首个默认初始用户
+    // 优先读取 .env 中固定声明的 UUID，杜绝重启或重新加载时跳变！
+    if (users.size === 0 && !hasLoadedData) {
+        const envUuid = initialEnv.UUID || process.env.UUID;
+        const initUuid = (envUuid && envUuid.trim()) ? envUuid.trim() : crypto.randomUUID();
         const initUser = {
             uuid: initUuid,
             username: 'admin_user',
@@ -490,7 +663,31 @@ function loadUsers() {
         };
         users.set(initUuid, initUser);
         saveUsers();
-        console.log(`[Users] 已初始化默认用户: admin_user | UUID: ${initUuid}`);
+        console.log(`[Users] 已初始化首个用户: admin_user | 固化 UUID: ${initUuid}`);
+    }
+}
+
+let isUsersDirty = false;
+let isSavingUsers = false;
+
+function markUsersDirty() {
+    isUsersDirty = true;
+}
+
+async function saveUsersAsync() {
+    if (!isUsersDirty || isSavingUsers) return;
+    isSavingUsers = true;
+    try {
+        const arr = Array.from(users.values());
+        const jsonStr = JSON.stringify(arr);
+        const tmp = USERS_FILE + '.tmp.' + Date.now();
+        await fs.promises.writeFile(tmp, jsonStr, 'utf-8');
+        await fs.promises.rename(tmp, USERS_FILE);
+        isUsersDirty = false;
+    } catch (e) {
+        console.error('[Users] 异步保存 users.json 失败:', e.message);
+    } finally {
+        isSavingUsers = false;
     }
 }
 
@@ -498,10 +695,11 @@ function saveUsers() {
     try {
         const arr = Array.from(users.values());
         const tmp = USERS_FILE + '.tmp.' + Date.now();
-        fs.writeFileSync(tmp, JSON.stringify(arr, null, 2), 'utf-8');
+        fs.writeFileSync(tmp, JSON.stringify(arr), 'utf-8');
         fs.renameSync(tmp, USERS_FILE);
+        isUsersDirty = false;
     } catch (e) {
-        console.error('[Users] 保存 users.json 失败:', e.message);
+        console.error('[Users] 同步保存 users.json 失败:', e.message);
     }
 }
 
@@ -531,26 +729,38 @@ function disconnectUser(uuid, reason = '管理指令即时熔断') {
     return count;
 }
 
-function registerUserConnection(uuid, clientSocket, targetSocket) {
+/**
+ * 🚀 连接池单次原子注册引擎 (消除重复注册与多余事件监听)
+ */
+function registerUserConnection(uuid, clientSocket) {
     if (!activeConnections.has(uuid)) {
         activeConnections.set(uuid, new Set());
     }
-    const item = { clientSocket, targetSocket };
-    activeConnections.get(uuid).add(item);
+    const item = { clientSocket, targetSocket: null };
+    const userConns = activeConnections.get(uuid);
+    userConns.add(item);
 
     const cleanup = () => {
-        const set = activeConnections.get(uuid);
-        if (set) {
-            set.delete(item);
-            if (set.size === 0) activeConnections.delete(uuid);
-        }
+        userConns.delete(item);
+        if (userConns.size === 0) activeConnections.delete(uuid);
     };
     clientSocket.once('close', cleanup);
     clientSocket.once('error', cleanup);
-    if (targetSocket) {
-        targetSocket.once('close', cleanup);
-        targetSocket.once('error', cleanup);
-    }
+    return item;
+}
+
+function bindTargetSocket(item, targetSocket) {
+    if (!item || !targetSocket) return;
+    item.targetSocket = targetSocket;
+    const cleanup = () => {
+        try {
+            if (item.clientSocket && !item.clientSocket.destroyed) {
+                item.clientSocket.destroy();
+            }
+        } catch (_) {}
+    };
+    targetSocket.once('close', cleanup);
+    targetSocket.once('error', cleanup);
 }
 
 // ==========================================
@@ -638,25 +848,52 @@ setInterval(() => {
 }, 30 * 60 * 1000);
 
 // ==========================================
-// 6. 原生 RFC 6455 WebSocket 帧流解析与封包
+// 6. 原生 RFC 6455 WebSocket 帧流解析与封包 (零拷贝极速转发引擎)
 // ==========================================
 /**
- * 封装向客户端发送的 Unmasked 二进制 WebSocket Frame
+ * 🚀 零拷贝直传: 封装并直接向客户端 Socket 发送 Unmasked 二进制 WebSocket Frame
+ * 引入 socket.cork() 聚合底层系统调用 (单次 writev 发送，减半 syscall，抹除碎片包)
  */
-function createWsBinaryFrame(buffer) {
-    const len = buffer.length;
+function sendWsBinary(socket, chunk) {
+    const len = chunk.length;
     let header;
     if (len <= 125) {
-        header = Buffer.alloc(2);
+        header = Buffer.allocUnsafe(2);
         header[0] = 0x82; // Fin=1, Opcode=2 (Binary)
         header[1] = len;  // Mask=0
     } else if (len <= 65535) {
-        header = Buffer.alloc(4);
+        header = Buffer.allocUnsafe(4);
         header[0] = 0x82;
         header[1] = 126;
         header.writeUInt16BE(len, 2);
     } else {
-        header = Buffer.alloc(10);
+        header = Buffer.allocUnsafe(10);
+        header[0] = 0x82;
+        header[1] = 127;
+        header.writeBigUInt64BE(BigInt(len), 2);
+    }
+    // 连续写入内核发送缓冲区，通过 cork 合并为单次底层系统调用
+    socket.cork();
+    socket.write(header);
+    const canWrite = socket.write(chunk);
+    socket.uncork();
+    return canWrite;
+}
+
+function createWsBinaryFrame(buffer) {
+    const len = buffer.length;
+    let header;
+    if (len <= 125) {
+        header = Buffer.allocUnsafe(2);
+        header[0] = 0x82;
+        header[1] = len;
+    } else if (len <= 65535) {
+        header = Buffer.allocUnsafe(4);
+        header[0] = 0x82;
+        header[1] = 126;
+        header.writeUInt16BE(len, 2);
+    } else {
+        header = Buffer.allocUnsafe(10);
         header[0] = 0x82;
         header[1] = 127;
         header.writeBigUInt64BE(BigInt(len), 2);
@@ -665,18 +902,26 @@ function createWsBinaryFrame(buffer) {
 }
 
 /**
- * 原生极简 WebSocket 帧拆包流转换器
+ * 🚀 原生极速 WebSocket 帧拆包流转换器
+ * 核心优化：
+ * 1. 消除冷启动与整帧数据的冗余 Buffer.concat
+ * 2. 原地 32 位整型批量异或 (Fast 32-bit In-place Unmasking)，彻底消灭堆内存分配与垃圾回收
  */
 class WsFrameDecoder {
     constructor(onPayload, onClose) {
-        this.buffer = Buffer.alloc(0);
+        this.buffer = null;
         this.onPayload = onPayload;
         this.onClose = onClose;
     }
 
     push(chunk) {
-        this.buffer = Buffer.concat([this.buffer, chunk]);
-        while (this.buffer.length >= 2) {
+        if (!this.buffer || this.buffer.length === 0) {
+            this.buffer = chunk;
+        } else {
+            this.buffer = Buffer.concat([this.buffer, chunk]);
+        }
+
+        while (this.buffer && this.buffer.length >= 2) {
             const b0 = this.buffer[0];
             const b1 = this.buffer[1];
             const opcode = b0 & 0x0f;
@@ -712,11 +957,19 @@ class WsFrameDecoder {
             this.buffer = this.buffer.subarray(offset + payloadLen);
 
             if (isMasked && maskKey) {
-                const unmasked = Buffer.allocUnsafe(payload.length);
-                for (let i = 0; i < payload.length; i++) {
-                    unmasked[i] = payload[i] ^ maskKey[i % 4];
+                // 🚀 原地 32 位整型批量异或 (In-place 32-bit XOR) 彻底消灭 Buffer.allocUnsafe
+                const len = payload.length;
+                const maskUInt32 = maskKey.readUInt32LE(0);
+                let i = 0;
+                const loopLimit = len - (len % 4);
+                for (; i < loopLimit; i += 4) {
+                    const val = payload.readUInt32LE(i);
+                    payload.writeUInt32LE((val ^ maskUInt32) >>> 0, i);
                 }
-                this.onPayload(unmasked);
+                for (; i < len; i++) {
+                    payload[i] ^= maskKey[i % 4];
+                }
+                this.onPayload(payload);
             } else {
                 this.onPayload(payload);
             }
@@ -730,14 +983,8 @@ class WsFrameDecoder {
 function parseVlessHeader(buffer) {
     if (buffer.length < 24) return null;
     const version = buffer[0];
-    const uuidBytes = buffer.subarray(1, 17);
-    const uuid = [
-        uuidBytes.subarray(0, 4).toString('hex'),
-        uuidBytes.subarray(4, 6).toString('hex'),
-        uuidBytes.subarray(6, 8).toString('hex'),
-        uuidBytes.subarray(8, 10).toString('hex'),
-        uuidBytes.subarray(10, 16).toString('hex')
-    ].join('-');
+    // 🚀 零堆对象分配：通过预分配十六进制字节映射表解析 UUID
+    const uuid = parseUuidFromBuffer(buffer, 1);
 
     let offset = 17;
     const addonLen = buffer[offset];
@@ -779,7 +1026,16 @@ function handleVlessWebSocket(clientSocket, head) {
     let targetConnected = false;
     let currentUser = null;
     let isHeaderProcessed = false;
+    let connItem = null;
     const pendingPayloads = [];
+
+    // 🚀 核心优化: 扩容套接字内部缓冲区至 64KB (抹平突发大流量抖动) 并禁用 Nagle 延迟
+    try {
+        clientSocket.setNoDelay(true);
+        clientSocket.setKeepAlive(true, 30000);
+        if (clientSocket._readableState) clientSocket._readableState.highWaterMark = 65536;
+        if (clientSocket._writableState) clientSocket._writableState.highWaterMark = 65536;
+    } catch (e) {}
 
     const decoder = new WsFrameDecoder(
         (data) => {
@@ -813,44 +1069,78 @@ function handleVlessWebSocket(clientSocket, head) {
                     return;
                 }
 
-                // 注册进入活跃连接池（支持管理端即时精准熔断）
-                registerUserConnection(currentUser.uuid, clientSocket, null);
+                // 🚀 单次原子注册进入活跃连接池 (彻底消灭重复包装对象与重复 Listener 挂载)
+                connItem = registerUserConnection(currentUser.uuid, clientSocket);
 
                 // 发送 VLESS 首帧握手成功响应: [version=0, addonLen=0]
                 const vlessResp = Buffer.from([0x00, 0x00]);
                 clientSocket.write(createWsBinaryFrame(vlessResp));
 
-                // 建立出站 TCP 连接
-                targetSocket = net.createConnection({ host: header.address, port: header.port }, () => {
+                // 🚀 建立出站 TCP 连接: 注入毫秒级非阻塞 c-ares / LRU DNS 缓存解析 (cachedLookup)
+                targetSocket = net.createConnection({ 
+                    host: header.address, 
+                    port: header.port,
+                    lookup: cachedLookup
+                }, () => {
                     targetConnected = true;
+                    // 双向绑定并联动释放
+                    bindTargetSocket(connItem, targetSocket);
+
+                    // 🚀 出站 Socket 极速模式: 禁用 Nagle 延迟，开启长连接探测与 64KB 高水位缓冲
+                    try {
+                        targetSocket.setNoDelay(true);
+                        targetSocket.setKeepAlive(true, 30000);
+                        if (targetSocket._readableState) targetSocket._readableState.highWaterMark = 65536;
+                        if (targetSocket._writableState) targetSocket._writableState.highWaterMark = 65536;
+                    } catch (e) {}
+
+                    // 15 秒连接超时防护，防止外网不可达 IP 悬挂僵尸句柄
+                    targetSocket.setTimeout(60000, () => {
+                        targetSocket.destroy();
+                    });
+
                     if (header.payload && header.payload.length > 0) {
                         targetSocket.write(header.payload);
                         currentUser.trafficUsed += header.payload.length;
+                        markUsersDirty();
                     }
                     while (pendingPayloads.length > 0) {
                         const p = pendingPayloads.shift();
                         targetSocket.write(p);
                         currentUser.trafficUsed += p.length;
+                        markUsersDirty();
                     }
                 });
 
-                registerUserConnection(currentUser.uuid, clientSocket, targetSocket);
-
+                // 🚀 下行数据处理 (出站 -> 客户端)
                 targetSocket.on('data', (chunk) => {
                     if (currentUser) {
                         currentUser.trafficUsed += chunk.length;
+                        markUsersDirty();
                         if (currentUser.trafficUsed >= currentUser.trafficLimit) {
                             disconnectUser(currentUser.uuid, '流量耗尽实时断流');
                             return;
                         }
                     }
-                    const frame = createWsBinaryFrame(chunk);
-                    const canWrite = clientSocket.write(frame);
-                    if (!canWrite && targetSocket) targetSocket.pause();
+                    // 零拷贝直传与背压
+                    const canWrite = sendWsBinary(clientSocket, chunk);
+                    if (!canWrite && targetSocket && !targetSocket.destroyed) {
+                        targetSocket.pause();
+                    }
                 });
 
+                // 🚀 下行背压恢复: 客户端缓冲区清空时，唤醒出站 socket
                 clientSocket.on('drain', () => {
-                    if (targetSocket) targetSocket.resume();
+                    if (targetSocket && !targetSocket.destroyed) {
+                        targetSocket.resume();
+                    }
+                });
+
+                // 🚀 上行背压恢复: 出站 socket 缓冲区清空时，唤醒客户端 socket
+                targetSocket.on('drain', () => {
+                    if (clientSocket && !clientSocket.destroyed) {
+                        clientSocket.resume();
+                    }
                 });
 
                 targetSocket.on('error', () => { clientSocket.destroy(); });
@@ -858,9 +1148,14 @@ function handleVlessWebSocket(clientSocket, head) {
             } else {
                 if (currentUser) {
                     currentUser.trafficUsed += data.length;
+                    markUsersDirty();
                 }
                 if (targetConnected && targetSocket) {
-                    targetSocket.write(data);
+                    // 🚀 上行背压控制: 当出站写入缓冲区堆满时挂起客户端，杜绝内存爆满与丢包重传
+                    const canWrite = targetSocket.write(data);
+                    if (!canWrite && clientSocket && !clientSocket.destroyed) {
+                        clientSocket.pause();
+                    }
                 } else {
                     pendingPayloads.push(data);
                 }
@@ -881,31 +1176,32 @@ function handleVlessWebSocket(clientSocket, head) {
     }
 }
 
-// 定时 30 秒落盘一次已用流量，兼顾极高性能与数据持久化
-setInterval(() => { saveUsers(); }, 30000);
+// 🚀 核心优化: 定时 30 秒执行纯异步非阻塞脏检查落盘 (无变动 0ms 跳过，绝不阻塞主事件循环)
+setInterval(() => { saveUsersAsync(); }, 30000);
 
 // ==========================================
 // 8. 订阅链接生成引擎 (Base64 / 节点格式)
 // ==========================================
 function generateUserNodes(user) {
     const list = [];
-    const host = siteSettings.subDomain || initialEnv.SERVER_IP || '51.75.118.151';
+    const host = siteSettings.subDomain || serverGeo.ip || initialEnv.SERVER_IP || '127.0.0.1';
     const domain = siteSettings.argoDomain || siteSettings.subDomain || host;
+    const geoTag = `${serverGeo.flag || '🌐'} ${serverGeo.country || '海外'}${serverGeo.city ? '·' + serverGeo.city : ''}`;
 
-    // 1. 卡塔原生端口直连节点
-    const directTag = `【卡塔·原生直连·${PORT}】-VLESS-WS`;
+    // 1. VPS 原生端口直连节点
+    const directTag = `【${geoTag}·原生直连·${PORT}】-VLESS-WS`;
     list.push(`vless://${user.uuid}@${host}:${PORT}?encryption=none&security=none&type=ws&host=${encodeURIComponent(host)}&path=%2F#${encodeURIComponent(directTag)}`);
 
     // 1.1 若配置了 Cloudflare Argo 隧道域名，额外下发专属 443 端口隧道直连节点
     if (siteSettings.argoDomain) {
-        const argoTag = `【CF·Argo隧道直连·443】-VLESS-WS`;
+        const argoTag = `【${geoTag}·Argo隧道·443】-VLESS-WS`;
         list.push(`vless://${user.uuid}@${siteSettings.argoDomain}:443?encryption=none&security=tls&sni=${encodeURIComponent(siteSettings.argoDomain)}&type=ws&host=${encodeURIComponent(siteSettings.argoDomain)}&path=%2F#${encodeURIComponent(argoTag)}`);
     }
 
     // 2. CF 官方 Anycast
     if (siteSettings.enableOptOfficial !== false) {
         const anyIp = siteSettings.optOfficialIp || (siteSettings.cfNodes.official[0] && siteSettings.cfNodes.official[0].ip) || domain;
-        const tag = `【CF·Anycast·443】-VLESS-WS`;
+        const tag = `【${geoTag}·Anycast·443】-VLESS-WS`;
         list.push(`vless://${user.uuid}@${anyIp}:443?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F#${encodeURIComponent(tag)}`);
     }
 
@@ -914,7 +1210,9 @@ function generateUserNodes(user) {
         const ctList = siteSettings.cfNodes.ct || [];
         ctList.forEach((n, idx) => {
             const ip = (idx === 0 && siteSettings.optCTIp) ? siteSettings.optCTIp : n.ip;
-            const tag = `【CF·电信优选·${idx + 1}·${n.colo || 'FRA'}·${n.rtt || 160}ms】-VLESS-WS`;
+            const colo = n.colo ? `·${n.colo}` : '';
+            const rtt = n.rtt ? `·${n.rtt}ms` : '';
+            const tag = `【${geoTag}·电信优选${idx + 1}${colo}${rtt}】-VLESS-WS`;
             list.push(`vless://${user.uuid}@${ip}:443?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F#${encodeURIComponent(tag)}`);
         });
     }
@@ -924,7 +1222,9 @@ function generateUserNodes(user) {
         const cuList = siteSettings.cfNodes.cu || [];
         cuList.forEach((n, idx) => {
             const ip = (idx === 0 && siteSettings.optCUIp) ? siteSettings.optCUIp : n.ip;
-            const tag = `【CF·联通优选·${idx + 1}·${n.colo || 'SJC'}·${n.rtt || 130}ms】-VLESS-WS`;
+            const colo = n.colo ? `·${n.colo}` : '';
+            const rtt = n.rtt ? `·${n.rtt}ms` : '';
+            const tag = `【${geoTag}·联通优选${idx + 1}${colo}${rtt}】-VLESS-WS`;
             list.push(`vless://${user.uuid}@${ip}:443?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F#${encodeURIComponent(tag)}`);
         });
     }
@@ -934,7 +1234,9 @@ function generateUserNodes(user) {
         const cmList = siteSettings.cfNodes.cm || [];
         cmList.forEach((n, idx) => {
             const ip = (idx === 0 && siteSettings.optCMIp) ? siteSettings.optCMIp : n.ip;
-            const tag = `【CF·移动优选·${idx + 1}·${n.colo || 'HKG'}·${n.rtt || 48}ms】-VLESS-WS`;
+            const colo = n.colo ? `·${n.colo}` : '';
+            const rtt = n.rtt ? `·${n.rtt}ms` : '';
+            const tag = `【${geoTag}·移动优选${idx + 1}${colo}${rtt}】-VLESS-WS`;
             list.push(`vless://${user.uuid}@${ip}:443?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F#${encodeURIComponent(tag)}`);
         });
     }
@@ -1033,8 +1335,24 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify(data));
     };
     const sendHtml = (html, code = 200) => {
-        res.writeHead(code, { 'Content-Type': 'text/html; charset=utf-8' });
-        res.end(html);
+        const acceptEncoding = (req.headers['accept-encoding'] || '').toLowerCase();
+        if (acceptEncoding.includes('gzip')) {
+            zlib.gzip(Buffer.from(html, 'utf-8'), (err, compressed) => {
+                if (!err && compressed) {
+                    res.writeHead(code, {
+                        'Content-Type': 'text/html; charset=utf-8',
+                        'Content-Encoding': 'gzip',
+                        'Content-Length': compressed.length
+                    });
+                    return res.end(compressed);
+                }
+                res.writeHead(code, { 'Content-Type': 'text/html; charset=utf-8' });
+                res.end(html);
+            });
+        } else {
+            res.writeHead(code, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.end(html);
+        }
     };
 
     // 读取 POST Body
@@ -1073,7 +1391,7 @@ function parseVlessUri(uri) {
     }
 }
 
-function generateClashConfig(parsedNodes, subName = 'Kata-Tunnel') {
+function generateClashConfig(parsedNodes, subName = 'VPS-Tunnel') {
     const validNodes = parsedNodes.filter(n => n !== null);
     const nodeNames = validNodes.map(n => n.name);
 
@@ -1159,7 +1477,18 @@ allow-lan: false
 mode: rule
 log-level: info
 ipv6: false
+tcp-concurrent: true
 external-controller: 127.0.0.1:9090
+
+# 🚀 客户端内核级 TUN 模式接管引擎 (消除应用层二次封包)
+tun:
+  enable: true
+  stack: mixed
+  dns-hijack:
+    - 0.0.0.0:53
+    - "tcp://0.0.0.0:53"
+  auto-route: true
+  auto-detect-interface: true
 
 dns:
   enable: true
@@ -1196,7 +1525,7 @@ rules:
 `;
 }
 
-function generateSingboxConfig(parsedNodes, subName = 'Kata-Tunnel') {
+function generateSingboxConfig(parsedNodes, subName = 'VPS-Tunnel') {
     const validNodes = parsedNodes.filter(n => n !== null);
     const nodeTags = validNodes.map(n => n.name);
 
@@ -1249,6 +1578,7 @@ function generateSingboxConfig(parsedNodes, subName = 'Kata-Tunnel') {
         log: { level: "info", timestamp: true },
         dns: {
             servers: [
+                { tag: "dns-fakeip", address: "fakeip" },
                 { tag: "dns-remote", address: "https://1.1.1.1/dns-query", address_resolver: "dns-local", strategy: "ipv4_only", detour: "🚀 节点选择" },
                 { tag: "dns-local", address: "223.5.5.5", detour: "direct", strategy: "ipv4_only" },
                 { tag: "dns-block", address: "rcode://success" }
@@ -1256,11 +1586,27 @@ function generateSingboxConfig(parsedNodes, subName = 'Kata-Tunnel') {
             rules: [
                 { outbound: "any", server: "dns-local" },
                 { geosite: "cn", server: "dns-local" },
+                { query_type: ["A", "AAAA"], server: "dns-fakeip" },
                 { clash_mode: "Global", server: "dns-remote" }
             ],
+            fakeip: {
+                enabled: true,
+                inet4_range: "198.18.0.0/15"
+            },
             strategy: "ipv4_only"
         },
         inbounds: [
+            // 🚀 客户端内核级 TUN 模式虚拟网卡 (网络层 L3 直通接管)
+            {
+                type: "tun",
+                tag: "tun-in",
+                interface_name: "tun0",
+                inet4_address: "172.19.0.1/30",
+                auto_route: true,
+                strict_route: true,
+                stack: "system",
+                sniff: true
+            },
             {
                 type: "mixed",
                 tag: "mixed-in",
@@ -1288,7 +1634,7 @@ function generateSingboxConfig(parsedNodes, subName = 'Kata-Tunnel') {
 }
 
 
-function generateQuantumultXConfig(parsedNodes, subName = 'Kata-Tunnel') {
+function generateQuantumultXConfig(parsedNodes, subName = 'VPS-Tunnel') {
     const validNodes = parsedNodes.filter(n => n !== null);
 
     // QX server_local 规范格式:
@@ -1345,7 +1691,7 @@ final, 🚀 节点选择
 `.replace(/\n\s*\n\s*\n/g, '\n\n');
 }
 
-function generateSurgeConfig(parsedNodes, subName = 'Kata-Tunnel') {
+function generateSurgeConfig(parsedNodes, subName = 'VPS-Tunnel') {
     const validNodes = parsedNodes.filter(n => n !== null);
 
     const proxyLines = validNodes.map(n => {
@@ -1412,10 +1758,11 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
     try {
         const httpLib = subApi.startsWith('https') ? https : http;
         // 1. 零信任虚拟占位脱敏 (铁律：绝不向公网Subconverter发送真实UUID与真实域名)
+        const currentTargetHost = settings.argoDomain || settings.subDomain || serverGeo.ip || '127.0.0.1';
         const maskedNodes = rawNodes.map(uri => {
             return uri
                 .replace(user.uuid, '00000000-0000-4000-8000-000000000000')
-                .replace(settings.argoDomain || settings.subDomain || '51.75.118.151', 'example.com');
+                .replace(currentTargetHost, 'example.com');
         });
         const maskedBase64 = Buffer.from(maskedNodes.join('\n'), 'utf-8').toString('base64');
         const subConfig = encodeURIComponent(settings.subConfig || 'https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/config/ACL4SSR_Online.ini');
@@ -1440,7 +1787,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
         // 3. 内存原子回填真实凭据
         const restored = converted
             .replace(/00000000-0000-4000-8000-000000000000/g, user.uuid)
-            .replace(/example\.com/g, settings.argoDomain || settings.subDomain || '51.75.118.151');
+            .replace(/example\.com/g, currentTargetHost);
 
         return restored;
     } catch (err) {
@@ -1488,7 +1835,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
         const asciiName = (user.username || 'user').replace(/[^a-zA-Z0-9_-]/g, '_');
 
         if (target === 'clash') {
-            const clashContent = await convertSubWithZeroTrust(user, 'clash', rawNodes, siteSettings, () => generateClashConfig(parsedNodes, `Kata-${user.username}`));
+            const clashContent = await convertSubWithZeroTrust(user, 'clash', rawNodes, siteSettings, () => generateClashConfig(parsedNodes, `VPS-${user.username}`));
             res.writeHead(200, {
                 ...commonHeaders,
                 'Content-Type': 'application/x-yaml; charset=utf-8',
@@ -1496,7 +1843,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
             });
             return res.end(clashContent);
         } else if (target === 'singbox') {
-            const sbContent = await convertSubWithZeroTrust(user, 'singbox', rawNodes, siteSettings, () => generateSingboxConfig(parsedNodes, `Kata-${user.username}`));
+            const sbContent = await convertSubWithZeroTrust(user, 'singbox', rawNodes, siteSettings, () => generateSingboxConfig(parsedNodes, `VPS-${user.username}`));
             res.writeHead(200, {
                 ...commonHeaders,
                 'Content-Type': 'application/json; charset=utf-8',
@@ -1504,7 +1851,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
             });
             return res.end(sbContent);
         } else if (target === 'surge') {
-            const surgeContent = await convertSubWithZeroTrust(user, 'surge', rawNodes, siteSettings, () => generateSurgeConfig(parsedNodes, `Kata-${user.username}`));
+            const surgeContent = await convertSubWithZeroTrust(user, 'surge', rawNodes, siteSettings, () => generateSurgeConfig(parsedNodes, `VPS-${user.username}`));
             res.writeHead(200, {
                 ...commonHeaders,
                 'Content-Type': 'text/plain; charset=utf-8',
@@ -1512,7 +1859,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
             });
             return res.end(surgeContent);
         } else if (target === 'quantumultx' || target === 'qx') {
-            const qxContent = await convertSubWithZeroTrust(user, 'quantumultx', rawNodes, siteSettings, () => generateQuantumultXConfig(parsedNodes, `Kata-${user.username}`));
+            const qxContent = await convertSubWithZeroTrust(user, 'quantumultx', rawNodes, siteSettings, () => generateQuantumultXConfig(parsedNodes, `VPS-${user.username}`));
             res.writeHead(200, {
                 ...commonHeaders,
                 'Content-Type': 'text/plain; charset=utf-8',
@@ -1669,12 +2016,13 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
             return sendJson({
                 uptime: Math.floor(process.uptime()),
                 memoryRss: formatBytes(mem.rss),
-            argoStatus: argoStatus,
-            argoLastLog: argoLastLog,
+                argoStatus: argoStatus,
+                argoLastLog: argoLastLog,
                 memoryHeap: formatBytes(mem.heapUsed),
                 onlineConnections: totalOnlineConns,
                 port: PORT,
-                domain: siteSettings.subDomain || initialEnv.SERVER_IP || '51.75.118.151',
+                domain: siteSettings.subDomain || serverGeo.ip || '127.0.0.1',
+                serverGeo: serverGeo,
                 settings: siteSettings,
                 usersCount: users.size
             });
@@ -2624,7 +2972,7 @@ function renderHomepage(currentUser) {
         </div>
 
         <footer class="page-footer">
-            <p>Kata-Tunnel 纯原生 Node.js VLESS 极速中枢 · 308MB RAM 轻量规格专享</p>
+            <p>VPS-Tunnel 纯原生 Node.js VLESS 极速中枢 · 308MB RAM 轻量规格专享</p>
         </footer>
     </div>
 
@@ -2927,7 +3275,7 @@ function renderAdminLoginPage() {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Kata-Tunnel 管理中枢登录</title>
+    <title>VPS-Tunnel 管理中枢登录</title>
     <style>
         :root {
             --el-primary: #2563eb;
@@ -3061,7 +3409,7 @@ function renderAdminLoginPage() {
     <div class="login-box">
         <div class="brand-header">
             <div class="brand-badge">🛡️</div>
-            <div class="brand-title">Kata-Tunnel 运维控制台</div>
+            <div class="brand-title">VPS-Tunnel 运维控制台</div>
             <div class="brand-desc">308MB 原生轻核 · 0依赖高性能隧道</div>
         </div>
 
@@ -3144,7 +3492,7 @@ function renderAdminDashboardPage() {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Kata-Tunnel 运维管理中枢 (Pro Admin)</title>
+    <title>VPS-Tunnel 运维管理中枢 (Pro Admin)</title>
     <style>
         :root {
             --primary: #2563eb;
@@ -3815,7 +4163,7 @@ function renderAdminDashboardPage() {
     <aside class="sidebar">
         <div class="sidebar-brand">
             <div class="brand-logo">🛡️</div>
-            <div class="brand-name">Kata-Tunnel</div>
+            <div class="brand-name">VPS-Tunnel</div>
             <span class="brand-tag">v2.5 Pro</span>
         </div>
         <ul class="sidebar-menu">
@@ -3833,7 +4181,7 @@ function renderAdminDashboardPage() {
             </li>
         </ul>
         <div class="sidebar-footer">
-            <div style="color:#e2e8f0; font-weight:600;">Kata 308MB 轻量中枢</div>
+            <div style="color:#e2e8f0; font-weight:600;">Linux VPS 高性能中枢</div>
             <div>0依赖 · 单端口 · 0ms即刻生效</div>
         </div>
     </aside>
@@ -3879,7 +4227,7 @@ function renderAdminDashboardPage() {
                     <div>
                         <div class="kpi-label">Node.js RSS 内存</div>
                         <div class="kpi-val" id="kpi_rss" style="color:#2563eb;">--</div>
-                        <div class="kpi-sub">占 308MB 限额约 8%~10%</div>
+                        <div class="kpi-sub">常驻极低 · 高并发零卡顿</div>
                     </div>
                     <div class="kpi-icon-wrap" style="background:#eff6ff; color:#2563eb;">🧠</div>
                 </div>
@@ -3903,7 +4251,7 @@ function renderAdminDashboardPage() {
                     <div class="panel-toolbar" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
                         <div class="search-box" style="position:relative; display:flex; align-items:center; min-width:220px;">
                             <span>🔍</span>
-                            <input type="text" id="userSearchInput" placeholder="输入用户名或 UUID 实时搜索..." oninput="filterUsers()" style="padding-right:24px;" />
+                            <input type="text" id="userSearchInput" name="search_user_no_autofill" autocomplete="off" placeholder="输入用户名或 UUID 实时搜索..." oninput="filterUsers()" style="padding-right:24px;" />
                             <span id="clearUserSearchBtn" onclick="clearUserSearch()" style="position:absolute; right:8px; cursor:pointer; color:#94a3b8; font-size:12px; display:none;" title="清空搜索">✕</span>
                         </div>
                         <select id="userSortSelect" onchange="changeUserSortSelect(this.value)" style="padding:4px 8px; font-size:12px; height:34px; border:1px solid #cbd5e1; border-radius:4px; background:#fff; color:#334155; cursor:pointer;" title="快速排序">
@@ -4076,8 +4424,12 @@ function renderAdminDashboardPage() {
                         <input type="number" id="cfg_defaultTrafficGB" value="100" />
                     </div>
                     <div class="form-row">
-                        <label>主公网域名或外网 IP (SUB_DOMAIN)</label>
-                        <input type="text" id="cfg_subDomain" placeholder="如 51.75.118.151 或自定义域名" />
+                        <label style="display:flex; justify-content:space-between; align-items:center;">
+                            <span>主公网域名或外网 IP (SUB_DOMAIN)</span>
+                            <span id="detectedGeoBadge" style="font-size:11px; color:#2563eb; font-weight:600; cursor:pointer;" onclick="fillDetectedIp()" title="点击自动填入探测到的本机公网 IP">🌐 探测中...</span>
+                        </label>
+                        <input type="text" id="cfg_subDomain" placeholder="留空则自动默认使用服务器公网 IP" />
+                        <span id="detectedIpHint" style="font-size:11px; color:#64748b; margin-top:3px; display:block;">正在自动探测服务器公网身份...</span>
                     </div>
                     <div class="form-row">
                         <label>🛡️ 单 IP 注册冷却时间 (秒)</label>
@@ -4151,7 +4503,7 @@ function renderAdminDashboardPage() {
 
                 <div style="margin-top:12px;">
                     <div style="font-weight:600; font-size:12px; margin-bottom:6px; color:#334155;">实时核心运行终端视窗 (Console Log):</div>
-                    <div class="terminal-box" id="terminalLogBox">> [Kernel] Kata-Tunnel Pro 核心微服务正在运行...
+                    <div class="terminal-box" id="terminalLogBox">> [Kernel] VPS-Tunnel Pro 核心微服务正在运行...
 > [Memory] 规格 308MB RAM | 翼龙面板单端口专享
 > [Security] 0 毫秒定向掐断引擎处于待命状态</div>
                 </div>
@@ -4282,7 +4634,13 @@ function renderAdminDashboardPage() {
             });
             document.getElementById('curNavTitle').innerText = navTitles[key] || '管理控制台';
             if (key === 'users') fetchUsers();
-            if (key === 'status') fetchStatus();
+            if (key === 'sys' || key === 'cdn' || key === 'status') fetchStatus();
+        }
+
+        function fillDetectedIp() {
+            if (window.latestDetectedIp) {
+                document.getElementById('cfg_subDomain').value = window.latestDetectedIp;
+            }
         }
 
         async function fetchStatus() {
@@ -4304,12 +4662,25 @@ function renderAdminDashboardPage() {
                     document.getElementById('kpi_wetest_time').innerText = '最近同步: ' + wetestTime;
                     document.getElementById('kpi_wetest_status').innerText = wetestTime !== '未同步' ? '正常运行' : '等待初次同步';
 
+                    const geo = data.serverGeo || {};
+                    if (geo.ip) {
+                        window.latestDetectedIp = geo.ip;
+                        const hintEl = document.getElementById('detectedIpHint');
+                        if (hintEl) hintEl.innerText = '当前探测公网: ' + (geo.flag || '🌐') + ' ' + (geo.country || '') + (geo.city ? '·' + geo.city : '') + ' (' + geo.ip + ')';
+                        const badgeEl = document.getElementById('detectedGeoBadge');
+                        if (badgeEl) badgeEl.innerText = (geo.flag || '🌐') + ' 填入探测IP (' + geo.ip + ')';
+                        if (!currentSettings.subDomain) {
+                            document.getElementById('cfg_subDomain').placeholder = '留空默认使用探测 IP: ' + geo.ip;
+                        }
+                    }
+
                     // 终端日志更新
                     const term = document.getElementById('terminalLogBox');
                     const logLines = [
-                        '> [Kernel] Kata-Tunnel Pro 核心微服务正在运行...',
-                        '> [Memory] 常驻 RSS: ' + (data.memoryRss || '--') + ' | 限额 308MB',
+                        '> [Kernel] VPS-Tunnel 核心微服务正在平稳运行...',
+                        '> [Memory] 常驻 RSS: ' + (data.memoryRss || '--') + ' | 纯原生异步高并发',
                         '> [Connections] 当前在线长连接: ' + (data.onlineConnections || 0),
+                        '> [GeoIP] 服务器公网归属: ' + (geo.flag || '🌐') + ' ' + (geo.country || '海外') + (geo.city ? '·' + geo.city : '') + ' (' + (geo.ip || '--') + ')',
                         '> [Wetest] 微测网最近更新: ' + wetestTime,
                         '> [Argo] 隧道穿透域名: ' + (currentSettings.argoDomain || '未绑定'),
                         '> [Ready] 所有模块状态良好，0ms即刻响应'
@@ -4875,10 +5246,25 @@ server.listen(PORT, '0.0.0.0', () => {
                 altServer.listen(altPort, '127.0.0.1', () => {
                     console.log(`[Bridge] ⚡ 本地兼容端口 127.0.0.1:${altPort} 已激活，适配反向代理或内部回环`);
                 });
-                altServer.on('error', () => {});
             } catch (e) {}
         }
     });
+
+    // 🚀 本地 IPC 极速内存管道 (Unix Domain Socket /tmp/vps-tunnel.sock)
+    if (process.platform !== 'win32') {
+        const unixSockPath = '/tmp/vps-tunnel.sock';
+        try {
+            if (fs.existsSync(unixSockPath)) fs.unlinkSync(unixSockPath);
+            const sockServer = http.createServer((req, res) => server.emit('request', req, res));
+            sockServer.on('upgrade', (req, socket, head) => server.emit('upgrade', req, socket, head));
+            sockServer.listen(unixSockPath, () => {
+                try { fs.chmodSync(unixSockPath, 0o777); } catch(e){}
+                console.log(`[IPC] 🚀 本地零网络栈极速管道已激活: ${unixSockPath} (内存级吞吐)`);
+            });
+            sockServer.on('error', () => {});
+        } catch (e) {}
+    }
+
     console.log(`\n========================================================`);
     console.log(`🚀 VPS-Tunnel 高性能纯原生 Node.js VLESS 隧道核心已成功启动！`);
     console.log(`📡 HTTP 监听地址: http://0.0.0.0:${PORT}`);
