@@ -115,3 +115,25 @@
   1. 移除脆弱的自定义 `lookup` 覆盖，依托系统级配置 `UV_THREADPOOL_SIZE=64`，由 Libuv 纯原生 C++ 线程池并发处理系统 DNS 解析，既稳健又安全；
   2. 移除出站 Socket 错误的静默忽略，增加完整错误堆栈捕获。
 
+---
+
+## 12. 服务进程更新/重启后内存 Session 丢失导致后台卡在“正在载入数据”
+- **问题现象**：在服务端部署更新重启后，管理员刷新后台或点击“刷新”，KPI 指标一直显示 `--`，用户列表一直卡在“正在载入用户数据...”。
+- **原因剖析**：
+  1. 原有 `adminSessions` 保存在 Node.js 进程内存中的 `new Set()` 中。一旦服务更新重启或容器重启，内存被重置，导致浏览器中已存在的 `admin_token` Cookie 变为无效；
+  2. 前端请求 `/admin/api/status` 与 `/admin/api/users` 时服务端返回了 `401 Unauthorized`；
+  3. 前端代码在捕获到非 200 响应时未做状态处理或页面重定向，导致页面一直停留在 HTML 默认的占位符状态（“正在载入用户数据...”）。
+- **根本解决方案**：
+  1. **Stateless HMAC-SHA256 签名 Token**：升级 `admin_token` 为基于管理员密码加盐时间戳的加密签名 Token（`timestamp.hmac`，7天有效）。即使服务重启无数次，只要管理员密码未被修改，所有已登录的合法 Token 均能被无感知验证通过，实现“零内存依赖、跨重启永久在线”；
+  2. **前端 401 自动检测与重定向**：在前端 `fetchStatus()` 与 `fetchUsers()` 中捕获 `res.status === 401`，一旦检测到会话失效，自动刷新跳转回登录页，彻底消除静默挂起卡顿。
+
+---
+
+## 13. ES6 模板字符串内未转义换行正则导致前端 SyntaxError (阻断整体脚本执行)
+- **问题现象**：页面成功渲染 HTML 框架，但所有动态数据（注册用户数、RSS 内存）全部停留在初始的 `--`，表格一直显示“正在载入用户数据...”。
+- **原因剖析**：
+  在 Node.js 大字符串模板（`renderAdminDashboardPage()` 的反引号内）嵌入前端脚本时，`updateCustomDomainsCount` 函数中使用了 `el.value.split(/\r?\n/)`。在反引号模板解析过程中，`\r` 与 `\n` 被 Node 展开为真实的物理换行符，输出到浏览器的 HTML 变成了跨行正则 `/ \n /`。V8 引擎编译前端 `<script>` 时抛出致命异常：`SyntaxError: Invalid regular expression: missing /`，导致该 `<script>` 标签内的所有函数（包括 `fetchStatus()` 与 `fetchUsers()`）全部被阻断未执行。
+- **根本解决方案**：
+  在模板字符串内部避免使用字面量 `/\r?\n/`，统一采用零转义歧义的 `(el.value || '').split(String.fromCharCode(10))` 实现跨平台换行切割，确保浏览器端 100% 语法无瑕疵解析。
+
+
