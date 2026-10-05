@@ -142,40 +142,94 @@ else
     fi
 fi
 
-# 确保 .env 文件存在并根据环境变量或随机安全口令初始化
+# 确保基础配置与交互式参数采集 (兼容 curl 管道 /dev/tty 穿透)
+PUBLIC_IP=$(curl -fsSL --connect-timeout 3 -m 5 https://api.ipify.org 2>/dev/null || curl -fsSL --connect-timeout 3 -m 5 https://ifconfig.me 2>/dev/null || echo "127.0.0.1")
+
+read_interactive() {
+    local prompt="$1"
+    local default_val="$2"
+    local result=""
+    if [ -n "$NON_INTERACTIVE" ] || [ -n "$CI" ]; then
+        echo "${default_val}"
+        return 0
+    fi
+    if [ -e /dev/tty ] && [ -r /dev/tty ]; then
+        printf "%b" "${prompt}" > /dev/tty
+        read -r result < /dev/tty
+    elif [ -t 0 ]; then
+        printf "%b" "${prompt}"
+        read -r result
+    fi
+    if [ -z "${result}" ]; then
+        result="${default_val}"
+    fi
+    echo "${result}"
+}
+
+echo -e "\n${CYAN}========================================================${PLAIN}"
+echo -e "${GREEN}⚙️  服务参数交互配置 (直接按回车可使用默认推荐值)${PLAIN}"
+echo -e "${CYAN}========================================================${PLAIN}"
+
+# 1. 端口配置提示
+DETECTED_DEFAULT_PORT="${SET_PORT:-19900}"
+INPUT_PORT=$(read_interactive "${YELLOW}👉 请输入服务监听端口 (NAT 小鸡请填写映射端口，默认: ${DETECTED_DEFAULT_PORT}): ${PLAIN}" "${DETECTED_DEFAULT_PORT}")
+echo -e "${GREEN}✅ 已设定服务监听端口: ${BOLD}${INPUT_PORT}${PLAIN}"
+
+# 2. 后台管理密码提示
+DEFAULT_GEN_PWD=$(head -c 32 /dev/urandom 2>/dev/null | tr -dc 'A-Za-z0-9' | head -c 16 || echo "Admin$(date +%s)")
+if [ -n "$SET_ADMIN_PASSWORD" ]; then
+    INPUT_PWD="$SET_ADMIN_PASSWORD"
+else
+    INPUT_PWD=$(read_interactive "${YELLOW}👉 请输入管理后台密码 (直接回车将使用随机安全口令: ${DEFAULT_GEN_PWD}): ${PLAIN}" "${DEFAULT_GEN_PWD}")
+fi
+echo -e "${GREEN}✅ 已设定管理后台密码: ${BOLD}${INPUT_PWD}${PLAIN}"
+
+# 3. 域名/公网 IP 绑定
+if [ -n "$SET_SUB_DOMAIN" ]; then
+    INPUT_DOMAIN="$SET_SUB_DOMAIN"
+else
+    INPUT_DOMAIN=$(read_interactive "${YELLOW}👉 请输入节点绑定的公网 IP 或域名 [默认自动探测: ${PUBLIC_IP}]: ${PLAIN}" "${PUBLIC_IP}")
+fi
+echo -e "${GREEN}✅ 已设定公网绑定地址: ${BOLD}${INPUT_DOMAIN}${PLAIN}"
+
+# 写入或更新 .env
 if [ ! -f "${INSTALL_DIR}/.env" ]; then
-    GEN_PWD=$(head -c 32 /dev/urandom 2>/dev/null | tr -dc 'A-Za-z0-9' | head -c 16 || echo "Admin$(date +%s)")
-    cat << EOF > "${INSTALL_DIR}/.env"
-UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "c82662c1-bb38-4e8c-850f-ae5be201c107")
-ARGO_DOMAIN=
+    if [ -f "${INSTALL_DIR}/.env.example" ]; then
+        cp -f "${INSTALL_DIR}/.env.example" "${INSTALL_DIR}/.env"
+    else
+        cat << EOF > "${INSTALL_DIR}/.env"
+PORT=${INPUT_PORT}
+SERVER_PORT=${INPUT_PORT}
+ADMIN_PASSWORD=${INPUT_PWD}
+SUB_DOMAIN=${INPUT_DOMAIN}
+DEFAULT_ALLOW_REGISTER=true
+DEFAULT_DAYS=365
+DEFAULT_TRAFFIC_GB=100
 ARGO_TOKEN=
-PORT=19900
-ADMIN_PASSWORD=${GEN_PWD}
-RETRY_MAX=3
+ARGO_DOMAIN=
 EOF
-    echo -e "${GREEN}🔐 已为您自动生成初始高强度管理员口令: ${BOLD}${GEN_PWD}${PLAIN}${GREEN} (已落盘至 .env)${PLAIN}"
+    fi
 fi
 
-# 若安装时显式注入了环境变量，则自动热写入 .env
-if [ -n "$SET_UUID" ]; then
-    sed -i "s/^UUID=.*/UUID=${SET_UUID}/" "${INSTALL_DIR}/.env"
-fi
-if [ -n "$SET_PORT" ]; then
-    sed -i "s/^PORT=.*/PORT=${SET_PORT}/" "${INSTALL_DIR}/.env"
-fi
-if [ -n "$SET_ADMIN_PASSWORD" ]; then
-    sed -i "s/^ADMIN_PASSWORD=.*/ADMIN_PASSWORD=${SET_ADMIN_PASSWORD}/" "${INSTALL_DIR}/.env"
-fi
+# 精准同步环境变量至 .env
+sed -i "s/^PORT=.*/PORT=${INPUT_PORT}/" "${INSTALL_DIR}/.env" 2>/dev/null || echo "PORT=${INPUT_PORT}" >> "${INSTALL_DIR}/.env"
+sed -i "s/^SERVER_PORT=.*/SERVER_PORT=${INPUT_PORT}/" "${INSTALL_DIR}/.env" 2>/dev/null || echo "SERVER_PORT=${INPUT_PORT}" >> "${INSTALL_DIR}/.env"
+sed -i "s/^ADMIN_PASSWORD=.*/ADMIN_PASSWORD=${INPUT_PWD}/" "${INSTALL_DIR}/.env" 2>/dev/null || echo "ADMIN_PASSWORD=${INPUT_PWD}" >> "${INSTALL_DIR}/.env"
+sed -i "s/^SUB_DOMAIN=.*/SUB_DOMAIN=${INPUT_DOMAIN}/" "${INSTALL_DIR}/.env" 2>/dev/null || echo "SUB_DOMAIN=${INPUT_DOMAIN}" >> "${INSTALL_DIR}/.env"
+
+# 若命令行有额外 ARGO 参数则写入
 if [ -n "$SET_ARGO_DOMAIN" ]; then
     sed -i "s/^ARGO_DOMAIN=.*/ARGO_DOMAIN=${SET_ARGO_DOMAIN}/" "${INSTALL_DIR}/.env"
 fi
 if [ -n "$SET_ARGO_TOKEN" ]; then
-    # 对 Token 采用安全替换
     grep -q "^ARGO_TOKEN=" "${INSTALL_DIR}/.env" && sed -i '/^ARGO_TOKEN=/d' "${INSTALL_DIR}/.env"
     echo "ARGO_TOKEN=${SET_ARGO_TOKEN}" >> "${INSTALL_DIR}/.env"
 fi
 
 chmod +x "${INSTALL_DIR}"/*.sh 2>/dev/null || true
+# 注册全局便捷命令 vps-tunnel
+ln -sf "${INSTALL_DIR}/start.sh" /usr/local/bin/vps-tunnel 2>/dev/null || true
+ln -sf "${INSTALL_DIR}/start.sh" /usr/bin/vps-tunnel 2>/dev/null || true
 
 # 3. 注册守护进程 (适配 Systemd 或 OpenRC)
 echo -e "${YELLOW}[3/5] 配置系统自启守护进程...${PLAIN}"
@@ -323,20 +377,23 @@ else
     pgrep -f "node index.js" >/dev/null 2>&1 && STATUS_OK=true
 fi
 
-echo -e "${CYAN}========================================================${PLAIN}"
+FINAL_PORT=$(grep "^PORT=" "${INSTALL_DIR}/.env" 2>/dev/null | cut -d'=' -f2 || echo "${INPUT_PORT}")
+FINAL_DOMAIN=$(grep "^SUB_DOMAIN=" "${INSTALL_DIR}/.env" 2>/dev/null | cut -d'=' -f2 || echo "${INPUT_DOMAIN}")
+FINAL_PWD=$(grep "^ADMIN_PASSWORD=" "${INSTALL_DIR}/.env" 2>/dev/null | cut -d'=' -f2 || echo "${INPUT_PWD}")
+
+echo -e "\n${CYAN}================================================================${PLAIN}"
 if [ "$STATUS_OK" = "true" ]; then
     echo -e "${GREEN}🎉 VPS-Tunnel 服务已成功部署并运行中！${PLAIN}"
 else
-    echo -e "${YELLOW}💡 服务已完成装配并已在后台拉起，请检查日志验证！${PLAIN}"
+    echo -e "${YELLOW}💡 服务已完成装配并在后台启动，请检查状态验证！${PLAIN}"
 fi
-echo -e "📁 工作目录: ${INSTALL_DIR}"
-echo -e "⚙️ 配置文件: ${INSTALL_DIR}/.env"
-echo -e "📜 日志文件: /var/log/vps-tunnel.log"
-if [ "$IS_SYSTEMD" = "true" ]; then
-    echo -e "📋 运行状态: systemctl status vps-tunnel"
-    echo -e "🔄 重启服务: systemctl restart vps-tunnel"
-else
-    echo -e "📋 OpenRC 命令: rc-service vps-tunnel status"
-    echo -e "🔄 重启服务: rc-service vps-tunnel restart"
-fi
-echo -e "${CYAN}========================================================${PLAIN}"
+echo -e "${CYAN}----------------------------------------------------------------${PLAIN}"
+echo -e "🌐 前台优选主页:   ${BOLD}${GREEN}http://${FINAL_DOMAIN}:${FINAL_PORT}/${PLAIN}"
+echo -e "🛠️  Element UI 后台: ${BOLD}${GREEN}http://${FINAL_DOMAIN}:${FINAL_PORT}/admin${PLAIN}"
+echo -e "🔑 后台管理密码:   ${BOLD}${YELLOW}${FINAL_PWD}${PLAIN}"
+echo -e "${CYAN}----------------------------------------------------------------${PLAIN}"
+echo -e "📁 工作目录:       ${INSTALL_DIR}"
+echo -e "⚙️  配置文件:       ${INSTALL_DIR}/.env"
+echo -e "📜 日志文件:       /var/log/vps-tunnel.log"
+echo -e "⚡ 快捷管理命令:   ${BOLD}${CYAN}vps-tunnel${PLAIN} (随时输入可修改端口/密码/重启)"
+echo -e "${CYAN}================================================================${PLAIN}"
