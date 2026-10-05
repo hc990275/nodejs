@@ -20,9 +20,23 @@ echo -e "${CYAN}========================================================${PLAIN}
 echo -e "${GREEN}🚀 VPS-Tunnel 纯原生 Node.js VLESS 隧道一键安装程序${PLAIN}"
 echo -e "${CYAN}========================================================${PLAIN}"
 
+# ========================================================
+# 🚀 权限与运行环境智能感知 (Root & Sudo Auto-Detector)
+# ========================================================
+SUDO=""
 if [ "$(id -u)" != "0" ]; then
-    echo -e "${RED}[Error] 必须使用 root 用户执行此脚本！${PLAIN}"
-    exit 1
+    if command -v sudo >/dev/null 2>&1; then
+        echo -e "${YELLOW}⚡ 检测到当前非 root 用户，系统具备 sudo，正在自动应用提权执行...${PLAIN}"
+        SUDO="sudo"
+        # 若为本地保存的脚本文件，直接以 sudo 无感知重新拉起自身
+        if [ -n "$0" ] && [ -f "$0" ] && [ "$0" != "sh" ] && [ "$0" != "bash" ]; then
+            exec sudo sh "$0" "$@"
+        fi
+    else
+        echo -e "${RED}[Error] 部署系统服务需要 root 特权，且当前系统未安装 sudo！${PLAIN}"
+        echo -e "${YELLOW}请先运行 'su -' 切换至 root 用户后再执行此脚本。${PLAIN}"
+        exit 1
+    fi
 fi
 
 INSTALL_DIR="/opt/vps-tunnel"
@@ -108,8 +122,14 @@ else
     download_remote() {
         local fname="$1"
         local target="${INSTALL_DIR}/${fname}"
-        if ! curl -fsSL --connect-timeout 8 -m 30 "${RAW_URL}/${fname}" -o "${target}"; then
-            curl -fsSL --connect-timeout 8 -m 30 "${GH_PROXY}/${fname}" -o "${target}"
+        if command -v curl >/dev/null 2>&1; then
+            if ! curl -fsSL --connect-timeout 8 -m 30 "${RAW_URL}/${fname}" -o "${target}"; then
+                curl -fsSL --connect-timeout 8 -m 30 "${GH_PROXY}/${fname}" -o "${target}"
+            fi
+        elif command -v wget >/dev/null 2>&1; then
+            if ! wget -q -T 30 "${RAW_URL}/${fname}" -O "${target}"; then
+                wget -q -T 30 "${GH_PROXY}/${fname}" -O "${target}"
+            fi
         fi
     }
     download_remote "index.js"

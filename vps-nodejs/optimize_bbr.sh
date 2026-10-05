@@ -1,11 +1,16 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # ========================================================
 # VPS-Tunnel: Linux VPS 内核网络高并发与 BBR 加速调优脚本
 # ========================================================
 
 if [ "$(id -u)" != "0" ]; then
-    echo "必须使用 root 权限执行此优化脚本！"
-    exit 1
+    if command -v sudo >/dev/null 2>&1; then
+        echo "⚡ 检测到当前非 root，自动应用 sudo 提权执行..."
+        exec sudo sh "$0" "$@"
+    else
+        echo "错误：必须使用 root 权限执行此优化脚本！请先运行 'su -' 切换用户。"
+        exit 1
+    fi
 fi
 
 echo "正在优化 Linux 内核 TCP 参数与开启 BBR 拥塞控制算法..."
