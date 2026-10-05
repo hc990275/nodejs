@@ -1,32 +1,39 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # ========================================================
 # VPS-Tunnel: 便捷启动与调试脚本
 # ========================================================
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
 cd "${SCRIPT_DIR}"
 
-if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files | grep -q "vps-tunnel.service"; then
+SUDO=""
+if [ "$(id -u)" != "0" ] && command -v sudo >/dev/null 2>&1; then
+    SUDO="sudo"
+fi
+
+if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -q "vps-tunnel.service"; then
     echo "发现已注册的 Systemd 服务，推荐通过系统服务管理："
-    echo "  启动: sudo systemctl start vps-tunnel"
-    echo "  重启: sudo systemctl restart vps-tunnel"
-    echo "  日志: sudo journalctl -u vps-tunnel -f"
+    echo "  启动: ${SUDO} systemctl start vps-tunnel"
+    echo "  重启: ${SUDO} systemctl restart vps-tunnel"
+    echo "  日志: ${SUDO} journalctl -u vps-tunnel -f"
     echo ""
-    read -p "是否直接以 Systemd 方式重启并查看日志? (y/n): " choice
+    printf "是否直接以 Systemd 方式重启并查看日志? (y/n): "
+    read -r choice
     if [ "$choice" = "y" ] || [ "$choice" = "Y" ]; then
-        sudo systemctl restart vps-tunnel
-        sudo journalctl -u vps-tunnel -f
+        ${SUDO} systemctl restart vps-tunnel
+        ${SUDO} journalctl -u vps-tunnel -f
         exit 0
     fi
 elif command -v rc-service >/dev/null 2>&1 && [ -f /etc/init.d/vps-tunnel ]; then
     echo "发现已注册的 OpenRC (Alpine) 服务，推荐通过系统服务管理："
-    echo "  启动: sudo rc-service vps-tunnel start"
-    echo "  重启: sudo rc-service vps-tunnel restart"
+    echo "  启动: ${SUDO} rc-service vps-tunnel start"
+    echo "  重启: ${SUDO} rc-service vps-tunnel restart"
     echo "  日志: tail -f /var/log/vps-tunnel.log"
     echo ""
-    read -p "是否直接以 OpenRC 方式重启并查看日志? (y/n): " choice
+    printf "是否直接以 OpenRC 方式重启并查看日志? (y/n): "
+    read -r choice
     if [ "$choice" = "y" ] || [ "$choice" = "Y" ]; then
-        sudo rc-service vps-tunnel restart
+        ${SUDO} rc-service vps-tunnel restart
         tail -f /var/log/vps-tunnel.log
         exit 0
     fi
