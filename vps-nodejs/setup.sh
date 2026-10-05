@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # ========================================================
 # VPS-Tunnel: Linux VPS 一键全能部署与开机自启程序
 # 适配全系操作系统:
@@ -85,7 +85,7 @@ echo -e "${GREEN}✅ Node.js 运行环境已就绪: ${NODE_VER}${PLAIN}"
 echo -e "${YELLOW}[2/5] 部署应用文件至 ${INSTALL_DIR}...${PLAIN}"
 mkdir -p "${INSTALL_DIR}/data"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
 RAW_URL="https://raw.githubusercontent.com/hc990275/nodejs/main/vps-nodejs"
 GH_PROXY="https://gh-proxy.net/${RAW_URL}"
 
