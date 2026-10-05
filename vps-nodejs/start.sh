@@ -23,12 +23,14 @@ if [ "$(id -u)" != "0" ] && command -v sudo >/dev/null 2>&1; then
 fi
 
 restart_service() {
+    # 彻底清理残留的孤儿 node 和 cloudflared 实例，杜绝端口冲突与 100% CPU 死循环
+    ${SUDO} pkill -9 -f "cloudflared tunnel" 2>/dev/null || true
     if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -q "vps-tunnel.service"; then
         ${SUDO} systemctl restart vps-tunnel
     elif command -v rc-service >/dev/null 2>&1 && [ -f /etc/init.d/vps-tunnel ]; then
         ${SUDO} rc-service vps-tunnel restart
     else
-        pkill -f "node index.js" 2>/dev/null || true
+        ${SUDO} pkill -9 -f "node index.js" 2>/dev/null || true
         export UV_THREADPOOL_SIZE=64
         nohup node index.js > /var/log/vps-tunnel.log 2>&1 &
     fi
