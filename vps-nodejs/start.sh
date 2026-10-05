@@ -53,6 +53,36 @@ show_info() {
     echo -e "${CYAN}============================================================${PLAIN}\n"
 }
 
+# 安全原子更新 .env 键值 (支持任何含斜杠、特殊符号的密码与 Token)
+update_env_kv() {
+    local key="$1"
+    local val="$2"
+    local file="${ENV_FILE}"
+    node -e '
+        const fs = require("fs");
+        const file = process.argv[1];
+        const key = process.argv[2];
+        const val = process.argv[3];
+        let content = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+        const lines = content.split(/\r?\n/);
+        let found = false;
+        const newLines = lines.map(line => {
+            const trimmed = line.trim();
+            if (trimmed.startsWith(key + "=") || trimmed.startsWith("# " + key + "=")) {
+                found = true;
+                return `${key}=${val}`;
+            }
+            return line;
+        });
+        if (!found) {
+            newLines.push(`${key}=${val}`);
+        }
+        fs.writeFileSync(file, newLines.join("\n").replace(/\n+$/, "") + "\n", "utf8");
+    ' "$file" "$key" "$val" 2>/dev/null || {
+        sed -i "s|^${key}=.*|${key}=${val}|" "$file" 2>/dev/null || echo -e "\n${key}=${val}" >> "$file"
+    }
+}
+
 change_port() {
     local new_port="$1"
     if [ -z "$new_port" ]; then
@@ -60,8 +90,8 @@ change_port() {
         read -r new_port
     fi
     if [ -n "$new_port" ]; then
-        sed -i "s/^PORT=.*/PORT=${new_port}/" "${ENV_FILE}" 2>/dev/null || echo "PORT=${new_port}" >> "${ENV_FILE}"
-        sed -i "s/^SERVER_PORT=.*/SERVER_PORT=${new_port}/" "${ENV_FILE}" 2>/dev/null || echo "SERVER_PORT=${new_port}" >> "${ENV_FILE}"
+        update_env_kv "PORT" "${new_port}"
+        update_env_kv "SERVER_PORT" "${new_port}"
         echo -e "${GREEN}✅ 端口已变更为 ${new_port}，正在重启服务...${PLAIN}"
         restart_service
         sleep 1
@@ -73,7 +103,7 @@ change_password() {
     printf "${YELLOW}请输入新的后台管理密码: ${PLAIN}"
     read -r new_pwd
     if [ -n "$new_pwd" ]; then
-        sed -i "s/^ADMIN_PASSWORD=.*/ADMIN_PASSWORD=${new_pwd}/" "${ENV_FILE}" 2>/dev/null || echo "ADMIN_PASSWORD=${new_pwd}" >> "${ENV_FILE}"
+        update_env_kv "ADMIN_PASSWORD" "${new_pwd}"
         echo -e "${GREEN}✅ 后台密码已更新，正在重启服务...${PLAIN}"
         restart_service
         sleep 1
@@ -87,7 +117,7 @@ change_domain() {
     read -r new_dom
     new_dom=${new_dom:-$auto_ip}
     if [ -n "$new_dom" ]; then
-        sed -i "s/^SUB_DOMAIN=.*/SUB_DOMAIN=${new_dom}/" "${ENV_FILE}" 2>/dev/null || echo "SUB_DOMAIN=${new_dom}" >> "${ENV_FILE}"
+        update_env_kv "SUB_DOMAIN" "${new_dom}"
         echo -e "${GREEN}✅ 绑定地址已更新为 ${new_dom}，正在重启服务...${PLAIN}"
         restart_service
         sleep 1
