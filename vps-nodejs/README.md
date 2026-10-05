@@ -43,17 +43,17 @@ SSH 登录海外 VPS（使用 root 权限），直接粘贴以下命令执行：
 
 默认极速部署（自动生成随机高强度后台密码与 UUID）：
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hc990275/nodejs/main/vps-nodejs/setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/hc990275/nodejs/main/vps-nodejs/setup.sh | sh
 ```
 
 若 Alpine 极简系统未安装 curl，可使用系统自带的 wget 一行安装：
 ```bash
-wget -qO- https://raw.githubusercontent.com/hc990275/nodejs/main/vps-nodejs/setup.sh | bash
+wget -qO- https://raw.githubusercontent.com/hc990275/nodejs/main/vps-nodejs/setup.sh | sh
 ```
 
 **带自定义参数一键部署（推荐按需配置）**：
 ```bash
-SET_PORT="19900" SET_ADMIN_PASSWORD="your_secure_password_here" SET_ARGO_DOMAIN="your-tunnel.example.com" SET_ARGO_TOKEN="eyJh..." bash -c "$(curl -fsSL https://raw.githubusercontent.com/hc990275/nodejs/main/vps-nodejs/setup.sh 2>/dev/null || wget -qO- https://raw.githubusercontent.com/hc990275/nodejs/main/vps-nodejs/setup.sh)"
+SET_PORT="19900" SET_ADMIN_PASSWORD="your_secure_password_here" SET_ARGO_DOMAIN="your-tunnel.example.com" SET_ARGO_TOKEN="eyJh..." sh -c "$(curl -fsSL https://raw.githubusercontent.com/hc990275/nodejs/main/vps-nodejs/setup.sh 2>/dev/null || wget -qO- https://raw.githubusercontent.com/hc990275/nodejs/main/vps-nodejs/setup.sh)"
 ```
 
 安装脚本将全自动完成：
