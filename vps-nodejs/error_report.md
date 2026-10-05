@@ -170,3 +170,35 @@
   - **内存反压防线 (Backpressure)**：当总 RSS 超过 75% 阈值时，自动调用 `global.gc()`，并触发反压门禁拒止新长连接进入，保护存量连接免受系统杀灭；
   - **自适应连接池容量**：每 1MB 内存承载约 0.6 个活跃连接（244MB 自动配额 146 连接，1GB 自动配额 600+ 连接）；
   - **动态 Socket 水位线**：内存 <= 300MB 时分配 16KB，> 300MB 时分配 64KB，彻底解决小内存 Buffer 爆仓问题。
+
+---
+
+## 17. Broken Pipe (EPIPE) 触发 uncaughtException 递归死循环导致单核 CPU 100% 暴涨
+- **问题现象**：Node.js 后台常驻进程运行一段时间后，`top` 显示单个 node 进程 CPU 占用率持续稳定在 99.9%~100%，系统 Load Average 飙升至 3.8+，但在控制台却几乎看不到错误输出。
+- **原因剖析**：
+  1. 通过 `strace -p <pid> -c` 实机诊断发现，该进程在 2 秒内发起了 **9,612 次 write 系统调用，且 9,612 次全部报错**（`write(2, ...) = -1 EPIPE (Broken pipe)`）；
+  2. 根本原因是当守护进程的父进程退出或重定向管道破损时，向 `stderr` (fd 2) 写入会抛出 `EPIPE` 异常；
+  3. 系统原有的 `process.on('uncaughtException', err => { console.error(...); })` 试图记录错误，而 `console.error` 再次向破损的 `stderr` 写入，再次抛出 `EPIPE`，再次触发 `uncaughtException`，瞬间形成了每秒数千次的**无底洞死循环**，直接锁死单核 CPU。
+- **根本解决方案**：
+  1. 在入口文件最顶部对 `process.stdout` 与 `process.stderr` 监听 `error` 事件并过滤 `EPIPE`：
+     ```javascript
+     if (process.stdout?.on) process.stdout.on('error', err => { if (err?.code === 'EPIPE') return; });
+     if (process.stderr?.on) process.stderr.on('error', err => { if (err?.code === 'EPIPE') return; });
+     ```
+  2. 在 `uncaughtException` 处理器中建立熔断机制，若 `err.code === 'EPIPE'` 或 `err.syscall === 'write'` 直接返回，彻底终结递归死循环。
+
+---
+
+## 18. 多实例孤儿进程抢占 8001/19900 端口导致自动重启后客户端测速全部为 -1
+- **问题现象**：执行重启后，客户端（v2rayN）测真连接延迟所有优选节点全部显示 `-1`。
+- **原因剖析**：
+  1. 重启前历史调试残留了一个脱钩的孤儿 `node index.js`（处于 EPIPE 死循环中），一直强占着 `19900`、`8001`、`8080` 端口；
+  2. OpenRC 守护进程拉起新 node 实例时，由于端口被孤儿进程占用，新实例未成功监听任何端口；
+  3. 旧实例由于 CPU 100% 死循环，完全无力响应来自 `http://localhost:8001` 的 HTTP/WebSocket 升级请求，Argo 隧道日志密集报错：`ERR error="Incoming request ended abruptly: context canceled" originService=http://localhost:8001`；
+  4. 同时系统内残留了多个 `cloudflared` 进程同时抢占同一个 Tunnel Token，导致 Cloudflare 边缘节点不断重置连接，最终造成客户端所有优选节点测速全部超时报 `-1`。
+- **根本解决方案**：
+  1. 在 `startArgoTunnel` 启动前强制执行 `pkill -9 -f "cloudflared tunnel"`，杜绝多实例争抢 Token；
+  2. 在 `start.sh` 重启函数与 OpenRC `/etc/init.d/vps-tunnel` 的 `start_pre` / `stop_post` 中加入强力进程治理：启动前清理历史孤儿 `node` 和 `cloudflared`；
+  3. 为 `server` 与 `altServer` (8001/8080) 注册完备的 `on('error')` 事件监听，杜绝未捕获异常；
+  4. 加入 `SIGTERM` / `SIGINT` 信号优雅拦截，在进程退出时联动清理所有衍生子进程。
+
