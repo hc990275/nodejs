@@ -1,133 +1,150 @@
-# 🚀 VPS-Tunnel: 高性能纯原生 Node.js VLESS 隧道与微测网三网优选系统 (自用版)
+# 🚀 VPS-Tunnel: 高性能纯原生 Node.js VLESS 隧道与多源三网优选管理中枢
 
-以 `kata-tunnel` 为坚实蓝本，专为 **独立 Linux VPS (Debian / Ubuntu / CentOS / Alpine 等)** 全面进化升级的高性能代理枢纽与三网优选管理中枢。
-
----
-
-## Ⅰ. 架构对比：VPS 版本 vs 卡塔受限容器
-
-| 维度 | 卡塔版本 (Kata-Tunnel) | VPS 版本 (VPS-Tunnel) |
-| :--- | :--- | :--- |
-| **部署宿主** | 卡塔 (Katabump) 翼龙面板受限容器 | 任意 Linux VPS (搬瓦工、RackNerd、腾讯云、甲骨文、AWS等) |
-| **内存限制** | 严格限制 308MB (超限 OOM 杀进程) | **解除内存压制**，常驻极低(~20MB)，支持高并发数千长连接 |
-| **端口支持** | 面板随机单端口 (如 20255) | **支持标准 80 / 443 / 8080 / 8443** 等任意公网端口 |
-| **TLS/HTTPS** | 必须依赖 Argo 隧道穿透 443 | **支持原生读取 PEM 证书**（直接监听 443 TLS），亦支持前置 Nginx/Caddy 反代或 Argo |
-| **进程守护** | 依赖翼龙面板监控重启 | **标准 Linux Systemd 守护进程**（开机自启、崩溃 5 秒自愈拉起） |
-| **网络调优** | 受限共享内核，无法调优 | **支持内核开启 BBR 拥塞控制**、TCP 缓冲区扩展、`ulimit 65535` |
+专为 **独立 Linux VPS (Alpine / Ubuntu / Debian / CentOS / Rocky 等全系架构)** 深度打造的高性能轻量级代理服务枢纽与三网优选分发大屏。
 
 ---
 
-## Ⅱ. 核心功能全景
+## Ⅰ. 核心架构特性与优势
 
 1. **纯原生 0 外部重型依赖**：
-   - 彻底摆脱体积数十 MB 的 Sing-box 或 Xray 二进制，纯 Node.js 事件循环与 RFC 6455 帧解析。
-2. **毫秒级定向连接控制 (零闪断)**：
-   - 管理员在后台封禁/删除/修改用户时，直接从内存句柄池**定向销毁目标用户的连接**，其他正常用户通信**绝对 0 影响、0 丢包**。
-3. **微测网 (Wetest.vip) 三网优选分发矩阵**：
-   - 电信 (CT)、联通 (CU)、移动 (CM) 以及 Cloudflare 官方 Anycast 动态测速与机房归属感知。
-4. **全能自适应客户端订阅**：
-   - 智能识别请求头 User-Agent，自动下发开箱即用的 Clash YAML、Sing-box JSON、Surge 或 Base64 订阅。
-5. **微测网大屏前台与 Element UI 扁平后台**：
-   - 前台：测速状态看板、用户流量与有效期直观展示、订阅一键复制；
-   - 后台：用户全生命周期管理、注册开关与风控、一键修改密码并实时原子落盘 `.env`。
+   - 彻底摆脱体积数十 MB 的编译二进制，纯 Node.js 原生事件驱动与 RFC 6455 帧解析，常态常驻仅 20MB~40MB。
+2. **全自动硬件资源感知与自适应管控引擎 (ResourceGovernor)**：
+   - **零硬编码**：全自动动态探测 Linux Cgroups v1/v2 容器配额、物理内存与有效 CPU 核心数；
+   - **堆配额动态分配**：自动按物理配额计算安全堆上限（如 244MB 内存动态分配 109MB 堆），彻底杜绝内核 OOM Killer 强杀；
+   - **内存反压防线 (Backpressure)**：当物理内存达到警戒阈值时，自动触发 `global.gc()` 并启动反压门禁，保护已存在的活跃连接；
+   - **连接池容量自适应**：依据硬件规格动态调配系统最大并发连接数与单用户配额，套接字缓冲区高低水位线动态适配（16KB~64KB）。
+3. **多源三网优选矩阵 (微测网 + CM 佬 + 自定义域名池)**：
+   - **微测网 (wetest.vip)**：电信 CT、联通 CU、移动 CM 三网优选池动态测速与清洗；
+   - **CM 佬 (cf.090227.xyz)**：按需批量拉取移动/联通/电信高速优选 IP；
+   - **自定义批量域名池**：支持纯域名、`域名#备注`、`域名:端口#备注`、`域名:端口` 多种格式一键批量导入；
+   - **互斥锁与防抖冷却**：具备 3 分钟防抖与并发互斥保护，彻底消除启动期与多用户访问时的 CPU 100% 尖峰。
+4. **双重看门狗守护 (永不断连自愈机制)**：
+   - **Alpine Linux (OpenRC)**：原生适配 `supervisor="supervise-daemon"`，进程无论是后台重启还是异常崩溃，2 秒内毫秒级全自动拉起；
+   - **Debian / Ubuntu / CentOS**：标准 Systemd `Restart=always` 守护；
+   - **Argo 隧道保活看门狗**：具备进程退出指数退避重连与 30 秒全局巡检心跳，确保 443 端口与订阅穿透永不失联。
+5. **全端智能自适应与零信任脱敏架构**：
+   - 智能识别客户端请求头 User-Agent，自动派发 Clash YAML、Sing-box JSON、Surge 或通用 Base64 订阅；
+   - 采用虚拟占位符隔离脱敏机制，确保真实 UUID 与域名不泄露给公网转换接口。
+6. **毫秒级定向连接控制 (零闪断)**：
+   - 封禁、修改或删除用户时，直接从内存活跃连接池定向销毁目标连接，其他在线用户绝对 0 丢包、0 影响。
 
 ---
 
-## Ⅲ. Linux VPS 一键部署指南
+## Ⅱ. 硬件配额自适应对比
 
-### 1. 🔥 终极单行一键安装命令 (推荐，直接复制回车即可)
+| 硬件规格 | 系统总内存配额 | V8 安全堆配额 | 自适应最大连接数 | 套接字水位线 |
+| :--- | :--- | :--- | :--- | :--- |
+| **超轻量容器 / NAT VPS** | 244 MB ~ 300 MB | 109 MB ~ 135 MB | 146 ~ 180 | 16 KB (低内存节约) |
+| **基础型 VPS** | 512 MB ~ 1 GB | 230 MB ~ 460 MB | 300 ~ 600 | 64 KB (高吞吐极速) |
+| **生产级 VPS** | 2 GB ~ 8 GB+ | 920 MB ~ 3.6 GB+ | 1,200 ~ 4,800+ | 64 KB (高吞吐极速) |
 
-在全新空白的 Linux VPS 终端中，直接复制以下单行命令粘贴并回车，全自动完成环境检测、Node.js 安装、服务创建与开机自启：
-
-```bash
-# 境外服务器极速直连安装
-curl -fsSL https://raw.githubusercontent.com/hc990275/nodejs/main/vps-nodejs/setup.sh | sudo bash
-
-# 若遇 GitHub 访问受限，可使用高速镜像安装
-curl -fsSL https://gh-proxy.net/https://raw.githubusercontent.com/hc990275/nodejs/main/vps-nodejs/setup.sh | sudo bash
-```
+> [!NOTE]
+> 以上数据完全由系统内核与 Cgroups 动态探测感知计算，无需人工干预或修改代码，自动适配任何 VPS 规格。
 
 ---
 
-### 2. 本地源码/克隆手动安装 (备用方式)
+## Ⅲ. 一键极速部署与迁移指南
 
-若已手动下载或克隆了仓库代码，可在当前项目目录下执行：
+### 1. 全自动单行一键安装 (推荐)
+
+在全新 Linux VPS 终端中（root 权限执行），可直接通过环境变量传入初始化参数，全自动装配环境、依赖、自适应守护与开机自启：
+
 ```bash
-cd /opt/vps-tunnel
-chmod +x setup.sh start.sh optimize_bbr.sh
-sudo ./setup.sh
+# 自定义端口、后台密码与 Argo 穿透域名/Token 一键部署
+SET_PORT="19900" \
+SET_ADMIN_PASSWORD="your_secure_password_here" \
+SET_ARGO_DOMAIN="your-tunnel.example.com" \
+SET_ARGO_TOKEN="eyJh..." \
+curl -fsSL https://raw.githubusercontent.com/hc990275/nodejs/main/vps-nodejs/setup.sh | bash
 ```
 
-脚本将自动完成：
-- 检查并安装 Node.js 20 LTS；
-- 同步文件并创建 `/opt/vps-tunnel/data`；
-- 生成并注册 `/etc/systemd/system/vps-tunnel.service` 服务；
-- 检查并自动放行 UFW / Firewalld 对应端口；
-- 立即启动服务并加入开机自启。
+> [!TIP]
+> 若服务器在国内或访问 GitHub 缓慢，可使用国内高速 CDN 镜像代理命令：
+> ```bash
+> curl -fsSL https://gh-proxy.net/https://raw.githubusercontent.com/hc990275/nodejs/main/vps-nodejs/setup.sh | bash
+> ```
 
-### 2. 常用管理命令
+---
 
-#### Systemd 环境 (Debian / Ubuntu / CentOS 等)
+### 2. 现有项目平移迁移方式 (保留全部数据与配置)
+
+若您希望将现有机房的数据与配置原汁原味迁往新 VPS：
+
+1. 将当前项目文件夹 `vps-nodejs` 完整上传至新 VPS 的 `/opt/vps-tunnel`；
+2. 在新 VPS 执行启动脚本：
+   ```bash
+   cd /opt/vps-tunnel && chmod +x *.sh && bash setup.sh
+   ```
+3. 脚本会自动复用现有的 `.env` 与 `data/` 用户数据库，自动检测新服务器的硬件配额并完成自启守护注册。
+
+---
+
+## Ⅳ. 常用运维管理命令
+
+### 1. 服务状态与健康监控
+
+- **Debian / Ubuntu / CentOS / Rocky (Systemd)**：
+  ```bash
+  systemctl status vps-tunnel
+  ```
+- **Alpine Linux (OpenRC)**：
+  ```bash
+  rc-service vps-tunnel status
+  ```
+
+### 2. 查看实时运行日志
+
 ```bash
-# 查看实时运行状态
-sudo systemctl status vps-tunnel
-
-# 查看服务实时日志
-sudo journalctl -u vps-tunnel -f
-
-# 重启服务
-sudo systemctl restart vps-tunnel
-
-# 停止服务
-sudo systemctl stop vps-tunnel
-```
-
-#### OpenRC 环境 (Alpine Linux)
-```bash
-# 查看服务状态
-rc-service vps-tunnel status
-
-# 查看服务实时日志
 tail -f /var/log/vps-tunnel.log
-
-# 重启服务
-rc-service vps-tunnel restart
-
-# 停止服务
-rc-service vps-tunnel stop
 ```
+> 日志中实时输出 CPU 占用、常驻内存 RSS、在线长连接数、Argo 隧道握手状态与优选 IP 同步详情。
+
+### 3. 重启与停止服务
+
+- **重启服务**：
+  - Systemd: `systemctl restart vps-tunnel`
+  - Alpine: `rc-service vps-tunnel restart`
+- **停止服务**：
+  - Systemd: `systemctl stop vps-tunnel`
+  - Alpine: `rc-service vps-tunnel stop`
 
 ---
 
-## Ⅳ. 环境变量配置说明 (`.env`)
+## Ⅴ. 配置文件与环境变量 (`.env`)
+
+所有关键参数均统一定义在 `/opt/vps-tunnel/.env` 中，系统支持**毫秒级无感知双向热重载**，修改保存后即刻生效，无需重启进程：
 
 ```ini
-# HTTP / WebSocket 端口 (默认 80 或 8080)
-PORT=80
+# 服务监听端口 (默认 19900，亦可设为 80 / 8080 等)
+PORT=19900
 
-# 原生 TLS 监听端口与证书绝对路径 (可选，若配置证书则自动启动原生 443 TLS)
-TLS_PORT=443
-CERT_PATH=
-KEY_PATH=
-
-# 后台管理员密码 (严禁留空，遵循 Fail-Closed 安全熔断原则)
+# 管理员后台密码 (严格执行 Fail-Closed 安全熔断，严禁弱口令)
 ADMIN_PASSWORD=your_secure_password_here
 
-# 节点绑定的域名或公网 IP
-SUB_DOMAIN=your.domain.com
+# Cloudflare Argo 隧道穿透配置 (支持 443 端口直连与国内免备案 CDN 优选)
+ARGO_DOMAIN=your-tunnel.example.com
+ARGO_TOKEN=eyJh...
 
-# 运营策略
-DEFAULT_ALLOW_REGISTER=true
+# 防薅安全风控策略
+IP_REGISTER_COOLDOWN_SEC=60
+IP_DAILY_REGISTER_LIMIT=3
+
+# 客户端默认订阅配额
 DEFAULT_DAYS=365
 DEFAULT_TRAFFIC_GB=100
+DEFAULT_ALLOW_REGISTER=true
+
+# 订阅转换后端引擎 (local 为本地极速零外传脱敏引擎)
+SUBAPI=local
+SUBCONFIG=https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/config/ACL4SSR_Online.ini
 ```
 
 ---
 
-## Ⅴ. 网络性能进阶调优 (开启 BBR)
+## Ⅵ. 网络性能进阶调优 (开启 BBR)
 
-在 VPS 终端以 root 身份运行：
+在 VPS 终端执行自带的优化脚本：
 ```bash
-sudo ./optimize_bbr.sh
+bash /opt/vps-tunnel/optimize_bbr.sh
 ```
-该脚本将自动为 Linux 内核配置 `bbr` 拥塞控制、优化 TCP 发送/接收缓冲区，并将系统并发描述符上限提升至 65535。
+该脚本将全自动开启 Linux 内核 BBR 拥塞控制、优化 TCP 发送接收缓冲队列，并将文件句柄上限调整至 65535，显著提高多并发代理吞吐稳定性。

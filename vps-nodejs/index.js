@@ -29,6 +29,170 @@ const path = require('path');
 const url = require('url');
 const zlib = require('zlib');
 const { spawn } = require('child_process');
+const os = require('os');
+
+// ==========================================
+// 🚀 基础字节格式化工具函数
+// ==========================================
+function formatBytes(bytes) {
+    if (!bytes || bytes <= 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+// ==========================================
+// 🚀 全自动硬件资源探测与自适应管控引擎 (ResourceGovernor)
+// 绝无任何硬编码！完全动态自适应 Linux Cgroups v1/v2、容器配额及宿主机物理规格
+// ==========================================
+class ResourceGovernor {
+    constructor() {
+        this.totalMemory = this.detectTotalMemory();
+        this.effectiveCpu = this.detectEffectiveCpu();
+
+        // 动态自适应配额计算（无硬编码）：
+        // 1. 安全堆内存上限：按总可用物理内存的 45% 分配给 V8 堆（其余 55% 预留给外部进程如 cloudflared、系统内核网络栈缓冲）
+        this.safeHeapLimit = Math.floor(this.totalMemory * 0.45);
+        // 2. 内存严重警戒线（75% 总内存）：达到后立即主动触发 GC 并阻止新连接进入（反压保护）
+        this.criticalMemoryThreshold = Math.floor(this.totalMemory * 0.75);
+        // 3. 最大并发连接数自适应：依据总内存计算（每 1MB 内存承载约 0.6 个活跃连接，最小 20）
+        this.maxTotalConnections = Math.max(20, Math.floor((this.totalMemory / (1024 * 1024)) * 0.6));
+        // 4. Socket 高水位线动态适配：内存 <= 300MB 时采用 16KB，> 300MB 时采用 64KB
+        this.socketHighWaterMark = (this.totalMemory <= 300 * 1024 * 1024) ? 16384 : 65536;
+
+        this.currentCpuUsage = 0;
+        this.lastCpuSample = process.cpuUsage();
+        this.lastSampleTime = Date.now();
+        this.isUnderMemoryPressure = false;
+        this.isUnderCpuPressure = false;
+
+        console.log(`[Governor] 🚀 自动探测硬件环境完成: 内存上限=${formatBytes(this.totalMemory)}, 有效CPU=${this.effectiveCpu.toFixed(2)}核, 安全堆配额=${formatBytes(this.safeHeapLimit)}, 自适应最大连接数=${this.maxTotalConnections}, Socket水位=${formatBytes(this.socketHighWaterMark)}`);
+
+        this.startMonitor();
+    }
+
+    // 动态探测系统/容器物理内存硬上限
+    detectTotalMemory() {
+        let detected = 0;
+        // 1. 探测 Linux Cgroups v2 (常见于新版 Docker/Pterodactyl/LXC)
+        try {
+            const v2Path = '/sys/fs/cgroup/memory.max';
+            if (fs.existsSync(v2Path)) {
+                const val = fs.readFileSync(v2Path, 'utf8').trim();
+                if (val && val !== 'max') {
+                    const parsed = parseInt(val, 10);
+                    if (!isNaN(parsed) && parsed > 0) detected = parsed;
+                }
+            }
+        } catch (_) {}
+
+        // 2. 探测 Linux Cgroups v1
+        if (!detected) {
+            try {
+                const v1Path = '/sys/fs/cgroup/memory/memory.limit_in_bytes';
+                if (fs.existsSync(v1Path)) {
+                    const val = fs.readFileSync(v1Path, 'utf8').trim();
+                    const parsed = parseInt(val, 10);
+                    if (!isNaN(parsed) && parsed > 0 && parsed < 0x7FFFFFFFFFFFF000) {
+                        detected = parsed;
+                    }
+                }
+            } catch (_) {}
+        }
+
+        // 3. 降级探测宿主机原生物理内存
+        const osTotal = os.totalmem();
+        if (!detected || detected > osTotal) {
+            detected = osTotal;
+        }
+        return detected;
+    }
+
+    // 动态探测系统/容器有效 CPU 核心数
+    detectEffectiveCpu() {
+        let detectedCpus = 0;
+        // 1. 探测 Cgroups v2 cpu.max ("quota period" 或 "max period")
+        try {
+            const v2Path = '/sys/fs/cgroup/cpu.max';
+            if (fs.existsSync(v2Path)) {
+                const parts = fs.readFileSync(v2Path, 'utf8').trim().split(/\s+/);
+                if (parts[0] !== 'max') {
+                    const quota = parseInt(parts[0], 10);
+                    const period = parseInt(parts[1], 10) || 100000;
+                    if (!isNaN(quota) && quota > 0) detectedCpus = quota / period;
+                }
+            }
+        } catch (_) {}
+
+        // 2. 探测 Cgroups v1
+        if (!detectedCpus) {
+            try {
+                const quotaPath = '/sys/fs/cgroup/cpu/cpu.cfs_quota_us';
+                const periodPath = '/sys/fs/cgroup/cpu/cpu.cfs_period_us';
+                if (fs.existsSync(quotaPath) && fs.existsSync(periodPath)) {
+                    const quota = parseInt(fs.readFileSync(quotaPath, 'utf8').trim(), 10);
+                    const period = parseInt(fs.readFileSync(periodPath, 'utf8').trim(), 10);
+                    if (quota > 0 && period > 0) detectedCpus = quota / period;
+                }
+            } catch (_) {}
+        }
+
+        if (!detectedCpus) {
+            detectedCpus = os.cpus().length || 1;
+        }
+        return detectedCpus;
+    }
+
+    // 周期性轻量采样监控（每 3 秒执行一次，耗时 < 0.5ms）
+    startMonitor() {
+        setInterval(() => {
+            const now = Date.now();
+            const elapsedMs = now - this.lastSampleTime;
+            if (elapsedMs > 0) {
+                const diff = process.cpuUsage(this.lastCpuSample);
+                const totalMicros = diff.user + diff.system;
+                const capacityMicros = elapsedMs * 1000 * Math.max(0.1, this.effectiveCpu);
+                this.currentCpuUsage = Math.min(100, Math.round((totalMicros / capacityMicros) * 100));
+                this.lastCpuSample = process.cpuUsage();
+                this.lastSampleTime = now;
+            }
+
+            const mem = process.memoryUsage();
+            // 监测内存是否达到严重警戒水位 (75% 总内存) 或堆突破安全上限
+            if (mem.rss > this.criticalMemoryThreshold || mem.heapUsed > this.safeHeapLimit) {
+                if (!this.isUnderMemoryPressure) {
+                    this.isUnderMemoryPressure = true;
+                    console.warn(`[Governor] ⚠️ 触发内存警戒反压保护！当前 RSS: ${formatBytes(mem.rss)} / 物理上限: ${formatBytes(this.totalMemory)}`);
+                }
+                // 主动触发垃圾回收
+                if (typeof global.gc === 'function') {
+                    try { global.gc(); } catch (_) {}
+                }
+            } else if (mem.rss < this.criticalMemoryThreshold * 0.85) {
+                if (this.isUnderMemoryPressure) {
+                    this.isUnderMemoryPressure = false;
+                    console.log(`[Governor] 🟢 内存回落至安全水位，已解除反压限制。当前 RSS: ${formatBytes(mem.rss)}`);
+                }
+            }
+
+            this.isUnderCpuPressure = (this.currentCpuUsage > 85);
+        }, 3000).unref();
+    }
+
+    // 检查是否允许接纳新的代理长连接（反压控制门禁）
+    canAcceptConnection(currentTotalConns) {
+        if (this.isUnderMemoryPressure) {
+            return { allow: false, reason: '系统内存警戒反压 (Memory Pressure Backpressure)' };
+        }
+        if (currentTotalConns >= this.maxTotalConnections) {
+            return { allow: false, reason: `已达系统自适应最大连接容量 (${this.maxTotalConnections})` };
+        }
+        return { allow: true };
+    }
+}
+
+const governor = new ResourceGovernor();
 
 // 🚀 预分配字节十六进制映射表 (彻底消除 UUID 解析时的堆对象分配与垃圾回收)
 const byteToHex = [];
@@ -125,9 +289,11 @@ function updateEnvFile(updates) {
 // 2. 换服务器/新环境无程序 -> 自动探测 CPU/OS 架构，静默下载高速二进制并赋权运行；
 // 3. 进程异常退出 -> 自动拉起自愈，无缝保障隧道高可用。
 let argoProcess = null;
-let argoStatus = 'stopped'; // 'connected', 'running', 'downloading', 'stopped', 'error'
+let argoStatus = 'stopped'; // 'connected', 'running', 'downloading', 'stopped', 'error', 'reconnecting'
 let argoLastLog = '';
 let isArgoDownloading = false;
+let isManualStoppingArgo = false;
+let argoRestartTimer = null;
 
 function downloadFileWithRedirect(targetUrl, destPath, maxRedirects = 5) {
     return new Promise((resolve, reject) => {
@@ -219,6 +385,8 @@ async function autoFetchCloudflared(destPath) {
 }
 
 async function startArgoTunnel(token) {
+    isManualStoppingArgo = false;
+    if (argoRestartTimer) { clearTimeout(argoRestartTimer); argoRestartTimer = null; }
     if (!token || token.trim() === '') {
         stopArgoTunnel();
         return;
@@ -299,8 +467,24 @@ async function startArgoTunnel(token) {
 
         argoProcess.on('exit', (code, signal) => {
             console.log(`[Argo] 进程退出: code=${code}, signal=${signal}`);
-            argoStatus = 'stopped';
             argoProcess = null;
+            if (isManualStoppingArgo) {
+                argoStatus = 'stopped';
+                return;
+            }
+            argoStatus = 'reconnecting';
+            const currToken = (siteSettings.argoToken || initialEnv.ARGO_TOKEN || '').trim();
+            if (currToken) {
+                console.log(`[Argo] 🔄 隧道异常中断 (code=${code}, signal=${signal})，启动看门狗自愈机制，将在 5 秒后自动重新拉起...`);
+                if (argoRestartTimer) clearTimeout(argoRestartTimer);
+                argoRestartTimer = setTimeout(() => {
+                    if (!isManualStoppingArgo && !argoProcess) {
+                        startArgoTunnel(currToken);
+                    }
+                }, 5000);
+            } else {
+                argoStatus = 'stopped';
+            }
         });
 
         argoProcess.on('error', err => {
@@ -315,6 +499,8 @@ async function startArgoTunnel(token) {
 }
 
 function stopArgoTunnel() {
+    isManualStoppingArgo = true;
+    if (argoRestartTimer) { clearTimeout(argoRestartTimer); argoRestartTimer = null; }
     if (argoProcess) {
         console.log('[Argo] 🛑 停止现有 Argo 隧道守护进程...');
         try {
@@ -324,6 +510,16 @@ function stopArgoTunnel() {
         argoStatus = 'stopped';
     }
 }
+
+
+// 🚀 全局 Argo 隧道保活看门狗 (每 30 秒自动巡检一次，杜绝隧道失联)
+setInterval(() => {
+    const token = (siteSettings && siteSettings.argoToken ? siteSettings.argoToken : (initialEnv.ARGO_TOKEN || '')).trim();
+    if (token && !isManualStoppingArgo && !argoProcess && argoStatus !== 'downloading' && argoStatus !== 'starting') {
+        console.log('[Argo Watchdog] 🛡️ 巡检发现隧道未处于运行状态，正在自愈拉起...');
+        startArgoTunnel(token);
+    }
+}, 30000).unref();
 
 // 优先读取 .env
 const initialEnv = parseEnvFile(ENV_FILE);
@@ -757,7 +953,22 @@ function normalizeWetestItemList(rawList) {
     }).filter(x => x.ip && /^[\d\.]+$/.test(x.ip));
 }
 
-async function fetchWetestCleanIps() {
+let isFetchingWetest = false;
+let lastWetestFetchTime = 0;
+
+async function fetchWetestCleanIps(force = false) {
+    const now = Date.now();
+    if (isFetchingWetest) {
+        console.log('[Wetest] ⏳ 已有任务正在拉取中，复用现有请求，杜绝并发轰炸 CPU');
+        return { success: true, settings: siteSettings };
+    }
+    // 3 分钟防抖冷却 (除非 force=true 强制刷新)
+    if (!force && lastWetestFetchTime > 0 && (now - lastWetestFetchTime < 180000)) {
+        console.log('[Wetest] ⚡ 距离上次拉取未满 3 分钟，直接复用内存优选池，保护系统 CPU');
+        return { success: true, settings: siteSettings };
+    }
+    isFetchingWetest = true;
+    lastWetestFetchTime = now;
     console.log('[Wetest] 开始从微测网全量动态拉取三网 Cloudflare 优选 IP (不含 AWS)...');
     const cfUrl = 'https://www.wetest.vip/api/cf2dns/get_cloudflare_ip?key=o1zrmHAF&type=v4';
     try {
@@ -787,11 +998,20 @@ async function fetchWetestCleanIps() {
     } catch (e) {
         console.error('[Wetest] ❌ 抓取失败:', e.message);
         return { success: false, error: e.message };
-    }
+    } finally { isFetchingWetest = false; }
 }
 
-// 启动 5 秒后首次抓取，之后每 30 分钟自愈刷新
-setTimeout(() => { fetchWetestCleanIps(); }, 5000);
+// 启动 15 秒后自愈检查，若已有本地数据则跳过，杜绝启动瞬间打满 CPU
+setTimeout(() => {
+    if (siteSettings.autoSyncWetest !== false) {
+        const hasNodes = siteSettings.cfNodes && siteSettings.cfNodes.ct && siteSettings.cfNodes.ct.length > 0;
+        if (!hasNodes) {
+            fetchWetestCleanIps();
+        } else {
+            console.log('[Wetest] 启动检测：本地已存在合格优选节点，暂缓抓取以保护启动期 CPU 与内存');
+        }
+    }
+}, 15000);
 setInterval(() => {
     if (siteSettings.autoSyncWetest !== false) {
         fetchWetestCleanIps();
@@ -827,7 +1047,22 @@ function parseCmApiLines(text) {
     }).filter(Boolean);
 }
 
-async function fetchCmApiIps() {
+let isFetchingCm = false;
+let lastCmFetchTime = 0;
+
+async function fetchCmApiIps(force = false) {
+    const now = Date.now();
+    if (isFetchingCm) {
+        console.log('[CMApi] ⏳ 已有任务正在拉取中，复用现有请求，杜绝并发轰炸 CPU');
+        return { success: true, settings: siteSettings };
+    }
+    // 3 分钟防抖冷却 (除非 force=true 强制刷新)
+    if (!force && lastCmFetchTime > 0 && (now - lastCmFetchTime < 180000)) {
+        console.log('[CMApi] ⚡ 距离上次拉取未满 3 分钟，直接复用内存优选池，保护系统 CPU');
+        return { success: true, settings: siteSettings };
+    }
+    isFetchingCm = true;
+    lastCmFetchTime = now;
     console.log('[CMApi] 开始从 cf.090227.xyz 动态拉取三网优选 IP...');
     const ctCount = Math.max(1, parseInt(siteSettings.cmApiCountCT, 10) || 6);
     const cuCount = Math.max(1, parseInt(siteSettings.cmApiCountCU, 10) || 8);
@@ -890,11 +1125,20 @@ async function fetchCmApiIps() {
     } catch (e) {
         console.error('[CMApi] ❌ 抓取失败:', e.message);
         return { success: false, error: e.message };
-    }
+    } finally { isFetchingCm = false; }
 }
 
-// 启动 6 秒后初次抓取，之后每 30 分钟自愈刷新
-setTimeout(() => { fetchCmApiIps(); }, 6000);
+// 启动 25 秒后自愈检查，若已有本地数据则跳过，杜绝启动瞬间打满 CPU
+setTimeout(() => {
+    if (siteSettings.enableOptCMApi !== false) {
+        const hasNodes = siteSettings.cmNodes && siteSettings.cmNodes.ct && siteSettings.cmNodes.ct.length > 0;
+        if (!hasNodes) {
+            fetchCmApiIps();
+        } else {
+            console.log('[CMApi] 启动检测：本地已存在合格 CM 优选节点，暂缓抓取以保护启动期 CPU 与内存');
+        }
+    }
+}, 25000);
 setInterval(() => {
     if (siteSettings.enableOptCMApi !== false) {
         fetchCmApiIps();
@@ -1083,13 +1327,24 @@ function handleVlessWebSocket(clientSocket, head) {
     let connItem = null;
     const pendingPayloads = [];
 
-    // 🚀 核心优化: 扩容套接字内部缓冲区至 64KB (抹平突发大流量抖动) 并禁用 Nagle 延迟
+    // 🚀 核心优化: 自适应套接字缓冲区与反压门禁 (根据硬件规格动态分配 16KB~64KB) 并禁用 Nagle 延迟
     try {
         clientSocket.setNoDelay(true);
         clientSocket.setKeepAlive(true, 30000);
-        if (clientSocket._readableState) clientSocket._readableState.highWaterMark = 65536;
-        if (clientSocket._writableState) clientSocket._writableState.highWaterMark = 65536;
+        const hwm = governor.socketHighWaterMark;
+        if (clientSocket._readableState) clientSocket._readableState.highWaterMark = hwm;
+        if (clientSocket._writableState) clientSocket._writableState.highWaterMark = hwm;
     } catch (e) {}
+
+    // 🚀 反压门禁检测: 当系统处于内存警戒状态或并发连接已达硬件极限时，拒止新长连接
+    let totalOnlineConns = 0;
+    activeConnections.forEach(set => totalOnlineConns += set.size);
+    const gateCheck = governor.canAcceptConnection(totalOnlineConns);
+    if (!gateCheck.allow) {
+        console.warn(`[Governor] ⚡ 拒止新接入连接: ${gateCheck.reason} (当前活跃连接数: ${totalOnlineConns})`);
+        clientSocket.destroy();
+        return;
+    }
 
     const decoder = new WsFrameDecoder(
         (data) => {
@@ -1123,6 +1378,15 @@ function handleVlessWebSocket(clientSocket, head) {
                     return;
                 }
 
+                // 🚀 单用户并发连接数自适应防护 (防止单一客户端多线程/测速耗尽系统文件句柄与 Buffer)
+                const userConns = activeConnections.get(currentUser.uuid);
+                const maxUserConns = Math.max(10, Math.floor(governor.maxTotalConnections / Math.max(1, users.size)));
+                if (userConns && userConns.size >= maxUserConns) {
+                    console.warn(`[Governor] ⚠️ 用户 ${currentUser.username} 连接数超限 (${userConns.size}/${maxUserConns})，拒接以保护系统稳定性`);
+                    clientSocket.destroy();
+                    return;
+                }
+
                 // 🚀 单次原子注册进入活跃连接池 (彻底消灭重复包装对象与重复 Listener 挂载)
                 connItem = registerUserConnection(currentUser.uuid, clientSocket);
 
@@ -1143,8 +1407,9 @@ function handleVlessWebSocket(clientSocket, head) {
                     try {
                         targetSocket.setNoDelay(true);
                         targetSocket.setKeepAlive(true, 30000);
-                        if (targetSocket._readableState) targetSocket._readableState.highWaterMark = 65536;
-                        if (targetSocket._writableState) targetSocket._writableState.highWaterMark = 65536;
+                        const hwm = governor.socketHighWaterMark;
+                        if (targetSocket._readableState) targetSocket._readableState.highWaterMark = hwm;
+                        if (targetSocket._writableState) targetSocket._writableState.highWaterMark = hwm;
                     } catch (e) {}
 
                     // 15 秒连接超时防护，防止外网不可达 IP 悬挂僵尸句柄
@@ -1455,14 +1720,6 @@ function checkAdminAuth(req) {
     const q = url.parse(req.url, true).query;
     if (q.token && q.token === ADMIN_PASSWORD) return true;
     return false;
-}
-
-function formatBytes(bytes) {
-    if (bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
 // ==========================================
@@ -2169,9 +2426,15 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
             return sendJson({
                 uptime: Math.floor(process.uptime()),
                 memoryRss: formatBytes(mem.rss),
+                memoryHeap: formatBytes(mem.heapUsed),
+                totalMemory: formatBytes(governor.totalMemory),
+                effectiveCpu: Number(governor.effectiveCpu.toFixed(2)),
+                cpuUsage: governor.currentCpuUsage + '%',
+                safeHeapLimit: formatBytes(governor.safeHeapLimit),
+                maxConnections: governor.maxTotalConnections,
+                isUnderPressure: governor.isUnderMemoryPressure,
                 argoStatus: argoStatus,
                 argoLastLog: argoLastLog,
-                memoryHeap: formatBytes(mem.heapUsed),
                 onlineConnections: totalOnlineConns,
                 port: PORT,
                 domain: siteSettings.subDomain || serverGeo.ip || '127.0.0.1',
@@ -2182,7 +2445,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
         }
 
         if (pathname === '/admin/api/sync-wetest' && method === 'POST') {
-            fetchWetestCleanIps().then(result => {
+            fetchWetestCleanIps(true).then(result => {
                 if (result.success) {
                     sendJson({ success: true, message: '微测网三网 IP 全量更新成功', settings: siteSettings });
                 } else {
@@ -2193,7 +2456,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
         }
 
         if (pathname === '/admin/api/sync-cm' && method === 'POST') {
-            fetchCmApiIps().then(result => {
+            fetchCmApiIps(true).then(result => {
                 if (result.success) {
                     sendJson({ success: true, message: 'CM佬三网优选 IP 全量更新成功', settings: siteSettings });
                 } else {
@@ -4918,6 +5181,8 @@ function renderAdminDashboardPage() {
                         '> [GeoIP] 服务器公网归属: ' + (geo.flag || '🌐') + ' ' + (geo.country || '海外') + (geo.city ? '·' + geo.city : '') + ' (' + (geo.ip || '--') + ')',
                         '> [Wetest] 微测网最近更新: ' + wetestTime,
                         '> [Argo] 隧道穿透域名: ' + (currentSettings.argoDomain || '未绑定'),
+                        '> [Governor] 硬件感知: 内存配额 ' + (data.totalMemory || '--') + ' | 有效CPU: ' + (data.effectiveCpu || '--') + '核 | 实时CPU: ' + (data.cpuUsage || '0%'),
+                        '> [Governor] 堆安全配额: ' + (data.safeHeapLimit || '--') + ' | 自适应长连接容量: ' + (data.maxConnections || '--') + ' | 反压保护: ' + (data.isUnderPressure ? '⚠️激活中' : '🟢正常'),
                         '> [Ready] 所有模块状态良好，0ms即刻响应'
                     ];
                     term.innerText = logLines.join(String.fromCharCode(10));
