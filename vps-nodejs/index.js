@@ -661,7 +661,7 @@ async function autoDetectServerGeo() {
                         serverGeo.city = cityTranslate[lowerCity] || json.city || '';
                         serverGeo.isp = json.isp || '';
                         console.log(`[GeoIP] 🌐 自动探测服务器公网身份: ${serverGeo.flag} ${serverGeo.country}·${serverGeo.city} (IP: ${serverGeo.ip})`);
-                        if (!siteSettings.subDomain) {
+                        if (!siteSettings.subDomain || isPlaceholderDomain(siteSettings.subDomain)) {
                             siteSettings.subDomain = serverGeo.ip;
                             console.log(`[GeoIP] ⚡ 自动应用公网 IP 为节点直连地址: ${serverGeo.ip}`);
                         }
@@ -672,6 +672,21 @@ async function autoDetectServerGeo() {
         req.on('error', () => {});
         req.on('timeout', () => req.destroy());
     } catch (e) {}
+}
+
+// 占位符域名识别与有效 Host 提取引擎
+function isPlaceholderDomain(d) {
+    if (!d) return true;
+    const lower = d.trim().toLowerCase();
+    return lower.includes('example.com') || lower.includes('example.org') || lower === 'localhost' || lower === '127.0.0.1';
+}
+
+function getEffectiveHost() {
+    const raw = (siteSettings.subDomain || '').trim();
+    if (isPlaceholderDomain(raw)) {
+        return serverGeo.ip || initialEnv.SERVER_IP || '127.0.0.1';
+    }
+    return raw;
 }
 
 // 启动即刻异步触发自动探测
@@ -1547,11 +1562,11 @@ function parseCustomDomainLine(line) {
 // ==========================================
 function generateUserNodes(user) {
     const list = [];
-    const host = siteSettings.subDomain || serverGeo.ip || initialEnv.SERVER_IP || '127.0.0.1';
-    const domain = siteSettings.argoDomain || siteSettings.subDomain || host;
+    const host = getEffectiveHost();
+    const domain = siteSettings.argoDomain || getEffectiveHost();
     const geoTag = `${serverGeo.flag || '🌐'} ${serverGeo.country || '海外'}${serverGeo.city ? '·' + serverGeo.city : ''}`;
 
-    // 1. VPS 原生端口直连节点
+    // 1. VPS 原生端口直连节点 (保证为真实外网 IP 或用户真实域名)
     const directTag = `【${geoTag}·原生直连·${PORT}】-VLESS-WS`;
     list.push(`vless://${user.uuid}@${host}:${PORT}?encryption=none&security=none&type=ws&host=${encodeURIComponent(host)}&path=%2F#${encodeURIComponent(directTag)}`);
 
@@ -2437,7 +2452,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
                 argoLastLog: argoLastLog,
                 onlineConnections: totalOnlineConns,
                 port: PORT,
-                domain: siteSettings.subDomain || serverGeo.ip || '127.0.0.1',
+                domain: getEffectiveHost(),
                 serverGeo: serverGeo,
                 settings: siteSettings,
                 usersCount: users.size
@@ -2485,7 +2500,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
                     siteSettings.ipRegisterCooldownSec = Math.max(0, parseInt(data.ipRegisterCooldownSec, 10) || 0);
                     envUpdates.IP_REGISTER_COOLDOWN_SEC = siteSettings.ipRegisterCooldownSec;
                 }
-                                if (data.subApi !== undefined) {
+                if (data.subApi !== undefined) {
                     siteSettings.subApi = data.subApi.trim();
                     envUpdates.SUBAPI = siteSettings.subApi;
                 }
@@ -2498,7 +2513,8 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
                     envUpdates.IP_DAILY_REGISTER_LIMIT = siteSettings.ipDailyRegisterLimit;
                 }
                 if (data.subDomain !== undefined) {
-                    siteSettings.subDomain = data.subDomain.trim();
+                    const val = data.subDomain.trim();
+                    siteSettings.subDomain = isPlaceholderDomain(val) ? (serverGeo.ip || '') : val;
                     envUpdates.SUB_DOMAIN = siteSettings.subDomain;
                 }
 
@@ -5193,7 +5209,8 @@ function renderAdminDashboardPage() {
                     document.getElementById('cfg_defaultTrafficGB').value = currentSettings.defaultTrafficGB || 100;
                     document.getElementById('cfg_ipRegisterCooldownSec').value = currentSettings.ipRegisterCooldownSec !== undefined ? currentSettings.ipRegisterCooldownSec : 60;
                     document.getElementById('cfg_ipDailyRegisterLimit').value = currentSettings.ipDailyRegisterLimit !== undefined ? currentSettings.ipDailyRegisterLimit : 3;
-                    document.getElementById('cfg_subDomain').value = currentSettings.subDomain || '';
+                    const isPlaceholder = !currentSettings.subDomain || currentSettings.subDomain.includes('example.com') || currentSettings.subDomain.includes('example.org');
+                    document.getElementById('cfg_subDomain').value = isPlaceholder ? (geo.ip || '') : currentSettings.subDomain;
                     document.getElementById('cfg_subApi').value = currentSettings.subApi || 'local';
                     document.getElementById('cfg_subConfig').value = currentSettings.subConfig || '';
                     document.getElementById('cfg_argoToken').value = currentSettings.argoToken || '';
