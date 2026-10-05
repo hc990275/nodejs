@@ -19,6 +19,19 @@ if (!process.env.UV_THREADPOOL_SIZE) {
     process.env.UV_THREADPOOL_SIZE = '64';
 }
 
+// 🚀 核心稳态保护: 忽略 stdout/stderr 管道破损错误 (Broken Pipe)
+// 彻底阻断后台守护进程因父进程退出/管道断开时触发的 uncaughtException 递归死循环 (抹除 100% CPU 占用)
+if (process.stdout && process.stdout.on) {
+    process.stdout.on('error', (err) => {
+        if (err && err.code === 'EPIPE') return;
+    });
+}
+if (process.stderr && process.stderr.on) {
+    process.stderr.on('error', (err) => {
+        if (err && err.code === 'EPIPE') return;
+    });
+}
+
 const http = require('http');
 const https = require('https');
 const net = require('net');
@@ -392,6 +405,14 @@ async function startArgoTunnel(token) {
         return;
     }
     stopArgoTunnel();
+
+    // 🚀 强力清理系统残留的孤儿 cloudflared 实例，杜绝并发多开争抢 Token 导致的连接重置 (context canceled)
+    if (process.platform !== 'win32') {
+        try {
+            const { execSync } = require('child_process');
+            execSync('pkill -9 -f "cloudflared tunnel" 2>/dev/null || true');
+        } catch (e) {}
+    }
 
     let binPath = path.join(BASE_DIR, 'cloudflared');
 
@@ -5817,6 +5838,13 @@ if (CERT_PATH && KEY_PATH && fs.existsSync(CERT_PATH) && fs.existsSync(KEY_PATH)
     }
 }
 
+server.on('error', (err) => {
+    console.error(`[Server] 💥 主端口 ${PORT} 监听异常:`, err.message);
+    if (err.code === 'EADDRINUSE') {
+        console.error(`[Server] ⚠️ 端口 ${PORT} 被占用！请检查是否有其他实例在运行。`);
+    }
+});
+
 server.listen(PORT, '0.0.0.0', () => {
     // 本地多端口桥接兼容引擎 (8001 / 8080)
     [8001, 8080].forEach(altPort => {
@@ -5824,6 +5852,9 @@ server.listen(PORT, '0.0.0.0', () => {
             try {
                 const altServer = http.createServer((req, res) => server.emit('request', req, res));
                 altServer.on('upgrade', (req, socket, head) => server.emit('upgrade', req, socket, head));
+                altServer.on('error', (err) => {
+                    console.warn(`[Bridge] ⚠️ 本地兼容端口 127.0.0.1:${altPort} 监听受阻: ${err.message}`);
+                });
                 altServer.listen(altPort, '127.0.0.1', () => {
                     console.log(`[Bridge] ⚡ 本地兼容端口 127.0.0.1:${altPort} 已激活，适配反向代理或内部回环`);
                 });
@@ -5838,11 +5869,11 @@ server.listen(PORT, '0.0.0.0', () => {
             if (fs.existsSync(unixSockPath)) fs.unlinkSync(unixSockPath);
             const sockServer = http.createServer((req, res) => server.emit('request', req, res));
             sockServer.on('upgrade', (req, socket, head) => server.emit('upgrade', req, socket, head));
+            sockServer.on('error', () => {});
             sockServer.listen(unixSockPath, () => {
                 try { fs.chmodSync(unixSockPath, 0o777); } catch(e){}
                 console.log(`[IPC] 🚀 本地零网络栈极速管道已激活: ${unixSockPath} (内存级吞吐)`);
             });
-            sockServer.on('error', () => {});
         } catch (e) {}
     }
 
@@ -5861,10 +5892,28 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`========================================================\n`);
 });
 
-// 优雅捕获异常防止崩溃
+// 优雅捕获异常防止崩溃 (严格过滤 EPIPE/write 错误，彻底斩断无限递归死循环)
 process.on('uncaughtException', err => {
-    console.error('[System] 未捕获异常拦截 (防崩溃):', err.message);
+    if (err && (err.code === 'EPIPE' || err.syscall === 'write')) {
+        return;
+    }
+    try {
+        console.error('[System] 未捕获异常拦截 (防崩溃):', err ? (err.message || err) : '未知异常');
+    } catch (_) {}
 });
 process.on('unhandledRejection', (reason) => {
-    console.error('[System] 未处理 Promise 异常拦截 (防崩溃):', reason);
+    try {
+        console.error('[System] 未处理 Promise 异常拦截 (防崩溃):', reason);
+    } catch (_) {}
 });
+
+// 退出信号拦截，干净销毁子进程
+const cleanupBeforeExit = () => {
+    stopArgoTunnel();
+    if (process.platform !== 'win32') {
+        try { require('child_process').execSync('pkill -9 -f "cloudflared tunnel" 2>/dev/null || true'); } catch(e) {}
+    }
+    process.exit(0);
+};
+process.on('SIGTERM', cleanupBeforeExit);
+process.on('SIGINT', cleanupBeforeExit);
