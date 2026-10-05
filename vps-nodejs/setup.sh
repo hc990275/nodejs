@@ -122,16 +122,18 @@ else
     fi
 fi
 
-# 确保 .env 文件存在并根据环境变量或默认值初始化
+# 确保 .env 文件存在并根据环境变量或随机安全口令初始化
 if [ ! -f "${INSTALL_DIR}/.env" ]; then
-    cat << 'EOF' > "${INSTALL_DIR}/.env"
-UUID=c82662c1-bb38-4e8c-850f-ae5be201c107
+    GEN_PWD=$(head -c 32 /dev/urandom 2>/dev/null | tr -dc 'A-Za-z0-9' | head -c 16 || echo "Admin$(date +%s)")
+    cat << EOF > "${INSTALL_DIR}/.env"
+UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "c82662c1-bb38-4e8c-850f-ae5be201c107")
 ARGO_DOMAIN=
 ARGO_TOKEN=
 PORT=19900
-ADMIN_PASSWORD=admin
+ADMIN_PASSWORD=${GEN_PWD}
 RETRY_MAX=3
 EOF
+    echo -e "${GREEN}🔐 已为您自动生成初始高强度管理员口令: ${BOLD}${GEN_PWD}${PLAIN}${GREEN} (已落盘至 .env)${PLAIN}"
 fi
 
 # 若安装时显式注入了环境变量，则自动热写入 .env
@@ -199,17 +201,24 @@ elif command -v rc-service >/dev/null 2>&1 || [ -d /etc/init.d ]; then
 #!/sbin/openrc-run
 description="VPS-Tunnel High Performance Native Node.js VLESS Proxy"
 
+supervisor="supervise-daemon"
+respawn_delay=2
+respawn_max=0
+
 VDIR="/opt/vps-tunnel"
-PIDFILE="/run/vps-tunnel.pid"
-LOGFILE="/var/log/vps-tunnel.log"
+command="/usr/bin/node"
+command_args="index.js"
+command_dir="${VDIR}"
+pidfile="/run/vps-tunnel.pid"
+output_log="/var/log/vps-tunnel.log"
+error_log="/var/log/vps-tunnel.log"
 
 depend() {
     need net
     after firewall
 }
 
-start() {
-    ebegin "Starting VPS-Tunnel Service"
+start_pre() {
     cd "${VDIR}"
     if [ -f "${VDIR}/.env" ]; then
         set -a
@@ -217,21 +226,41 @@ start() {
         set +a
     fi
     export UV_THREADPOOL_SIZE=64
-    start-stop-daemon --start \
-        --chdir "${VDIR}" \
-        --make-pidfile --pidfile "${PIDFILE}" \
-        --background \
-        --stdout "${LOGFILE}" --stderr "${LOGFILE}" \
-        --exec /usr/bin/node -- index.js
-    eend $?
+
+    # 🚀 全自动动态探测系统/容器内存上限 (绝不硬编码)
+    TOTAL_MEM_BYTES=0
+    if [ -f /sys/fs/cgroup/memory.max ]; then
+        CG_V2=$(cat /sys/fs/cgroup/memory.max 2>/dev/null | tr -d ' \r\n')
+        if [ -n "$CG_V2" ] && [ "$CG_V2" != "max" ]; then
+            TOTAL_MEM_BYTES=$CG_V2
+        fi
+    fi
+    if [ "$TOTAL_MEM_BYTES" -eq 0 ] && [ -f /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
+        CG_V1=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null | tr -d ' \r\n')
+        if [ -n "$CG_V1" ] && [ "$CG_V1" -lt 9223372036854771712 ] 2>/dev/null; then
+            TOTAL_MEM_BYTES=$CG_V1
+        fi
+    fi
+    if [ "$TOTAL_MEM_BYTES" -eq 0 ] && [ -f /proc/meminfo ]; then
+        MEM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+        if [ -n "$MEM_KB" ]; then
+            TOTAL_MEM_BYTES=$(( MEM_KB * 1024 ))
+        fi
+    fi
+
+    # 自适应计算 Node.js V8 堆内存上限 (取物理可用总内存的 45%，其余预留给 cloudflared 与系统网络栈)
+    if [ "$TOTAL_MEM_BYTES" -gt 0 ]; then
+        HEAP_MB=$(( TOTAL_MEM_BYTES * 45 / 100 / 1024 / 1024 ))
+        if [ "$HEAP_MB" -lt 32 ]; then
+            HEAP_MB=32
+        fi
+        export NODE_OPTIONS="--max-old-space-size=${HEAP_MB} --expose-gc"
+        echo "[OpenRC] ⚡ 动态硬件探测完成: 总内存=$(( TOTAL_MEM_BYTES / 1024 / 1024 ))MB | 自动分配堆上限=${HEAP_MB}MB (--expose-gc 已激活)" >> "${output_log}"
+    fi
 }
 
-stop() {
-    ebegin "Stopping VPS-Tunnel Service"
-    start-stop-daemon --stop --pidfile "${PIDFILE}" 2>/dev/null || true
-    pkill -f "node index.js" 2>/dev/null || true
+stop_post() {
     pkill -f "cloudflared tunnel" 2>/dev/null || true
-    eend $?
 }
 EOF
     chmod +x /etc/init.d/vps-tunnel

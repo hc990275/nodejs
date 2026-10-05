@@ -136,4 +136,37 @@
 - **根本解决方案**：
   在模板字符串内部避免使用字面量 `/\r?\n/`，统一采用零转义歧义的 `(el.value || '').split(String.fromCharCode(10))` 实现跨平台换行切割，确保浏览器端 100% 语法无瑕疵解析。
 
+---
 
+## 14. 小内存容器 (244MB RAM) 未限堆内存引发 Linux OOM Killer 斩杀与 OpenRC 无守护死锁
+- **问题现象**：Node.js 运行一段时间或有客户端并发测速时进程突然消失，`/var/log/vps-tunnel.log` 记录 `signal=SIGKILL`。同时一旦管理员点击“重启”或进程崩溃后，OpenRC 显示 `vps-tunnel [ crashed ]`，服务永远无法恢复，节点彻底断连。
+- **原因剖析**：
+  1. Alpine Linux 容器通过 Cgroups v2 硬限制物理内存仅为 `256,000,000` 字节（约 244MB），且 `Swap = 0`。
+  2. 64 位 Node.js 默认堆内存上限高达 1.4GB。在无限制状态下，当并发长连接与数据流激增，Node.js 堆内存突破 200MB，加上 Go 编写的 `cloudflared` 二进制（常驻 40MB~80MB），整机物理内存瞬间耗尽，Linux 内核触发 `Out Of Memory (OOM) Killer`，向主进程强行发送 `SIGKILL` 杀死；
+  3. 系统原先采用 OpenRC 原生 `start-stop-daemon`，它不具备子进程监控与自动拉起能力，进程退出后 OpenRC 仅将其标记为 `crashed`，无法自愈。
+- **根本解决方案**：
+  1. **OpenRC 升级为 supervise-daemon 看门狗守护**：在 `/etc/init.d/vps-tunnel` 引入 `supervisor="supervise-daemon"`，设置 `respawn_delay=2` 与 `respawn_max=0`（无限自动复活）。无论是被 OOM Killer 强杀还是管理员通过面板软重启，守护进程 2 秒内毫秒级全自动拉起；
+  2. **启动前动态注入堆上限**：在 `start_pre()` 自动探测 `/sys/fs/cgroup/memory.max`，按 45% 比例动态自适应注入 `NODE_OPTIONS="--max-old-space-size=109 --expose-gc"`，从源头杜绝内存溢出。
+
+---
+
+## 15. 外部优选 API 并发拉取缺乏防抖与互斥锁导致启动与刷新瞬间单核 CPU 100% 爆满
+- **问题现象**：服务重启或后台页面打开时，系统 CPU 瞬时打满 100% 持续数十秒，导致网络转发严重延迟卡顿。
+- **原因剖析**：
+  微测网（wetest.vip）与 CM佬（cf.090227.xyz）三网 IP 拉取引擎在启动后 5 秒内扎堆触发，同时如果有管理员访问后台或定时器并发执行，系统在短时间内发起多路 HTTPS 握手、大量 JSON/文本解析并同步写入 `settings.json`，在单核 1.0 算力受限的机器上直接榨干 CPU。
+- **根本解决方案**：
+  1. **互斥锁与 3 分钟防抖**：引入 `isFetchingWetest` 与 `isFetchingCm` 互斥锁，并设置 180 秒最小刷新间隔，防范并发请求轰炸；
+  2. **启动检测旁路放行**：启动时优先检查本地已持久化的 `cfNodes` 与 `cmNodes`，若已有数据则跳过启动瞬间的拉取，平滑度过启动高负载期。
+
+---
+
+## 16. 全自动硬件资源探测与自适应管控架构 (ResourceGovernor，零硬编码落地)
+- **核心思想**：彻底消灭代码中写死物理配置（如 `maxConnections = 100` 或 `limit = 100MB`）的僵化做法，打造适应任何硬件规格的动态感知自适应引擎。
+- **动态探测机制**：
+  - 动态多层探测内存：Cgroups v2 (`/sys/fs/cgroup/memory.max`) ➔ Cgroups v1 (`memory.limit_in_bytes`) ➔ 宿主机物理内存 (`os.totalmem()`)；
+  - 动态探测 CPU：Cgroups v2 (`/sys/fs/cgroup/cpu.max`) ➔ Cgroups v1 (`cpu.cfs_quota_us`) ➔ `os.cpus().length`。
+- **自适应调控策略**：
+  - **堆内存配额**：动态按可用内存的 45% 计算；
+  - **内存反压防线 (Backpressure)**：当总 RSS 超过 75% 阈值时，自动调用 `global.gc()`，并触发反压门禁拒止新长连接进入，保护存量连接免受系统杀灭；
+  - **自适应连接池容量**：每 1MB 内存承载约 0.6 个活跃连接（244MB 自动配额 146 连接，1GB 自动配额 600+ 连接）；
+  - **动态 Socket 水位线**：内存 <= 300MB 时分配 16KB，> 300MB 时分配 64KB，彻底解决小内存 Buffer 爆仓问题。
