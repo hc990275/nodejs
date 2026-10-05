@@ -211,19 +211,48 @@ EOF
     fi
 fi
 
-# 精准同步环境变量至 .env
-sed -i "s/^PORT=.*/PORT=${INPUT_PORT}/" "${INSTALL_DIR}/.env" 2>/dev/null || echo "PORT=${INPUT_PORT}" >> "${INSTALL_DIR}/.env"
-sed -i "s/^SERVER_PORT=.*/SERVER_PORT=${INPUT_PORT}/" "${INSTALL_DIR}/.env" 2>/dev/null || echo "SERVER_PORT=${INPUT_PORT}" >> "${INSTALL_DIR}/.env"
-sed -i "s/^ADMIN_PASSWORD=.*/ADMIN_PASSWORD=${INPUT_PWD}/" "${INSTALL_DIR}/.env" 2>/dev/null || echo "ADMIN_PASSWORD=${INPUT_PWD}" >> "${INSTALL_DIR}/.env"
-sed -i "s/^SUB_DOMAIN=.*/SUB_DOMAIN=${INPUT_DOMAIN}/" "${INSTALL_DIR}/.env" 2>/dev/null || echo "SUB_DOMAIN=${INPUT_DOMAIN}" >> "${INSTALL_DIR}/.env"
+# 安全原子更新 .env 键值 (支持任何含斜杠、特殊符号的密码与 Token)
+update_env_kv() {
+    local key="$1"
+    local val="$2"
+    local file="${INSTALL_DIR}/.env"
+    node -e '
+        const fs = require("fs");
+        const file = process.argv[1];
+        const key = process.argv[2];
+        const val = process.argv[3];
+        let content = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+        const lines = content.split(/\r?\n/);
+        let found = false;
+        const newLines = lines.map(line => {
+            const trimmed = line.trim();
+            if (trimmed.startsWith(key + "=") || trimmed.startsWith("# " + key + "=")) {
+                found = true;
+                return `${key}=${val}`;
+            }
+            return line;
+        });
+        if (!found) {
+            newLines.push(`${key}=${val}`);
+        }
+        fs.writeFileSync(file, newLines.join("\n").replace(/\n+$/, "") + "\n", "utf8");
+    ' "$file" "$key" "$val" 2>/dev/null || {
+        # 降级备用: 使用竖线作为 sed 定界符并保证独立换行
+        sed -i "s|^${key}=.*|${key}=${val}|" "$file" 2>/dev/null || echo -e "\n${key}=${val}" >> "$file"
+    }
+}
 
-# 若命令行有额外 ARGO 参数则写入
+update_env_kv "PORT" "${INPUT_PORT}"
+update_env_kv "SERVER_PORT" "${INPUT_PORT}"
+update_env_kv "ADMIN_PASSWORD" "${INPUT_PWD}"
+update_env_kv "SUB_DOMAIN" "${INPUT_DOMAIN}"
+
+# 若命令行有额外 ARGO 参数则安全写入
 if [ -n "$SET_ARGO_DOMAIN" ]; then
-    sed -i "s/^ARGO_DOMAIN=.*/ARGO_DOMAIN=${SET_ARGO_DOMAIN}/" "${INSTALL_DIR}/.env"
+    update_env_kv "ARGO_DOMAIN" "${SET_ARGO_DOMAIN}"
 fi
 if [ -n "$SET_ARGO_TOKEN" ]; then
-    grep -q "^ARGO_TOKEN=" "${INSTALL_DIR}/.env" && sed -i '/^ARGO_TOKEN=/d' "${INSTALL_DIR}/.env"
-    echo "ARGO_TOKEN=${SET_ARGO_TOKEN}" >> "${INSTALL_DIR}/.env"
+    update_env_kv "ARGO_TOKEN" "${SET_ARGO_TOKEN}"
 fi
 
 chmod +x "${INSTALL_DIR}"/*.sh 2>/dev/null || true
