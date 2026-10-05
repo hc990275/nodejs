@@ -707,6 +707,9 @@ const DEFAULT_SETTINGS = {
     argoToken: getEnv('ARGO_TOKEN', ''),
     argoDomain: getEnv('ARGO_DOMAIN', ''),
 
+    // 原生端口直连节点开关 (默认关闭防被墙，按需开启)
+    enableDirectNode: false,
+
     // 微测网三网优选独立开关 (彻底无 AWS)
     enableOptOfficial: true,
     enableOptCT: true,
@@ -1016,20 +1019,16 @@ async function fetchWetestCleanIps(force = false) {
     } finally { isFetchingWetest = false; }
 }
 
-// 启动 15 秒后自愈检查，若已有本地数据则跳过，杜绝启动瞬间打满 CPU
+// 启动 3 秒后全自动静默执行微测网首轮优选 IP 同步，开箱即用，免手动点击
 setTimeout(() => {
     if (siteSettings.autoSyncWetest !== false) {
-        const hasNodes = siteSettings.cfNodes && siteSettings.cfNodes.ct && siteSettings.cfNodes.ct.length > 0;
-        if (!hasNodes) {
-            fetchWetestCleanIps();
-        } else {
-            console.log('[Wetest] 启动检测：本地已存在合格优选节点，暂缓抓取以保护启动期 CPU 与内存');
-        }
+        console.log('[Wetest] 🚀 服务启动就绪，正在全自动触发微测网首轮优选 IP 抓取...');
+        fetchWetestCleanIps(true);
     }
-}, 15000);
+}, 3000);
 setInterval(() => {
     if (siteSettings.autoSyncWetest !== false) {
-        fetchWetestCleanIps();
+        fetchWetestCleanIps(true);
     }
 }, 30 * 60 * 1000);
 
@@ -1143,20 +1142,16 @@ async function fetchCmApiIps(force = false) {
     } finally { isFetchingCm = false; }
 }
 
-// 启动 25 秒后自愈检查，若已有本地数据则跳过，杜绝启动瞬间打满 CPU
+// 启动 6 秒后全自动静默执行 CM佬首轮优选 IP 同步，开箱即用，免手动点击
 setTimeout(() => {
     if (siteSettings.enableOptCMApi !== false) {
-        const hasNodes = siteSettings.cmNodes && siteSettings.cmNodes.ct && siteSettings.cmNodes.ct.length > 0;
-        if (!hasNodes) {
-            fetchCmApiIps();
-        } else {
-            console.log('[CMApi] 启动检测：本地已存在合格 CM 优选节点，暂缓抓取以保护启动期 CPU 与内存');
-        }
+        console.log('[CMApi] 🚀 服务启动就绪，正在全自动触发 CM 优选 IP 首轮抓取...');
+        fetchCmApiIps(true);
     }
-}, 25000);
+}, 6000);
 setInterval(() => {
     if (siteSettings.enableOptCMApi !== false) {
-        fetchCmApiIps();
+        fetchCmApiIps(true);
     }
 }, 30 * 60 * 1000);
 
@@ -1566,9 +1561,11 @@ function generateUserNodes(user) {
     const domain = siteSettings.argoDomain || getEffectiveHost();
     const geoTag = `${serverGeo.flag || '🌐'} ${serverGeo.country || '海外'}${serverGeo.city ? '·' + serverGeo.city : ''}`;
 
-    // 1. VPS 原生端口直连节点 (保证为真实外网 IP 或用户真实域名)
-    const directTag = `【${geoTag}·原生直连·${PORT}】-VLESS-WS`;
-    list.push(`vless://${user.uuid}@${host}:${PORT}?encryption=none&security=none&type=ws&host=${encodeURIComponent(host)}&path=%2F#${encodeURIComponent(directTag)}`);
+    // 1. VPS 原生端口直连节点 (默认关闭防被墙，按需在后台开启)
+    if (siteSettings.enableDirectNode === true) {
+        const directTag = `【${geoTag}·原生直连·${PORT}】-VLESS-WS`;
+        list.push(`vless://${user.uuid}@${host}:${PORT}?encryption=none&security=none&type=ws&host=${encodeURIComponent(host)}&path=%2F#${encodeURIComponent(directTag)}`);
+    }
 
     // 1.1 若配置了 Cloudflare Argo 隧道域名，额外下发专属 443 端口隧道直连节点
     if (siteSettings.argoDomain) {
@@ -2536,6 +2533,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
                 if (data.autoSyncWetest !== undefined) siteSettings.autoSyncWetest = Boolean(data.autoSyncWetest);
                 if (data.enableCustomDomains !== undefined) siteSettings.enableCustomDomains = Boolean(data.enableCustomDomains);
                 if (data.customDomainsText !== undefined) siteSettings.customDomainsText = String(data.customDomainsText).trim();
+                if (data.enableDirectNode !== undefined) siteSettings.enableDirectNode = Boolean(data.enableDirectNode);
 
                 // 🚀 CM佬 API 参数配置
                 if (data.enableOptCMApi !== undefined) siteSettings.enableOptCMApi = Boolean(data.enableOptCMApi);
@@ -4764,6 +4762,19 @@ function renderAdminDashboardPage() {
                     <button class="btn btn-primary" id="btnSyncWetest" onclick="manualSyncWetest()">🔄 立即全量拉取微测网</button>
                 </div>
 
+                <!-- 🛡️ 原生端口直连节点开关 (默认关闭，防公网 IP 被封) -->
+                <div class="carrier-card" style="border-left:4px solid #ef4444; margin-bottom:16px;">
+                    <div class="carrier-card-header">
+                        <div>
+                            <span style="font-weight:700; color:#dc2626; font-size:14px;">🛡️ VPS 原生端口直连节点 (Raw IP:Port)</span>
+                            <div style="font-size:12px; color:#64748b; margin-top:2px;">无 CDN/Argo 保护的原生 IP 端口直连。国内直连容易被墙，默认关闭，按需开启。</div>
+                        </div>
+                        <label style="display:flex; align-items:center; gap:6px; font-weight:600; color:#dc2626; cursor:pointer;">
+                            <input type="checkbox" id="cfg_enableDirectNode" /> <span>启用直连下发</span>
+                        </label>
+                    </div>
+                </div>
+
                 <div style="background:#f8fafc; border:1px solid var(--border-color); border-radius:6px; padding:12px 16px; margin-bottom:16px;">
                     <label style="display:flex; align-items:center; gap:8px; font-weight:600; cursor:pointer;">
                         <input type="checkbox" id="cfg_autoSyncWetest" />
@@ -5216,6 +5227,7 @@ function renderAdminDashboardPage() {
                     document.getElementById('cfg_argoToken').value = currentSettings.argoToken || '';
                     document.getElementById('cfg_argoDomain').value = currentSettings.argoDomain || '';
 
+                    document.getElementById('cfg_enableDirectNode').checked = currentSettings.enableDirectNode === true;
                     document.getElementById('cfg_autoSyncWetest').checked = currentSettings.autoSyncWetest !== false;
                     document.getElementById('cfg_enableOptOfficial').checked = currentSettings.enableOptOfficial !== false;
                     document.getElementById('cfg_enableOptCT').checked = currentSettings.enableOptCT !== false;
@@ -5704,6 +5716,7 @@ function renderAdminDashboardPage() {
 
         async function saveCdnSettings() {
             const payload = {
+                enableDirectNode: document.getElementById('cfg_enableDirectNode').checked,
                 autoSyncWetest: document.getElementById('cfg_autoSyncWetest').checked,
                 enableOptOfficial: document.getElementById('cfg_enableOptOfficial').checked,
                 enableOptCT: document.getElementById('cfg_enableOptCT').checked,
