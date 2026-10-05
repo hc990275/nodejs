@@ -916,13 +916,16 @@ function disconnectUser(uuid, reason = '管理指令即时熔断') {
 }
 
 /**
- * 🚀 连接池单次原子注册引擎 (消除重复注册与多余事件监听)
+ * 🚀 连接池单次原子注册与 180 秒空闲自毁看门狗引擎
+ * 维护活跃连接上下文，具备最后活跃时间戳追踪与超时自动回收能力
  */
+let totalZombieReclaimed = 0;
+
 function registerUserConnection(uuid, clientSocket) {
     if (!activeConnections.has(uuid)) {
         activeConnections.set(uuid, new Set());
     }
-    const item = { clientSocket, targetSocket: null };
+    const item = { clientSocket, targetSocket: null, lastActive: Date.now() };
     const userConns = activeConnections.get(uuid);
     userConns.add(item);
 
@@ -938,6 +941,7 @@ function registerUserConnection(uuid, clientSocket) {
 function bindTargetSocket(item, targetSocket) {
     if (!item || !targetSocket) return;
     item.targetSocket = targetSocket;
+    item.lastActive = Date.now();
     const cleanup = () => {
         try {
             if (item.clientSocket && !item.clientSocket.destroyed) {
@@ -948,6 +952,23 @@ function bindTargetSocket(item, targetSocket) {
     targetSocket.once('close', cleanup);
     targetSocket.once('error', cleanup);
 }
+
+// 🚀 全局闲置连接自毁看门狗: 每 30 秒巡检一次，超过 180 秒无数据交换的僵尸连接立即主动销毁回收
+setInterval(() => {
+    const now = Date.now();
+    const IDLE_LIMIT = 180 * 1000;
+    for (const [uuid, set] of activeConnections.entries()) {
+        for (const item of set) {
+            if (now - (item.lastActive || 0) > IDLE_LIMIT) {
+                totalZombieReclaimed++;
+                try { if (item.clientSocket && !item.clientSocket.destroyed) item.clientSocket.destroy(); } catch (_) {}
+                try { if (item.targetSocket && !item.targetSocket.destroyed) item.targetSocket.destroy(); } catch (_) {}
+                set.delete(item);
+            }
+        }
+        if (set.size === 0) activeConnections.delete(uuid);
+    }
+}, 30000).unref();
 
 // ==========================================
 // 5. 微测网 (Wetest.vip) 异步抓取引擎 (仅 CF)
@@ -1443,26 +1464,30 @@ function handleVlessWebSocket(clientSocket, head) {
                         if (targetSocket._writableState) targetSocket._writableState.highWaterMark = hwm;
                     } catch (e) {}
 
-                    // 15 秒连接超时防护，防止外网不可达 IP 悬挂僵尸句柄
-                    targetSocket.setTimeout(60000, () => {
+                    // 180 秒双向空闲自毁机制防护，彻底终结极端网络抖动下的死悬挂连接
+                    targetSocket.setTimeout(180000, () => {
+                        totalZombieReclaimed++;
                         targetSocket.destroy();
                     });
 
                     if (header.payload && header.payload.length > 0) {
                         targetSocket.write(header.payload);
                         currentUser.trafficUsed += header.payload.length;
+                        refreshIdleTimer();
                         markUsersDirty();
                     }
                     while (pendingPayloads.length > 0) {
                         const p = pendingPayloads.shift();
                         targetSocket.write(p);
                         currentUser.trafficUsed += p.length;
+                        refreshIdleTimer();
                         markUsersDirty();
                     }
                 });
 
                 // 🚀 下行数据处理 (出站 -> 客户端)
                 targetSocket.on('data', (chunk) => {
+                    refreshIdleTimer();
                     if (currentUser) {
                         currentUser.trafficUsed += chunk.length;
                         markUsersDirty();
@@ -1493,11 +1518,15 @@ function handleVlessWebSocket(clientSocket, head) {
                 });
 
                 targetSocket.on('error', (err) => {
-                    // 若出站连接异常，安全释放客户端 Socket
+                    if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
                     clientSocket.destroy();
                 });
-                targetSocket.on('close', () => { clientSocket.destroy(); });
+                targetSocket.on('close', () => { 
+                    if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+                    clientSocket.destroy(); 
+                });
             } else {
+                refreshIdleTimer();
                 if (currentUser) {
                     currentUser.trafficUsed += data.length;
                     markUsersDirty();
@@ -1514,14 +1543,42 @@ function handleVlessWebSocket(clientSocket, head) {
             }
         },
         () => {
+            if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
             if (targetSocket) targetSocket.destroy();
             clientSocket.destroy();
         }
     );
 
-    clientSocket.on('data', chunk => decoder.push(chunk));
-    clientSocket.on('error', () => { if (targetSocket) targetSocket.destroy(); });
-    clientSocket.on('close', () => { if (targetSocket) targetSocket.destroy(); });
+    // 🚀 180 秒无数据双向空闲自毁看门狗
+    let idleTimer = null;
+    function refreshIdleTimer() {
+        if (connItem) connItem.lastActive = Date.now();
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => {
+            totalZombieReclaimed++;
+            try { if (clientSocket && !clientSocket.destroyed) clientSocket.destroy(); } catch (_) {}
+            try { if (targetSocket && !targetSocket.destroyed) targetSocket.destroy(); } catch (_) {}
+        }, 180000).unref();
+    }
+    refreshIdleTimer();
+
+    clientSocket.setTimeout(180000, () => {
+        totalZombieReclaimed++;
+        clientSocket.destroy();
+    });
+
+    clientSocket.on('data', chunk => {
+        refreshIdleTimer();
+        decoder.push(chunk);
+    });
+    clientSocket.on('error', () => { 
+        if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+        if (targetSocket) targetSocket.destroy(); 
+    });
+    clientSocket.on('close', () => { 
+        if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+        if (targetSocket) targetSocket.destroy(); 
+    });
 
     if (head && head.length > 0) {
         decoder.push(head);
@@ -2439,6 +2496,50 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
         return res.end();
     }
 
+    // ==========================================
+    // 🚀 微秒级本地端口环回与桥接握手探针函数
+    // ==========================================
+    function probePort(port, timeoutMs = 800) {
+        return new Promise((resolve) => {
+            const start = process.hrtime.bigint();
+            const client = net.createConnection({ host: '127.0.0.1', port: port, timeout: timeoutMs }, () => {
+                const end = process.hrtime.bigint();
+                const rttMs = Number(end - start) / 1e6;
+                client.destroy();
+                resolve({ ok: true, rttMs: Number(rttMs.toFixed(2)), status: 'ACTIVE', port });
+            });
+            client.on('error', (err) => {
+                resolve({ ok: false, rttMs: -1, status: 'ERROR', error: err.message, port });
+            });
+            client.on('timeout', () => {
+                client.destroy();
+                resolve({ ok: false, rttMs: -1, status: 'TIMEOUT', error: '连接超时', port });
+            });
+        });
+    }
+
+    function probeUnixSocket(sockPath = '/tmp/vps-tunnel.sock', timeoutMs = 800) {
+        return new Promise((resolve) => {
+            if (!fs.existsSync(sockPath)) {
+                return resolve({ ok: false, rttMs: -1, status: 'NOT_FOUND', path: sockPath });
+            }
+            const start = process.hrtime.bigint();
+            const client = net.createConnection({ path: sockPath, timeout: timeoutMs }, () => {
+                const end = process.hrtime.bigint();
+                const rttMs = Number(end - start) / 1e6;
+                client.destroy();
+                resolve({ ok: true, rttMs: Number(rttMs.toFixed(2)), status: 'ACTIVE', path: sockPath });
+            });
+            client.on('error', (err) => {
+                resolve({ ok: false, rttMs: -1, status: 'ERROR', error: err.message, path: sockPath });
+            });
+            client.on('timeout', () => {
+                client.destroy();
+                resolve({ ok: false, rttMs: -1, status: 'TIMEOUT', error: '连接超时', path: sockPath });
+            });
+        });
+    }
+
     // 管理员 API 保护门禁
     if (pathname.startsWith('/admin/api/')) {
         if (!checkAdminAuth(req)) return sendJson({ error: '未授权访问' }, 401);
@@ -2451,6 +2552,81 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
             return;
         }
 
+        // 🚀 微秒级健康心跳探针 API: 检测 19900/8001/8080/IPC 及 Argo 隧道状态
+        if (pathname === '/admin/api/health-check') {
+            const [probeMain, probe8001, probe8080, probeIpc] = await Promise.all([
+                probePort(PORT),
+                probePort(8001),
+                probePort(8080),
+                probeUnixSocket('/tmp/vps-tunnel.sock')
+            ]);
+            const isHealthy = probeMain.ok && (PORT === 8001 || probe8001.ok) && (argoStatus === 'connected' || !siteSettings.argoToken);
+            return sendJson({
+                healthy: isHealthy,
+                timestamp: Date.now(),
+                mainPort: probeMain,
+                bridge8001: probe8001,
+                bridge8080: probe8080,
+                ipcSocket: probeIpc,
+                argo: {
+                    status: argoStatus,
+                    domain: siteSettings.argoDomain || '',
+                    hasToken: Boolean(siteSettings.argoToken),
+                    lastLog: argoLastLog
+                },
+                zombieReclaimed: totalZombieReclaimed
+            });
+        }
+
+        // 🚑 一键自愈 API: 查杀冲突孤儿进程、重启 Argo 隧道、复位桥接、回收超时僵尸连接
+        if (pathname === '/admin/api/self-heal' && method === 'POST') {
+            console.log('[Self-Heal] 🚑 触发一键自愈引擎：清理孤儿进程、重启 Argo 隧道、回收超时长连接...');
+            if (process.platform !== 'win32') {
+                try {
+                    const { execSync } = require('child_process');
+                    execSync('pkill -9 -f "cloudflared tunnel" 2>/dev/null || true');
+                } catch (_) {}
+            }
+            const token = (siteSettings.argoToken || initialEnv.ARGO_TOKEN || '').trim();
+            if (token) {
+                startArgoTunnel(token);
+            }
+            let reclaimedCount = 0;
+            const now = Date.now();
+            for (const [uuid, set] of activeConnections.entries()) {
+                for (const item of set) {
+                    if (now - (item.lastActive || 0) > 180000) {
+                        try { if (item.clientSocket && !item.clientSocket.destroyed) item.clientSocket.destroy(); } catch (_) {}
+                        try { if (item.targetSocket && !item.targetSocket.destroyed) item.targetSocket.destroy(); } catch (_) {}
+                        set.delete(item);
+                        reclaimedCount++;
+                        totalZombieReclaimed++;
+                    }
+                }
+                if (set.size === 0) activeConnections.delete(uuid);
+            }
+            await new Promise(r => setTimeout(r, 1000));
+            const [probeMain, probe8001, probe8080, probeIpc] = await Promise.all([
+                probePort(PORT),
+                probePort(8001),
+                probePort(8080),
+                probeUnixSocket('/tmp/vps-tunnel.sock')
+            ]);
+            const isHealthy = probeMain.ok && (PORT === 8001 || probe8001.ok) && (argoStatus === 'connected' || !token);
+            return sendJson({
+                success: true,
+                message: `自愈完成！已重启 Argo 隧道并回收 ${reclaimedCount} 个超时僵尸连接`,
+                healthy: isHealthy,
+                health: {
+                    mainPort: probeMain,
+                    bridge8001: probe8001,
+                    bridge8080: probe8080,
+                    ipcSocket: probeIpc,
+                    argoStatus: argoStatus
+                },
+                zombieReclaimed: totalZombieReclaimed
+            });
+        }
 
         if (pathname === '/admin/api/status') {
             const mem = process.memoryUsage();
@@ -2469,6 +2645,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
                 argoStatus: argoStatus,
                 argoLastLog: argoLastLog,
                 onlineConnections: totalOnlineConns,
+                zombieReclaimed: totalZombieReclaimed,
                 port: PORT,
                 domain: getEffectiveHost(),
                 serverGeo: serverGeo,
@@ -4675,6 +4852,17 @@ function renderAdminDashboardPage() {
         </header>
 
         <div class="content-container">
+            <!-- 🚑 智能探针异常告警横幅 (自动监测 8001 / 19900 与 Argo 隧道，异常时显现并支持一键自愈) -->
+            <div id="selfHealAlertBanner" style="display:none; background:#fef0f0; border:1px solid #fde2e2; border-radius:6px; padding:12px 18px; margin-bottom:16px; align-items:center; justify-content:space-between; gap:12px; color:#f56c6c;">
+                <div style="display:flex; align-items:center; gap:10px; font-size:13px; font-weight:500;">
+                    <span style="font-size:18px;">⚠️</span>
+                    <span id="selfHealAlertMsg">检测到本地 8001 桥接或 Argo 隧道握手异常（可能导致客户端节点测速全部为 -1），建议立即执行自愈！</span>
+                </div>
+                <div style="display:flex; gap:8px;">
+                    <button class="btn btn-sm btn-danger" onclick="triggerSelfHeal(this)" style="background:#f56c6c; border-color:#f56c6c; color:#fff; font-weight:600;">🚑 一键自愈修复</button>
+                </div>
+            </div>
+
             <!-- 核心 KPI 动态指标栏 -->
             <div class="kpi-grid">
                 <div class="kpi-card">
@@ -5015,16 +5203,68 @@ function renderAdminDashboardPage() {
                 <button class="btn btn-primary" style="padding:8px 20px;" onclick="saveSystemSettings()">💾 保存系统参数与新密码</button>
             </div>
 
-            <!-- PANEL 4: 容器探针监控 -->
+            <!-- PANEL 4: 容器探针监控与微秒级环回握手探针 -->
             <div class="card-panel" id="panel_status" style="display:none;">
                 <div class="panel-header">
                     <div>
-                        <div class="panel-title">📊 308MB 卡塔轻核容器深度探针</div>
-                        <div class="panel-subtitle">实时掌控内存常驻指标与底层运行日志，杜绝 OOM 崩溃。</div>
+                        <div class="panel-title">📊 系统深度探针与微秒级环回握手诊断</div>
+                        <div class="panel-subtitle">实时掌控主服务端口、Argo 8001 桥接与系统网络栈握手 RTT，支持一键自愈恢复。</div>
                     </div>
-                    <button class="btn" onclick="fetchStatus()">🔄 刷新探针数据</button>
+                    <div style="display:flex; gap:8px; align-items:center;">
+                        <button class="btn btn-danger" onclick="triggerSelfHeal(this)" style="background:#f56c6c; border-color:#f56c6c; color:#fff;">🚑 一键自愈 (清除冲突/复位隧道)</button>
+                        <button class="btn btn-primary" onclick="fetchHealthProbes(true)">⚡ 实时环回测速</button>
+                    </div>
                 </div>
 
+                <!-- 🚀 微秒级本地端口环回握手探针矩阵 -->
+                <div style="margin-bottom:18px;">
+                    <div style="font-weight:600; font-size:13px; margin-bottom:10px; color:#334155; display:flex; align-items:center; gap:6px;">
+                        <span>🩺</span> <span>核心本地回环与桥接端口探针 (Loopback Health Probes)</span>
+                    </div>
+                    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:12px;">
+                        <!-- 主端口探针 -->
+                        <div style="background:#ffffff; border:1px solid var(--border-color); border-radius:6px; padding:12px; box-shadow:0 1px 2px rgba(0,0,0,0.02);">
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <span style="font-size:11px; color:#64748b; font-weight:600;">主入口端口 (PORT)</span>
+                                <span id="probe_badge_main" class="tag tag-ok">检测中...</span>
+                            </div>
+                            <div style="font-size:18px; font-weight:700; color:#0f172a; margin-top:4px;" id="probe_rtt_main">-- ms</div>
+                            <div style="font-size:11px; color:#94a3b8; margin-top:2px;" id="probe_desc_main">监听 0.0.0.0:${PORT}</div>
+                        </div>
+
+                        <!-- 8001 桥接探针 (Argo 转发目标) -->
+                        <div style="background:#ffffff; border:1px solid var(--border-color); border-radius:6px; padding:12px; box-shadow:0 1px 2px rgba(0,0,0,0.02);">
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <span style="font-size:11px; color:#64748b; font-weight:600;">Argo 桥接端口 (8001)</span>
+                                <span id="probe_badge_8001" class="tag tag-ok">检测中...</span>
+                            </div>
+                            <div style="font-size:18px; font-weight:700; color:#2563eb; margin-top:4px;" id="probe_rtt_8001">-- ms</div>
+                            <div style="font-size:11px; color:#94a3b8; margin-top:2px;" id="probe_desc_8001">Cloudflare 隧道目标服务</div>
+                        </div>
+
+                        <!-- 8080 备用桥接探针 -->
+                        <div style="background:#ffffff; border:1px solid var(--border-color); border-radius:6px; padding:12px; box-shadow:0 1px 2px rgba(0,0,0,0.02);">
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <span style="font-size:11px; color:#64748b; font-weight:600;">备用桥接端口 (8080)</span>
+                                <span id="probe_badge_8080" class="tag tag-ok">检测中...</span>
+                            </div>
+                            <div style="font-size:18px; font-weight:700; color:#0f172a; margin-top:4px;" id="probe_rtt_8080">-- ms</div>
+                            <div style="font-size:11px; color:#94a3b8; margin-top:2px;">本地反代备用回环</div>
+                        </div>
+
+                        <!-- 180s 空闲连接自毁回收计数 -->
+                        <div style="background:#ffffff; border:1px solid var(--border-color); border-radius:6px; padding:12px; box-shadow:0 1px 2px rgba(0,0,0,0.02);">
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <span style="font-size:11px; color:#64748b; font-weight:600;">180s 空闲自毁回收</span>
+                                <span class="tag tag-ok" style="background:#f0fdf4; color:#16a34a;">已激活</span>
+                            </div>
+                            <div style="font-size:18px; font-weight:700; color:#16a34a; margin-top:4px;" id="stat_zombie_count">0 个</div>
+                            <div style="font-size:11px; color:#94a3b8; margin-top:2px;">已自动回收超时僵尸句柄</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 硬件资源深度指标 -->
                 <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:12px; margin-bottom:18px;">
                     <div style="background:#f8fafc; border:1px solid var(--border-color); border-radius:6px; padding:14px;">
                         <div style="font-size:11px; color:#64748b;">Node 真实物理常驻内存</div>
@@ -5046,8 +5286,8 @@ function renderAdminDashboardPage() {
                 <div style="margin-top:12px;">
                     <div style="font-weight:600; font-size:12px; margin-bottom:6px; color:#334155;">实时核心运行终端视窗 (Console Log):</div>
                     <div class="terminal-box" id="terminalLogBox">> [Kernel] VPS-Tunnel Pro 核心微服务正在运行...
-> [Memory] 规格 308MB RAM | 翼龙面板单端口专享
-> [Security] 0 毫秒定向掐断引擎处于待命状态</div>
+> [Memory] 规格自适应调控 | 纯原生 0 外部依赖
+> [Security] 0 毫秒定向掐断与 180 秒空闲自毁看门狗处于待命状态</div>
                 </div>
             </div>
         </div>
@@ -5199,10 +5439,16 @@ function renderAdminDashboardPage() {
                     document.getElementById('kpi_conns').innerText = data.onlineConnections || '0';
                     document.getElementById('stat_memRss').innerText = data.memoryRss;
                     document.getElementById('stat_conns').innerText = data.onlineConnections;
+                    if (document.getElementById('stat_zombie_count')) {
+                        document.getElementById('stat_zombie_count').innerText = (data.zombieReclaimed || 0) + ' 个';
+                    }
 
                     const hours = Math.floor(data.uptime / 3600);
                     const mins = Math.floor((data.uptime % 3600) / 60);
                     document.getElementById('stat_uptime').innerText = hours + '小时 ' + mins + '分';
+
+                    // 自动触发健康探针检查并更新告警状态
+                    fetchHealthProbes();
 
                     const wetestTime = currentSettings.wetestSyncTime || '未同步';
                     document.getElementById('kpi_wetest_time').innerText = '最近同步: ' + wetestTime;
@@ -5273,6 +5519,120 @@ function renderAdminDashboardPage() {
                 }
             } catch (err) {
                 console.error(err);
+            }
+        }
+
+        // 🚀 微秒级健康心跳与桥接探针检测器
+        let lastProbeResult = null;
+        async function fetchHealthProbes(manual = false) {
+            try {
+                const res = await fetch('/admin/api/health-check?_t=' + Date.now());
+                if (!res.ok) return;
+                const data = await res.json();
+                lastProbeResult = data;
+
+                // 1. 主端口探针
+                const probeMain = data.mainPort || {};
+                const rttMainEl = document.getElementById('probe_rtt_main');
+                const badgeMainEl = document.getElementById('probe_badge_main');
+                if (rttMainEl && badgeMainEl) {
+                    if (probeMain.ok) {
+                        rttMainEl.innerText = (probeMain.rttMs >= 0 ? probeMain.rttMs + ' ms' : '< 1 ms');
+                        rttMainEl.style.color = '#16a34a';
+                        badgeMainEl.className = 'tag tag-ok';
+                        badgeMainEl.innerText = '🟢 正常监听';
+                    } else {
+                        rttMainEl.innerText = '连接异常';
+                        rttMainEl.style.color = '#dc2626';
+                        badgeMainEl.className = 'tag tag-ban';
+                        badgeMainEl.innerText = '🔴 端口阻塞';
+                    }
+                }
+
+                // 2. 8001 Argo 桥接端口探针
+                const probe8001 = data.bridge8001 || {};
+                const rtt8001El = document.getElementById('probe_rtt_8001');
+                const badge8001El = document.getElementById('probe_badge_8001');
+                if (rtt8001El && badge8001El) {
+                    if (probe8001.ok) {
+                        rtt8001El.innerText = (probe8001.rttMs >= 0 ? probe8001.rttMs + ' ms' : '< 1 ms');
+                        rtt8001El.style.color = '#2563eb';
+                        badge8001El.className = 'tag tag-ok';
+                        badge8001El.innerText = '🟢 极速畅通';
+                    } else {
+                        rtt8001El.innerText = '未响应 (-1)';
+                        rtt8001El.style.color = '#dc2626';
+                        badge8001El.className = 'tag tag-ban';
+                        badge8001El.innerText = '🔴 桥接阻断';
+                    }
+                }
+
+                // 3. 8080 备用端口探针
+                const probe8080 = data.bridge8080 || {};
+                const rtt8080El = document.getElementById('probe_rtt_8080');
+                const badge8080El = document.getElementById('probe_badge_8080');
+                if (rtt8080El && badge8080El) {
+                    if (probe8080.ok) {
+                        rtt8080El.innerText = (probe8080.rttMs >= 0 ? probe8080.rttMs + ' ms' : '< 1 ms');
+                        badge8080El.className = 'tag tag-ok';
+                        badge8080El.innerText = '🟢 正常就绪';
+                    } else {
+                        rtt8080El.innerText = '未启用';
+                        badge8080El.className = 'tag tag-warn';
+                        badge8080El.innerText = '🟡 备用空闲';
+                    }
+                }
+
+                // 4. 异常自动告警横幅联动
+                const alertBanner = document.getElementById('selfHealAlertBanner');
+                const alertMsg = document.getElementById('selfHealAlertMsg');
+                if (alertBanner && alertMsg) {
+                    let hasIssue = false;
+                    let issueText = '';
+                    if (!probeMain.ok) {
+                        hasIssue = true;
+                        issueText = '⚠️ 主服务端口未正常监听，外部直连与管理入口受阻！';
+                    } else if (data.argo && data.argo.hasToken && !probe8001.ok) {
+                        hasIssue = true;
+                        issueText = '⚠️ 本地 8001 桥接未响应，Argo 隧道转发受阻（导致客户端所有优选节点测速全部显示 -1）！';
+                    } else if (data.argo && data.argo.hasToken && data.argo.status === 'error') {
+                        hasIssue = true;
+                        issueText = '⚠️ Argo 隧道守护进程出现异常，请立即执行一键自愈！';
+                    }
+                    if (hasIssue) {
+                        alertMsg.innerText = issueText;
+                        alertBanner.style.display = 'flex';
+                    } else {
+                        alertBanner.style.display = 'none';
+                    }
+                }
+
+                if (manual) {
+                    alert('⚡ 探针回环测速完成！主端口 RTT: ' + (probeMain.rttMs || '--') + 'ms | 8001桥接 RTT: ' + (probe8001.rttMs || '--') + 'ms');
+                }
+            } catch (e) {
+                console.warn('探针检测异常:', e);
+            }
+        }
+
+        // 🚑 一键自愈前端调用控制器
+        async function triggerSelfHeal(btn) {
+            if (!confirm('确定执行一键自愈？系统将彻底查杀系统孤儿进程、重启 Argo 隧道、复位 8001 桥接并释放超时僵尸连接。')) return;
+            const origText = btn ? btn.innerText : '';
+            if (btn) { btn.innerText = '⏳ 正在自愈修复中...'; btn.disabled = true; }
+            try {
+                const res = await fetch('/admin/api/self-heal', { method: 'POST' });
+                const data = await res.json();
+                if (res.ok) {
+                    alert('✅ ' + (data.message || '自愈完成，服务状态已恢复最佳！'));
+                    fetchStatus();
+                } else {
+                    alert('❌ 自愈执行遇到提示: ' + (data.error || '请检查系统日志'));
+                }
+            } catch (err) {
+                alert('自愈调用网络异常: ' + err.message);
+            } finally {
+                if (btn) { btn.innerText = origText; btn.disabled = false; }
             }
         }
 
