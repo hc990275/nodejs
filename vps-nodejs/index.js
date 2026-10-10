@@ -14,9 +14,9 @@
  * =========================================================================
  */
 
-// 强制注入 Libuv 高性能异步高并发线程池 (防止 DNS 与文件 I/O 阻塞)
+// 强制注入 Libuv 高性能异步并发线程池 (16 线程兼顾极速 DNS 解析与轻量级内存)
 if (!process.env.UV_THREADPOOL_SIZE) {
-    process.env.UV_THREADPOOL_SIZE = '64';
+    process.env.UV_THREADPOOL_SIZE = '16';
 }
 
 // 🚀 核心稳态保护: 忽略 stdout/stderr 管道破损错误 (Broken Pipe)
@@ -71,8 +71,8 @@ class ResourceGovernor {
         this.criticalMemoryThreshold = Math.floor(this.totalMemory * 0.75);
         // 3. 最大并发连接数自适应：依据总内存计算（每 1MB 内存承载约 0.6 个活跃连接，最小 20）
         this.maxTotalConnections = Math.max(20, Math.floor((this.totalMemory / (1024 * 1024)) * 0.6));
-        // 4. Socket 高水位线动态适配：内存 <= 300MB 时采用 16KB，> 300MB 时采用 64KB
-        this.socketHighWaterMark = (this.totalMemory <= 300 * 1024 * 1024) ? 16384 : 65536;
+        // 4. Socket 高水位线动态适配：<= 80MB 采用 8KB (Nano模式)，<= 300MB 采用 16KB，> 300MB 采用 64KB
+        this.socketHighWaterMark = (this.totalMemory <= 80 * 1024 * 1024) ? 8192 : ((this.totalMemory <= 300 * 1024 * 1024) ? 16384 : 65536);
 
         this.currentCpuUsage = 0;
         this.lastCpuSample = process.cpuUsage();
@@ -186,6 +186,15 @@ class ResourceGovernor {
                 if (this.isUnderMemoryPressure) {
                     this.isUnderMemoryPressure = false;
                     console.log(`[Governor] 🟢 内存回落至安全水位，已解除反压限制。当前 RSS: ${formatBytes(mem.rss)}`);
+                }
+            }
+
+            // 🚀 闲置期温和回收机制: 每 60 秒当 CPU 负载较低且内存超过 64MB 时自动释放未引用 Buffer 与堆碎片
+            if (!this.lastGentleGcTime) this.lastGentleGcTime = now;
+            if (now - this.lastGentleGcTime > 60000) {
+                this.lastGentleGcTime = now;
+                if (!this.isUnderCpuPressure && mem.rss > 64 * 1024 * 1024 && typeof global.gc === 'function') {
+                    try { global.gc(); } catch (_) {}
                 }
             }
 
@@ -465,9 +474,15 @@ async function startArgoTunnel(token) {
             '--protocol', 'quic',
             '--token', token.trim()
         ];
+        const goMemLimit = (governor && governor.totalMemory <= 80 * 1024 * 1024) ? '12MiB' : ((governor && governor.totalMemory <= 160 * 1024 * 1024) ? '20MiB' : (governor && governor.totalMemory <= 256 * 1024 * 1024 ? '25MiB' : '40MiB'));
         argoProcess = spawn(binPath, cfArgs, {
             cwd: BASE_DIR,
-            stdio: ['ignore', 'pipe', 'pipe']
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: {
+                ...process.env,
+                GOMEMLIMIT: goMemLimit,
+                GOGC: '50'
+            }
         });
 
         argoProcess.stdout.on('data', chunk => {
