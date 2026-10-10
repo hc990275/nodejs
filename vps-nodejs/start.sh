@@ -31,7 +31,32 @@ restart_service() {
         ${SUDO} rc-service vps-tunnel restart
     else
         ${SUDO} pkill -9 -f "node index.js" 2>/dev/null || true
-        export UV_THREADPOOL_SIZE=64
+        export UV_THREADPOOL_SIZE=16
+        export MALLOC_ARENA_MAX=2
+        export GOGC=50
+        # 针对 64M / 128M / 256M NAT 鸡自适应注入
+        MEM_TOTAL_KB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}' || echo 0)
+        HEAP_LIMIT=96
+        GO_LIMIT="40MiB"
+        POOL_SIZE=16
+        EXTRA_FLAGS=""
+        if [ "$MEM_TOTAL_KB" -gt 0 ] && [ "$MEM_TOTAL_KB" -le 81920 ]; then
+            HEAP_LIMIT=24
+            GO_LIMIT="12MiB"
+            POOL_SIZE=4
+            EXTRA_FLAGS="--optimize-for-size --max-semi-space-size=1"
+        elif [ "$MEM_TOTAL_KB" -gt 0 ] && [ "$MEM_TOTAL_KB" -le 163840 ]; then
+            HEAP_LIMIT=48
+            GO_LIMIT="20MiB"
+            POOL_SIZE=8
+        elif [ "$MEM_TOTAL_KB" -gt 0 ] && [ "$MEM_TOTAL_KB" -le 307200 ]; then
+            HEAP_LIMIT=80
+            GO_LIMIT="25MiB"
+            POOL_SIZE=16
+        fi
+        export UV_THREADPOOL_SIZE="${POOL_SIZE}"
+        export GOMEMLIMIT="${GO_LIMIT}"
+        export NODE_OPTIONS="--max-old-space-size=${HEAP_LIMIT} --expose-gc ${EXTRA_FLAGS}"
         nohup node index.js > /var/log/vps-tunnel.log 2>&1 &
     fi
 }
@@ -44,12 +69,24 @@ show_info() {
     local pwd=$(grep "^ADMIN_PASSWORD=" "${ENV_FILE}" 2>/dev/null | cut -d'=' -f2)
     local argo_d=$(grep "^ARGO_DOMAIN=" "${ENV_FILE}" 2>/dev/null | cut -d'=' -f2)
 
+    local mem_used=$(free -m 2>/dev/null | awk '/Mem:/ {print $3}')
+    local mem_tot=$(free -m 2>/dev/null | awk '/Mem:/ {print $2}')
+    local swap_used=$(free -m 2>/dev/null | awk '/Swap:/ {print $3}')
+    local swap_tot=$(free -m 2>/dev/null | awk '/Swap:/ {print $2}')
+
     echo -e "\n${CYAN}================== 当前服务配置与访问地址 ==================${PLAIN}"
     echo -e "🌐 直连主页:   ${BOLD}${GREEN}http://${domain}:${port}/${PLAIN}"
     echo -e "🛠️  管理后台:   ${BOLD}${GREEN}http://${domain}:${port}/admin${PLAIN}"
     echo -e "🔑 后台密码:   ${BOLD}${YELLOW}${pwd}${PLAIN}"
     if [ -n "$argo_d" ]; then
         echo -e "⚡ Argo域名:   ${BOLD}${CYAN}https://${argo_d}/${PLAIN}"
+    fi
+    local is_zram=""
+    if grep -q "zram" /proc/swaps 2>/dev/null; then
+        is_zram=" (⚡ ZRAM 内存压缩)"
+    fi
+    if [ -n "$mem_tot" ] && [ "$mem_tot" != "0" ]; then
+        echo -e "💾 内存/Swap:   ${CYAN}内存 ${mem_used:-0}/${mem_tot}MB | Swap ${swap_used:-0}/${swap_tot:-0}MB${is_zram}${PLAIN}"
     fi
     echo -e "📜 日志文件:   /var/log/vps-tunnel.log"
     echo -e "${CYAN}============================================================${PLAIN}\n"
