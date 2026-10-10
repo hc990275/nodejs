@@ -270,3 +270,20 @@
   3. **强烈建议**：
      - 在 64MB 小鸡上必须依赖自动挂载的 256MB ZRAM/Swap 缓冲；
      - 建议优先采用 NAT 映射端口直连（HTTP/WS 模式），若无必要尽量不开启 cloudflared Argo 进程以留出绝对充裕的物理内存。
+
+---
+
+## 23. 默认占位账号（admin_user）僵尸复活根因排查与 .env 变量全量原子落盘
+- **问题现象**：
+  1. 用户在管理后台手动删除了初始默认用户 `admin_user`，但只要重启服务或触发配置热重载，该账号就会“僵尸复活”重新出现，且代码中包含了默认弱口令哈希（123456）；
+  2. 一键安装脚本执行后，部分动态探测出的性能调优环境变量（如 `NODE_OPTIONS`, `UV_THREADPOOL_SIZE`, `GOMEMLIMIT`）仅注入了 Systemd 服务，未直接全量写入 `.env` 文件，导致用户直接用 `start.sh` 启动或手动维护 `.env` 时存在认知脱节。
+- **原因剖析**：
+  1. `index.js` 的 `loadUsers()` 函数原逻辑判定为 `if (Array.isArray(raw) && raw.length > 0)`。当用户删除了所有账号时，`users.json` 保存为空数组 `[]`（`raw.length === 0`），导致 `hasLoadedData` 保持为 `false`；在随后的 `if (users.size === 0 && !hasLoadedData)` 条件下，系统判定为全新安装，从而强行重新生成 `admin_user` 并持久化写盘；
+  2. 强行生成默认用户并内置默认弱密码违反了零硬编码安全熔断原则；
+  3. `setup.sh` 原先的 `.env` 写入逻辑发生在探测内存之前，导致自适应参数没有写回 `.env` 作为单一真相源。
+- **根本解决方案**：
+  1. **彻底移除强制生成 `admin_user`**：重构 `loadUsers()` 函数，不论是包含用户还是空数组 `[]`，解析完成后均正常置空并维护状态，严禁系统自动创建未授权的占位用户；
+  2. **空状态健壮容错**：全面梳理前台大屏与后台管理，当系统用户数为 0 时，表格友好显示“未找到匹配的用户数据”，分页显示 0 条，管理员可随时通过后台“➕ 添加新用户”自由新建，前台亦可由用户自主注册；
+  3. **.env 全局单一真相源全量落盘**：
+     - 在 `setup.sh` 内存探测后，立即使用 `update_env_kv` 将 `NODE_OPTIONS`、`UV_THREADPOOL_SIZE`、`MALLOC_ARENA_MAX`、`GOMEMLIMIT`、`GOGC` 完整、工整地写入 `${INSTALL_DIR}/.env`；
+     - `start.sh` 和 OpenRC 均以 `.env` 为核心加载配置，实现一次自适应计算、全局多环境统一驱动。

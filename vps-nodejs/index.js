@@ -831,40 +831,17 @@ const activeConnections = new Map();
 
 function loadUsers() {
     users.clear();
-    let hasLoadedData = false;
     if (fs.existsSync(USERS_FILE)) {
         try {
             const raw = JSON.parse(fs.readFileSync(USERS_FILE, 'utf-8'));
-            if (Array.isArray(raw) && raw.length > 0) {
+            if (Array.isArray(raw)) {
                 raw.forEach(u => { if (u && u.uuid) users.set(u.uuid, u); });
-                hasLoadedData = true;
-            } else if (typeof raw === 'object' && Object.keys(raw).length > 0) {
+            } else if (typeof raw === 'object' && raw !== null) {
                 Object.values(raw).forEach(u => { if (u && u.uuid) users.set(u.uuid, u); });
-                hasLoadedData = true;
             }
         } catch (e) {
             console.error('[Users] 读取 users.json 异常:', e.message);
         }
-    }
-
-    // 只有在全新安装且本地从未存在过有效用户数据时，才初始化首个默认初始用户
-    // 优先读取 .env 中固定声明的 UUID，杜绝重启或重新加载时跳变！
-    if (users.size === 0 && !hasLoadedData) {
-        const envUuid = initialEnv.UUID || process.env.UUID;
-        const initUuid = (envUuid && envUuid.trim()) ? envUuid.trim() : crypto.randomUUID();
-        const initUser = {
-            uuid: initUuid,
-            username: 'admin_user',
-            passwordHash: crypto.createHash('sha256').update('123456').digest('hex'),
-            trafficLimit: siteSettings.defaultTrafficGB * 1024 * 1024 * 1024,
-            trafficUsed: 0,
-            expireTime: Date.now() + siteSettings.defaultDays * 86400 * 1000,
-            enabled: true,
-            createdAt: new Date().toISOString()
-        };
-        users.set(initUuid, initUser);
-        saveUsers();
-        console.log(`[Users] 已初始化首个用户: admin_user | 固化 UUID: ${initUuid}`);
     }
 }
 

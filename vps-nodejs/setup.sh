@@ -427,6 +427,14 @@ detect_memory_profile() {
 
 detect_memory_profile
 
+# 🚀 将自适应动态计算出的系统调优与内存配额变量完整写入 .env (全局单一真相源)
+update_env_kv "NODE_OPTIONS" "${AUTO_NODE_OPTIONS}"
+update_env_kv "UV_THREADPOOL_SIZE" "${AUTO_POOL_SIZE}"
+update_env_kv "MALLOC_ARENA_MAX" "2"
+update_env_kv "GOMEMLIMIT" "${AUTO_GOMEMLIMIT}"
+update_env_kv "GOGC" "50"
+echo -e "${GREEN}✅ 已将自适应内存与并发参数完美写入 .env 环境变量文件${PLAIN}"
+
 if [ "$IS_SYSTEMD" = "true" ]; then
     echo -e "${CYAN}系统环境: Systemd，正在生成服务单元 (自动分配堆上限: ${AUTO_HEAP_MB}MB | 线程池: ${AUTO_POOL_SIZE} | Go配额: ${AUTO_GOMEMLIMIT})...${PLAIN}"
     cat <<EOF > /etc/systemd/system/vps-tunnel.service
