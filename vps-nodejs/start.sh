@@ -47,17 +47,17 @@ restart_service() {
             POOL_SIZE=16
             EXTRA_FLAGS=""
             if [ "$MEM_TOTAL_KB" -gt 0 ] && [ "$MEM_TOTAL_KB" -le 81920 ]; then
-                HEAP_LIMIT=24
-                GO_LIMIT="12MiB"
-                POOL_SIZE=4
-                EXTRA_FLAGS="--optimize-for-size --max-semi-space-size=1"
-            elif [ "$MEM_TOTAL_KB" -gt 0 ] && [ "$MEM_TOTAL_KB" -le 163840 ]; then
-                HEAP_LIMIT=48
-                GO_LIMIT="20MiB"
+                HEAP_LIMIT=32
+                GO_LIMIT="16MiB"
                 POOL_SIZE=8
-            elif [ "$MEM_TOTAL_KB" -gt 0 ] && [ "$MEM_TOTAL_KB" -le 307200 ]; then
-                HEAP_LIMIT=80
+                EXTRA_FLAGS="--max-semi-space-size=4"
+            elif [ "$MEM_TOTAL_KB" -gt 0 ] && [ "$MEM_TOTAL_KB" -le 163840 ]; then
+                HEAP_LIMIT=64
                 GO_LIMIT="25MiB"
+                POOL_SIZE=16
+            elif [ "$MEM_TOTAL_KB" -gt 0 ] && [ "$MEM_TOTAL_KB" -le 307200 ]; then
+                HEAP_LIMIT=128
+                GO_LIMIT="35MiB"
                 POOL_SIZE=16
             fi
             export UV_THREADPOOL_SIZE="${POOL_SIZE}"

@@ -69,10 +69,11 @@ class ResourceGovernor {
         this.safeHeapLimit = Math.floor(this.totalMemory * 0.45);
         // 2. 内存严重警戒线（75% 总内存）：达到后立即主动触发 GC 并阻止新连接进入（反压保护）
         this.criticalMemoryThreshold = Math.floor(this.totalMemory * 0.75);
-        // 3. 最大并发连接数自适应：依据总内存计算（每 1MB 内存承载约 0.6 个活跃连接，最小 20）
-        this.maxTotalConnections = Math.max(20, Math.floor((this.totalMemory / (1024 * 1024)) * 0.6));
-        // 4. Socket 高水位线动态适配：<= 80MB 采用 8KB (Nano模式)，<= 300MB 采用 16KB，> 300MB 采用 64KB
-        this.socketHighWaterMark = (this.totalMemory <= 80 * 1024 * 1024) ? 8192 : ((this.totalMemory <= 300 * 1024 * 1024) ? 16384 : 65536);
+        // 3. 最大并发连接数自适应：依据总内存计算（每 1MB 内存承载约 1.2 个活跃连接，最小 60）
+        this.maxTotalConnections = Math.max(60, Math.floor((this.totalMemory / (1024 * 1024)) * 1.2));
+        // 4. Socket 高水位线动态适配：为了保障高吞吐与满速网络转发，全线提升为高性能 64KB (65536)；512MB 以上机器放宽至 128KB (131072)
+        // 64KB 单连接满载仅消耗 0.06MB，配合系统 256MB ZRAM/Swap 缓冲完全轻松承载，彻底杜绝因水位线过小导致 targetSocket.pause 频繁抖动限速！
+        this.socketHighWaterMark = (this.totalMemory >= 400 * 1024 * 1024) ? 131072 : 65536;
 
         this.currentCpuUsage = 0;
         this.lastCpuSample = process.cpuUsage();
@@ -1422,11 +1423,11 @@ function handleVlessWebSocket(clientSocket, head) {
                     return;
                 }
 
-                // 🚀 单用户并发连接数自适应防护 (防止单一客户端多线程/测速耗尽系统文件句柄与 Buffer)
+                // 🚀 单用户并发连接数自适应防护 (放宽至 64 连接，保障多线程测速与大文件下载跑满带宽)
                 const userConns = activeConnections.get(currentUser.uuid);
-                const maxUserConns = Math.max(10, Math.floor(governor.maxTotalConnections / Math.max(1, users.size)));
+                const maxUserConns = Math.min(64, Math.max(32, governor.maxTotalConnections || 64));
                 if (userConns && userConns.size >= maxUserConns) {
-                    console.warn(`[Governor] ⚠️ 用户 ${currentUser.username} 连接数超限 (${userConns.size}/${maxUserConns})，拒接以保护系统稳定性`);
+                    console.warn(`[Governor] ⚠️ 用户 ${currentUser.username} 连接数已达单机并发上限 (${userConns.size}/${maxUserConns})，暂拒新连接以保护系统稳定性`);
                     clientSocket.destroy();
                     return;
                 }
