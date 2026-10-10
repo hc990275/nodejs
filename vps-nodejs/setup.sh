@@ -388,34 +388,33 @@ detect_memory_profile() {
         fi
     fi
 
-    local HEAP_MB=96
+    local HEAP_MB=128
     local POOL_SIZE=16
     local GOMEM_LIMIT="40MiB"
     local EXTRA_V8=""
 
     if [ "$TOTAL_MEM_BYTES" -gt 0 ]; then
         if [ "$TOTAL_MEM_BYTES" -le 83886080 ]; then
-            # 64MB 极限 Nano 机型 (<=80MB): 堆压制至 24MB，新生代设为 1MB，启用尺寸优化与 4 线程
-            HEAP_MB=24
-            POOL_SIZE=4
-            GOMEM_LIMIT="12MiB"
-            EXTRA_V8="--optimize-for-size --max-semi-space-size=1"
-        elif [ "$TOTAL_MEM_BYTES" -le 167772160 ]; then
-            # 128MB 机型 (<=160MB)
-            HEAP_MB=48
+            # 64MB Nano 机型 (<=80MB): 堆配额 32MB，新生代设为 4MB，消除 1MB 频繁 GC 抖动
+            HEAP_MB=32
             POOL_SIZE=8
-            GOMEM_LIMIT="20MiB"
-        elif [ "$TOTAL_MEM_BYTES" -le 314572800 ]; then
-            # 256MB 机型 (<=300MB)
-            HEAP_MB=80
+            GOMEM_LIMIT="16MiB"
+            EXTRA_V8="--max-semi-space-size=4"
+        elif [ "$TOTAL_MEM_BYTES" -le 167772160 ]; then
+            # 128MB 机型 (<=160MB): 堆配额 64MB，16 线程池保证并发 DNS 与出站零排队
+            HEAP_MB=64
             POOL_SIZE=16
             GOMEM_LIMIT="25MiB"
-        else
-            # 512MB 及以上机型
-            HEAP_MB=$(( TOTAL_MEM_BYTES * 45 / 100 / 1024 / 1024 ))
-            [ "$HEAP_MB" -gt 256 ] && HEAP_MB=256
+        elif [ "$TOTAL_MEM_BYTES" -le 314572800 ]; then
+            # 256MB 机型 (<=300MB): 堆配额 128MB，配合 ZRAM 缓冲完全充裕
+            HEAP_MB=128
             POOL_SIZE=16
-            GOMEM_LIMIT="40MiB"
+            GOMEM_LIMIT="35MiB"
+        else
+            # 512MB 及以上机型: 堆配额 256MB
+            HEAP_MB=256
+            POOL_SIZE=16
+            GOMEM_LIMIT="50MiB"
         fi
     fi
 
@@ -578,8 +577,15 @@ else
     nohup "${NODE_BIN}" index.js > /var/log/vps-tunnel.log 2>&1 &
 fi
 
-# 4. 自动放行防火墙端口 (若有防火墙管理器)
-echo -e "${YELLOW}[4/5] 检查系统防火墙...${PLAIN}"
+# 4. 自动优化 Linux 内核网络参数与 BBR 拥塞控制
+if [ -f "${INSTALL_DIR}/optimize_bbr.sh" ]; then
+    echo -e "${YELLOW}[4/6] 优化 Linux 内核网络与开启 BBR 加速...${PLAIN}"
+    sh "${INSTALL_DIR}/optimize_bbr.sh" >/dev/null 2>&1 || true
+    echo -e "${GREEN}✅ Linux 内核 TCP 缓冲区与 BBR 拥塞控制调优完成${PLAIN}"
+fi
+
+# 5. 自动放行防火墙端口 (若有防火墙管理器)
+echo -e "${YELLOW}[5/6] 检查系统防火墙...${PLAIN}"
 CURRENT_PORT=$(grep "^PORT=" "${INSTALL_DIR}/.env" 2>/dev/null | cut -d'=' -f2 || echo "19900")
 CURRENT_PORT=${CURRENT_PORT:-19900}
 
@@ -596,8 +602,8 @@ elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet fire
     echo -e "${GREEN}✅ Firewalld 防火墙已放行 80 / 443 / ${CURRENT_PORT} 端口${PLAIN}"
 fi
 
-# 5. 校验运行状态
-echo -e "${YELLOW}[5/5] 校验服务运行状态...${PLAIN}"
+# 6. 校验运行状态
+echo -e "${YELLOW}[6/6] 校验服务运行状态...${PLAIN}"
 sleep 2
 
 STATUS_OK=false
