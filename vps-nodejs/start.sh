@@ -31,32 +31,39 @@ restart_service() {
         ${SUDO} rc-service vps-tunnel restart
     else
         ${SUDO} pkill -9 -f "node index.js" 2>/dev/null || true
-        export UV_THREADPOOL_SIZE=16
-        export MALLOC_ARENA_MAX=2
-        export GOGC=50
-        # 针对 64M / 128M / 256M NAT 鸡自适应注入
-        MEM_TOTAL_KB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}' || echo 0)
-        HEAP_LIMIT=96
-        GO_LIMIT="40MiB"
-        POOL_SIZE=16
-        EXTRA_FLAGS=""
-        if [ "$MEM_TOTAL_KB" -gt 0 ] && [ "$MEM_TOTAL_KB" -le 81920 ]; then
-            HEAP_LIMIT=24
-            GO_LIMIT="12MiB"
-            POOL_SIZE=4
-            EXTRA_FLAGS="--optimize-for-size --max-semi-space-size=1"
-        elif [ "$MEM_TOTAL_KB" -gt 0 ] && [ "$MEM_TOTAL_KB" -le 163840 ]; then
-            HEAP_LIMIT=48
-            GO_LIMIT="20MiB"
-            POOL_SIZE=8
-        elif [ "$MEM_TOTAL_KB" -gt 0 ] && [ "$MEM_TOTAL_KB" -le 307200 ]; then
-            HEAP_LIMIT=80
-            GO_LIMIT="25MiB"
-            POOL_SIZE=16
+        if [ -f "${ENV_FILE}" ]; then
+            set -a
+            . "${ENV_FILE}"
+            set +a
         fi
-        export UV_THREADPOOL_SIZE="${POOL_SIZE}"
-        export GOMEMLIMIT="${GO_LIMIT}"
-        export NODE_OPTIONS="--max-old-space-size=${HEAP_LIMIT} --expose-gc ${EXTRA_FLAGS}"
+        [ -z "${UV_THREADPOOL_SIZE}" ] && export UV_THREADPOOL_SIZE=16
+        [ -z "${MALLOC_ARENA_MAX}" ] && export MALLOC_ARENA_MAX=2
+        [ -z "${GOGC}" ] && export GOGC=50
+        if [ -z "${NODE_OPTIONS}" ]; then
+            # 针对 64M / 128M / 256M NAT 鸡自适应注入
+            MEM_TOTAL_KB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}' || echo 0)
+            HEAP_LIMIT=96
+            GO_LIMIT="40MiB"
+            POOL_SIZE=16
+            EXTRA_FLAGS=""
+            if [ "$MEM_TOTAL_KB" -gt 0 ] && [ "$MEM_TOTAL_KB" -le 81920 ]; then
+                HEAP_LIMIT=24
+                GO_LIMIT="12MiB"
+                POOL_SIZE=4
+                EXTRA_FLAGS="--optimize-for-size --max-semi-space-size=1"
+            elif [ "$MEM_TOTAL_KB" -gt 0 ] && [ "$MEM_TOTAL_KB" -le 163840 ]; then
+                HEAP_LIMIT=48
+                GO_LIMIT="20MiB"
+                POOL_SIZE=8
+            elif [ "$MEM_TOTAL_KB" -gt 0 ] && [ "$MEM_TOTAL_KB" -le 307200 ]; then
+                HEAP_LIMIT=80
+                GO_LIMIT="25MiB"
+                POOL_SIZE=16
+            fi
+            export UV_THREADPOOL_SIZE="${POOL_SIZE}"
+            export GOMEMLIMIT="${GO_LIMIT}"
+            export NODE_OPTIONS="--max-old-space-size=${HEAP_LIMIT} --expose-gc ${EXTRA_FLAGS}"
+        fi
         nohup node index.js > /var/log/vps-tunnel.log 2>&1 &
     fi
 }
