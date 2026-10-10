@@ -8,7 +8,11 @@ Type=simple
 User=root
 WorkingDirectory=/opt/vps-tunnel
 EnvironmentFile=-/opt/vps-tunnel/.env
-Environment="UV_THREADPOOL_SIZE=64"
+Environment="UV_THREADPOOL_SIZE=16"
+Environment="NODE_OPTIONS=--max-old-space-size=96 --expose-gc"
+Environment="MALLOC_ARENA_MAX=2"
+Environment="GOMEMLIMIT=40MiB"
+Environment="GOGC=50"
 ExecStart=/usr/bin/node index.js
 Restart=always
 RestartSec=5s

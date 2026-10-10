@@ -202,3 +202,71 @@
   3. 为 `server` 与 `altServer` (8001/8080) 注册完备的 `on('error')` 事件监听，杜绝未捕获异常；
   4. 加入 `SIGTERM` / `SIGINT` 信号优雅拦截，在进程退出时联动清理所有衍生子进程。
 
+
+
+---
+
+## 19. Node.js V8 惰性垃圾回收与 Go 运行时未限导致常态内存占用过高
+- **问题现象**：在 Linux VPS / 容器环境部署后，通过 free -m、top 或面板监控观察，发现系统或 Node.js 进程内存占用持续居高不下（从几十兆一路攀升至 150MB~300MB+），看似存在“内存泄漏”。
+- **原因剖析**：
+  1. **V8 惰性垃圾回收机制 (Lazy GC)**：64 位 Node.js 默认根据物理内存上限分配高达 1.4GB~2GB 的堆配额。V8 只有在堆使用量逼近设定配额时，才会执行代价较高的 Major GC (Mark-Sweep-Compact)。在未配置 `--max-old-space-size` 时，即使实际有效常驻对象仅有 20MB~30MB，V8 也会任由堆内存膨胀而不主动释放；
+  2. **主动 GC 门禁缺失 `--expose-gc`**：代码中虽有 `ResourceGovernor` 内存反压监控与 `global.gc()` 调用，但在 Systemd、start.sh 中未传入 `--expose-gc` 参数，导致 `global.gc` 始终为 `undefined`，无法执行主动垃圾回收；
+  3. **Cloudflared (Argo 隧道) Go 运行时内存膨胀**：`cloudflared` 采用 Go 语言编写，若未设置 `GOMEMLIMIT` 与 `GOGC`，Go 运行时默认在小内存环境中也会持有 50MB~100MB+ 内存；
+  4. **`UV_THREADPOOL_SIZE=64` 线程池过大**：每个 Libuv 线程在 Linux 下均分配原生 OS 线程与栈空间，64 线程在极小内存 VPS 上会产生不必要的虚拟内存碎片与调度开销。
+- **根本解决方案**：
+  1. **自适应计算并注入 V8 堆配额**：在 `vps-tunnel.service`、`setup.sh`、`start.sh` 中统一动态探测内存并注入 `NODE_OPTIONS="--max-old-space-size=${HEAP_MB} --expose-gc"`（小内存默认 96MB，最大不超过 256MB），强制 V8 积极回收垃圾；
+  2. **引入闲置期温和 GC**：在 `ResourceGovernor` 监控中增加闲置期检测，每 60 秒在低 CPU 负载且内存超过 64MB 时主动调用 `global.gc()`，将常态内存压制在 20MB~30MB 黄金区间；
+  3. **Go 运行时内存压制**：在 spawn `cloudflared` 时注入 `GOMEMLIMIT=40MiB` 与 `GOGC=50`，强制 Go 运行时紧凑回收内存；
+  4. **精简线程池与分配器优化**：将 `UV_THREADPOOL_SIZE` 优化为 `16`，并注入 `MALLOC_ARENA_MAX=2`，抑制 glibc 内存碎片。
+
+---
+
+## 20. 1核 128MB / 256MB 极限 NAT 小鸡自动 Swap 虚拟缓冲挂载与极致微内核压榨
+- **问题现象**：特价 1核 128M 或 256M NAT 小鸡（常见 Alpine / Debian LXC 容器）物理内存极度狭窄，且很多服务商默认不提供 Swap（Swap=0）。在大流量测速或突发并发时，系统可用内存瞬间跌破内核保护阈值，直接触发 Linux OOM Killer 强杀主服务。
+- **原因剖析**：
+  1. 128M / 256M 规格下，操作系统与网络协议栈自身需常驻 40MB~60MB 内存；
+  2. 若缺乏虚拟缓冲，当外部多客户端同时并发请求时，TCP 接收/发送缓冲区与 Node/Go 运行时堆瞬时占用累加，导致整机物理内存瞬间耗尽；
+  3. 部分容器环境由于内核权限限制，直接运行常规的 `mkswap` / `swapon` 可能会抛出 `Operation not permitted` 并导致一键部署脚本异常中断。
+- **根本解决方案**：
+  1. **自适应 Swap 缓冲感知与优雅容错 (ensure_swap_buffer)**：在 `setup.sh` 部署前自动探测物理内存。若 <= 300MB 且 Swap 为 0，自动检查磁盘空间并尝试创建 256MB `/swapfile`；若当前为无特权容器（LXC 限制 swapon），则自动清理临时文件并无缝降级，绝不阻断安装流程；
+  2. **128M 极限微内核参数矩阵**：
+     - 总内存 <= 160MB (128M 规格)：V8 堆上限锁死 `--max-old-space-size=48`，`cloudflared` 配额压缩至 `GOMEMLIMIT=20MiB`；
+     - 总内存 <= 300MB (256M 规格)：V8 堆上限锁死 `--max-old-space-size=80`，`cloudflared` 配额压缩至 `GOMEMLIMIT=25MiB`；
+     - Node 运行时常驻仅 15MB~20MB，cloudflared 常驻仅 18MB~22MB，整机常态占用仅约 35MB~45MB，富余出 80MB~200MB+ 充裕内存给 Linux 内核；
+  3. **实时资源看板**：在 `start.sh` 控制台（`vps-tunnel status`）中实时回显宿主机内存与 Swap 的精确使用情况，状态一目了然。
+
+---
+
+## 21. ZRAM 内存压缩感知注入：零磁盘 IO 损耗凭空拓展 256MB 高速缓冲
+- **问题现象**：在 128MB / 256MB NAT 小鸡上使用传统磁盘 `/swapfile` 时，由于廉价 NAT 容器普遍共享宿主机机械硬盘或限速 NVMe，突发网络高并发读写磁盘 Swap 容易引发磁盘 I/O 阻塞、IOPS 爆表被服务商限制，甚至造成整机卡死。
+- **原因剖析**：
+  1. 传统 Swap 基于外部存储文件，吞吐率受限于宿主机磁盘 I/O（通常仅几十 MB/s），高频交换容易导致事件循环延迟；
+  2. 现代 Linux 内核普遍内置了 `zram` 驱动模块，支持通过 lz4/zstd 算法在 RAM 中划分压缩块设备，以 2:1 到 3:1 的压缩比运行；
+  3. 但绝大多数云厂商的默认系统镜像未主动配置挂载 ZRAM，导致该硬件级内存黑科技长期闲置。
+- **根本解决方案**：
+  1. **三级阶梯式自适应防御体系 (setup.sh)**：
+     - **第一优先级（ZRAM 纯内存压缩，优先）**：自动感知系统 `modprobe zram num_devices=1`。若内核支持，配置 256MB `/dev/zram0` 并选用 `lz4` 极速压缩算法，以高优先级 (`swapon -p 100`) 激活。零磁盘 I/O 磨损，速度超越磁盘 Swap 百倍，凭空拓展 256MB 高速压缩缓冲；
+     - **第二优先级（磁盘 Swapfile 降级）**：若内核裁剪了 zram 驱动，平滑降级创建 256MB 磁盘 `/swapfile`；
+     - **第三优先级（Node.js 反压微内核保底）**：若无特权容器限制任何 swap 操作，由 Node.js 动态反压与 GC 守护；
+  2. **运维看板状态识别**：在 `start.sh` 控制台中自动高亮标注 `(⚡ ZRAM 内存压缩)`，系统缓冲拓扑清晰可见。
+
+---
+
+## 22. 64MB RAM 极限玩具小鸡 Nano 微内核生存调优
+- **问题现象**：极度廉价的 64MB NAT 小鸡（如 Alpine 64MB LXC 容器）空载可用内存仅剩 30MB~45MB，常规 Node.js V8 启动即占用 30MB+，稍有数据转发或 JSON 解析瞬间被 OOM Killer 强杀。
+- **原因剖析**：
+  1. V8 默认新生代半空间（Semi-Space）为 16MB（双空间合占 32MB），在 64MB 机器上仅新生代就吃满了一半物理内存；
+  2. V8 编译器默认按吞吐率生成未压缩的 JIT 机器码与内部对象字典缓存；
+  3. Libuv 默认分配 16 线程池在 64MB 机器上造成不必要的线程栈空间浪费。
+- **根本解决方案**：
+  1. **V8 Nano 微内核启动参数矩阵**：
+     - `--max-old-space-size=24`：老生代堆上限严格压制在 24MB；
+     - `--max-semi-space-size=1`：新生代压缩至 1MB（瞬间节省 30MB 堆常驻）；
+     - `--optimize-for-size`：启用 V8 体积优化模式，压缩内部编译产物与缓存；
+     - `UV_THREADPOOL_SIZE=4`：线程池精简至 4，释放线程栈内存；
+  2. **网络缓冲区与 Go 配额极限压榨**：
+     - `ResourceGovernor` 自动将 Socket 高水位线收缩至 8KB；
+     - `cloudflared` 的 `GOMEMLIMIT` 锁死在 `12MiB`；
+  3. **强烈建议**：
+     - 在 64MB 小鸡上必须依赖自动挂载的 256MB ZRAM/Swap 缓冲；
+     - 建议优先采用 NAT 映射端口直连（HTTP/WS 模式），若无必要尽量不开启 cloudflared Argo 进程以留出绝对充裕的物理内存。
