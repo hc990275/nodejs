@@ -202,13 +202,35 @@ fi
 NODE_VER=$(node -v)
 echo -e "${GREEN}✅ Node.js 运行环境已就绪: ${NODE_VER}${PLAIN}"
 
+# 预先检查并加速拉取 cloudflared 隧道守护组件 (避免启动后在后台长时间下载)
+if ! command -v cloudflared >/dev/null 2>&1 && [ ! -f "${INSTALL_DIR}/cloudflared" ]; then
+    echo -e "${YELLOW}正在预装 Cloudflare 隧道组件 (cloudflared)...${PLAIN}"
+    mkdir -p "${INSTALL_DIR}"
+    ARCH="amd64"
+    case "$(uname -m)" in
+        x86_64|amd64) ARCH="amd64" ;;
+        aarch64|arm64) ARCH="arm64" ;;
+        armv7l|armhf) ARCH="arm" ;;
+    esac
+    CF_URLS="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH} https://pkg.cloudflare.com/cloudflared/latest/cloudflared-linux-${ARCH} https://ghfast.top/https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH} https://mirror.ghproxy.com/https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}"
+    for u in $CF_URLS; do
+        if curl -fsSL --connect-timeout 8 -m 35 "$u" -o "${INSTALL_DIR}/cloudflared" 2>/dev/null; then
+            if [ -s "${INSTALL_DIR}/cloudflared" ] && [ $(wc -c <"${INSTALL_DIR}/cloudflared") -gt 10000000 ]; then
+                chmod +x "${INSTALL_DIR}/cloudflared"
+                echo -e "${GREEN}✅ cloudflared 极速预装成功！${PLAIN}"
+                break
+            fi
+        fi
+    done
+fi
+
 # 2. 创建安装目录并部署文件
 echo -e "${YELLOW}[2/5] 部署应用文件至 ${INSTALL_DIR}...${PLAIN}"
 mkdir -p "${INSTALL_DIR}/data"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
 RAW_URL="https://raw.githubusercontent.com/hc990275/nodejs/main/vps-nodejs"
-GH_PROXY="https://gh-proxy.net/${RAW_URL}"
+GH_PROXY="https://ghfast.top/${RAW_URL}"
 
 # 探测本地文件是否存在；若不存在（例如通过 curl 管道直接执行），则从远程高速拉取
 if [ -f "${SCRIPT_DIR}/index.js" ]; then

@@ -377,27 +377,30 @@ async function autoFetchCloudflared(destPath) {
     argoStatus = 'downloading';
 
     const arch = process.arch === 'arm64' ? 'arm64' : 'amd64';
-    console.log(`[Argo] 🌐 检测到新环境无 ./cloudflared，准备自动匹配 (linux-${arch}) 进行静默下载...`);
+    console.log(`[Argo] 🌐 检测到新环境无 ./cloudflared，准备自动匹配 (linux-${arch}) 进行静默极速下载...`);
 
+    // 智能双轨源：优先官方全球静态高速源，次选稳定加速镜像，彻底剔除已失效卡顿的 ghproxy.net
     const downloadCandidates = [
-        `https://ghproxy.net/https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}`,
-        `https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}`
+        `https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}`,
+        `https://pkg.cloudflare.com/cloudflared/latest/cloudflared-linux-${arch}`,
+        `https://ghfast.top/https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}`,
+        `https://mirror.ghproxy.com/https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}`
     ];
 
     const tmpFile = destPath + '.tmp.' + Date.now();
     let success = false;
 
-    // 先尝试系统自带的 curl 命令（若宿主环境具备 curl 则速度极快且稳健）
+    // 先尝试系统自带的 curl 命令 (若宿主环境具备 curl 则速度极快且稳健，设置 8 秒连接超时)
     try {
         const { execSync } = require('child_process');
         for (const dlUrl of downloadCandidates) {
             try {
                 console.log(`[Argo] 尝试通过系统 curl 下载: ${dlUrl}`);
-                execSync(`curl -L -s --connect-timeout 15 -m 120 "${dlUrl}" -o "${tmpFile}"`, { stdio: 'ignore' });
+                execSync(`curl -L -s --connect-timeout 8 -m 35 "${dlUrl}" -o "${tmpFile}"`, { stdio: 'ignore' });
                 if (fs.existsSync(tmpFile) && fs.statSync(tmpFile).size > 10 * 1024 * 1024) {
                     fs.renameSync(tmpFile, destPath);
                     success = true;
-                    console.log(`[Argo] ✅ curl 下载完成并通过校验！`);
+                    console.log(`[Argo] ✅ curl 极速下载完成并通过校验！`);
                     break;
                 }
             } catch (ce) {}
@@ -490,12 +493,12 @@ async function startArgoTunnel(token) {
 
     try {
         argoStatus = 'starting';
-        // 🚀 注入极致抗丢包与传输加速: QUIC (HTTP/3 over UDP) 极速模式
+        // 🚀 注入毫秒级极速自适应协议 (auto: 智能探测并瞬间建立握手，杜绝纯 quic 在受限网络下的卡顿)
         const cfArgs = [
             'tunnel',
             '--no-autoupdate',
             'run',
-            '--protocol', 'quic',
+            '--protocol', 'auto',
             '--token', token.trim()
         ];
         const goMemLimit = (governor && governor.totalMemory <= 80 * 1024 * 1024) ? '12MiB' : ((governor && governor.totalMemory <= 160 * 1024 * 1024) ? '20MiB' : (governor && governor.totalMemory <= 256 * 1024 * 1024 ? '25MiB' : '40MiB'));
@@ -5596,20 +5599,13 @@ function renderAdminDashboardPage() {
                     ];
                     term.innerText = logLines.join(String.fromCharCode(10));
 
-                    // 回显配置
-                    document.getElementById('cfg_allowRegister').value = String(currentSettings.allowRegister !== false);
-                    document.getElementById('cfg_defaultDays').value = currentSettings.defaultDays || 365;
-                    document.getElementById('cfg_defaultTrafficGB').value = currentSettings.defaultTrafficGB || 100;
-                    document.getElementById('cfg_ipRegisterCooldownSec').value = currentSettings.ipRegisterCooldownSec !== undefined ? currentSettings.ipRegisterCooldownSec : 60;
-                    document.getElementById('cfg_ipDailyRegisterLimit').value = currentSettings.ipDailyRegisterLimit !== undefined ? currentSettings.ipDailyRegisterLimit : 3;
-                    const isPlaceholder = !currentSettings.subDomain || currentSettings.subDomain.includes('example.com') || currentSettings.subDomain.includes('example.org');
-                    document.getElementById('cfg_subDomain').value = isPlaceholder ? (geo.ip || '') : currentSettings.subDomain;
-                    document.getElementById('cfg_subApi').value = currentSettings.subApi || 'local';
-                    document.getElementById('cfg_subConfig').value = currentSettings.subConfig || '';
-                    document.getElementById('cfg_argoToken').value = currentSettings.argoToken || '';
-                    document.getElementById('cfg_argoDomain').value = currentSettings.argoDomain || '';
+                    // 🚀 核心防覆盖机制：表单数据仅在页面初次载入或用户主动保存时回显，轮询时坚决不重置输入框！
+                    if (!isFormInitialized) {
+                        populateSettingsForm(currentSettings, geo, false);
+                        isFormInitialized = true;
+                    }
 
-                    // Argo 隧道状态徽标与适配 CF 新规智能引导框
+                    // Argo 隧道状态徽标与适配 CF 新规智能引导框 (只读状态更新，不触碰任何输入框)
                     const argoStatus = data.argoStatus || 'stopped';
                     const argoBadge = document.getElementById('argoRuntimeStatusBadge');
                     const guideBox = document.getElementById('argoStepGuideBox');
@@ -5669,32 +5665,65 @@ function renderAdminDashboardPage() {
                         }
                     }
 
-                    document.getElementById('cfg_enableDirectNode').checked = currentSettings.enableDirectNode === true;
-                    document.getElementById('cfg_autoSyncWetest').checked = currentSettings.autoSyncWetest !== false;
-                    document.getElementById('cfg_enableOptOfficial').checked = currentSettings.enableOptOfficial !== false;
-                    document.getElementById('cfg_enableOptCT').checked = currentSettings.enableOptCT !== false;
-                    document.getElementById('cfg_enableOptCU').checked = currentSettings.enableOptCU !== false;
-                    document.getElementById('cfg_enableOptCM').checked = currentSettings.enableOptCM !== false;
-
-                    document.getElementById('cfg_optOfficialIp').value = currentSettings.optOfficialIp || '';
-                    document.getElementById('cfg_optCTIp').value = currentSettings.optCTIp || '';
-                    document.getElementById('cfg_optCUIp').value = currentSettings.optCUIp || '';
-                    document.getElementById('cfg_optCMIp').value = currentSettings.optCMIp || '';
-
-                    document.getElementById('cfg_enableCustomDomains').checked = currentSettings.enableCustomDomains === true;
-                    document.getElementById('cfg_customDomainsText').value = currentSettings.customDomainsText || '';
-                    updateCustomDomainsCount();
-
-                    // 🚀 CM佬 API 回显
-                    document.getElementById('cfg_enableOptCMApi').checked = currentSettings.enableOptCMApi !== false;
-                    document.getElementById('cfg_cmApiCountCT').value = currentSettings.cmApiCountCT || 6;
-                    document.getElementById('cfg_cmApiCountCU').value = currentSettings.cmApiCountCU || 8;
-                    document.getElementById('cfg_cmApiCountCM').value = currentSettings.cmApiCountCM || 8;
-                    document.getElementById('cm_sync_time_text').innerText = currentSettings.cmApiSyncTime || '未同步';
+                    if (document.getElementById('cm_sync_time_text')) {
+                        document.getElementById('cm_sync_time_text').innerText = currentSettings.cmApiSyncTime || '未同步';
+                    }
                 }
             } catch (err) {
                 console.error(err);
             }
+        }
+
+        // 🛡️ 独立安全的表单填充函数：只在初次加载或主动点击保存后执行，若用户正在编辑则绝对不吞噬输入
+        var isFormInitialized = false;
+        function populateSettingsForm(s, geo, force = false) {
+            if (!s) return;
+            function safeSetVal(id, val) {
+                var el = document.getElementById(id);
+                if (!el) return;
+                // 若用户当前正聚焦在此输入框打字，坚决不覆盖
+                if (document.activeElement === el) return;
+                el.value = val;
+            }
+            function safeSetChecked(id, checked) {
+                var el = document.getElementById(id);
+                if (!el) return;
+                if (document.activeElement === el) return;
+                el.checked = checked;
+            }
+
+            safeSetVal('cfg_allowRegister', String(s.allowRegister !== false));
+            safeSetVal('cfg_defaultDays', s.defaultDays || 365);
+            safeSetVal('cfg_defaultTrafficGB', s.defaultTrafficGB || 100);
+            safeSetVal('cfg_ipRegisterCooldownSec', s.ipRegisterCooldownSec !== undefined ? s.ipRegisterCooldownSec : 60);
+            safeSetVal('cfg_ipDailyRegisterLimit', s.ipDailyRegisterLimit !== undefined ? s.ipDailyRegisterLimit : 3);
+            const isPlaceholder = !s.subDomain || s.subDomain.includes('example.com') || s.subDomain.includes('example.org');
+            safeSetVal('cfg_subDomain', isPlaceholder ? ((geo && geo.ip) || '') : s.subDomain);
+            safeSetVal('cfg_subApi', s.subApi || 'local');
+            safeSetVal('cfg_subConfig', s.subConfig || '');
+            safeSetVal('cfg_argoToken', s.argoToken || '');
+            safeSetVal('cfg_argoDomain', s.argoDomain || '');
+
+            safeSetChecked('cfg_enableDirectNode', s.enableDirectNode === true);
+            safeSetChecked('cfg_autoSyncWetest', s.autoSyncWetest !== false);
+            safeSetChecked('cfg_enableOptOfficial', s.enableOptOfficial !== false);
+            safeSetChecked('cfg_enableOptCT', s.enableOptCT !== false);
+            safeSetChecked('cfg_enableOptCU', s.enableOptCU !== false);
+            safeSetChecked('cfg_enableOptCM', s.enableOptCM !== false);
+
+            safeSetVal('cfg_optOfficialIp', s.optOfficialIp || '');
+            safeSetVal('cfg_optCTIp', s.optCTIp || '');
+            safeSetVal('cfg_optCUIp', s.optCUIp || '');
+            safeSetVal('cfg_optCMIp', s.optCMIp || '');
+
+            safeSetChecked('cfg_enableCustomDomains', s.enableCustomDomains === true);
+            safeSetVal('cfg_customDomainsText', s.customDomainsText || '');
+            if (typeof updateCustomDomainsCount === 'function') updateCustomDomainsCount();
+
+            safeSetChecked('cfg_enableOptCMApi', s.enableOptCMApi !== false);
+            safeSetVal('cfg_cmApiCountCT', s.cmApiCountCT || 6);
+            safeSetVal('cfg_cmApiCountCU', s.cmApiCountCU || 8);
+            safeSetVal('cfg_cmApiCountCM', s.cmApiCountCM || 8);
         }
 
         // 🚀 微秒级健康心跳与桥接探针检测器
@@ -6305,7 +6334,7 @@ function renderAdminDashboardPage() {
                     return;
                 }
 
-                // 启动轮询探测检查，最多轮询 8 次 (每 1.5 秒一次)
+                // 启动极速轮询探测检查 (每 800ms 一次，最长 15 次共 12 秒)
                 var attempts = 0;
                 var pollInterval = setInterval(async function() {
                     attempts++;
@@ -6327,15 +6356,20 @@ function renderAdminDashboardPage() {
                                 fetchStatus();
                                 alert('⚠️ 隧道启动异常: ' + (statusData.argoLastLog || '请检查 Token 是否有效'));
                                 return;
+                            } else if (statusData.argoStatus === 'downloading') {
+                                if (hint) hint.innerText = '⏳ 正在极速匹配下载 cloudflared 组件...';
+                            } else if (statusData.argoStatus === 'starting') {
+                                if (hint) hint.innerText = '⏳ 正在与 Cloudflare 边缘节点握手 (' + attempts + ')...';
                             }
                         }
                     } catch (_) {}
-                    if (attempts >= 8) {
+                    if (attempts >= 15) {
                         clearInterval(pollInterval);
                         if (btn) { btn.disabled = false; btn.innerText = origText; }
+                        if (hint) hint.innerText = '⚠️ 握手仍在建立中，请稍候观察徽标';
                         fetchStatus();
                     }
-                }, 1500);
+                }, 800);
 
             } catch (err) {
                 alert('网络请求异常: ' + err.message);
