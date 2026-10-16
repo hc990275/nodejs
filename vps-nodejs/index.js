@@ -6184,8 +6184,8 @@ function renderAdminDashboardPage() {
             val = val.trim();
             const match = val.match(/eyJh[A-Za-z0-9_-]+/);
             if (match) return match[0];
-            val = val.replace(/^(?:sudo\s+)?cloudflared(?:\.exe)?\s+(?:service\s+install|tunnel\s+run\s+--token)\s+["']?/i, '');
-            val = val.replace(/["']?\s*$/, '');
+            val = val.replace(/^(?:sudo[ \t]+)?cloudflared(?:\.exe)?[ \t]+(?:service[ \t]+install|tunnel[ \t]+run[ \t]+--token)[ \t]+["']?/i, '');
+            val = val.replace(/["']?[ \t]*$/, '');
             return val.trim();
         }
 
@@ -6201,12 +6201,17 @@ function renderAdminDashboardPage() {
             setTimeout(function() { handleArgoTokenInput(el); }, 10);
         }
 
-        // 🌐 前端 Argo 域名智能清洗提取器：自动剔除协议前缀、斜杠路径与端口
+        // 🌐 前端 Argo 域名智能清洗提取器：自动剔除协议前缀、斜杠路径与端口 (纯字符串操作，杜绝模板字符串转义异常)
         function cleanArgoDomain(val) {
             if (!val || typeof val !== 'string') return '';
-            let d = val.trim();
-            d = d.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').replace(/:\d+$/, '').trim();
-            return d;
+            var d = val.trim();
+            if (d.toLowerCase().indexOf('https://') === 0) d = d.substring(8);
+            if (d.toLowerCase().indexOf('http://') === 0) d = d.substring(7);
+            var slashIdx = d.indexOf('/');
+            if (slashIdx !== -1) d = d.substring(0, slashIdx);
+            var colonIdx = d.indexOf(':');
+            if (colonIdx !== -1) d = d.substring(0, colonIdx);
+            return d.trim();
         }
 
         function handleArgoDomainBlur(el) {
