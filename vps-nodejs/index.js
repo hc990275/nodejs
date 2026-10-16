@@ -678,30 +678,25 @@ function getFlagEmoji(countryCode) {
     return String.fromCodePoint(...codePoints);
 }
 
-const cityTranslate = {
-    'phoenix': '凤凰城', 'los angeles': '洛杉矶', 'san jose': '圣何塞',
-    'san francisco': '旧金山', 'seattle': '西雅图', 'new york': '纽约',
-    'chicago': '芝加哥', 'dallas': '达拉斯', 'tokyo': '东京',
-    'osaka': '大阪', 'hong kong': '香港', 'singapore': '新加坡',
-    'london': '伦敦', 'frankfurt': '法兰克福', 'paris': '巴黎',
-    'amsterdam': '阿姆斯特丹', 'seoul': '首尔', 'sydney': '悉尼',
-    'jakarta': '雅加达', 'taipei': '台北', 'bangkok': '曼谷',
-    'kuala lumpur': '吉隆坡', 'mumbai': '孟买', 'toronto': '多伦多'
-};
-
-const countryTranslate = {
-    'US': '美国', 'HK': '香港', 'TW': '台湾', 'JP': '日本', 'SG': '新加坡',
-    'KR': '韩国', 'DE': '德国', 'GB': '英国', 'FR': '法国', 'CA': '加拿大',
-    'AU': '澳大利亚', 'NL': '荷兰', 'RU': '俄罗斯', 'IN': '印度', 'TH': '泰国',
-    'ID': '印度尼西亚', 'MY': '马来西亚', 'VN': '越南', 'PH': '菲律宾',
-    'TR': '土耳其', 'BR': '巴西', 'ZA': '南非', 'AE': '阿联酋'
-};
+// 自动将国家代码转为地道中文 (Node.js 原生国际化标准，零硬编码字典)
+function getRegionChineseName(countryCode) {
+    if (!countryCode) return '';
+    try {
+        const regionNames = new Intl.DisplayNames(['zh-CN'], { type: 'region' });
+        return regionNames.of(countryCode.toUpperCase()) || '';
+    } catch (_) {
+        return '';
+    }
+}
 
 // 提取友好的服务器归属国家与地区标题 (绝不硬编码 VPS-Tunnel)
 function getServerGeoTitle() {
     let parts = [];
     if (serverGeo.country) parts.push(serverGeo.country);
-    if (serverGeo.city && serverGeo.city !== serverGeo.country) parts.push(serverGeo.city);
+    if (serverGeo.city && serverGeo.city !== serverGeo.country) {
+        const cleanCity = serverGeo.city.replace(/特别市|直辖市|市$/g, '') || serverGeo.city;
+        parts.push(cleanCity);
+    }
     const loc = parts.join('·');
     const flag = (serverGeo.flag && serverGeo.flag !== '🌐') ? serverGeo.flag + ' ' : '';
     if (loc) return `${flag}${loc}`;
@@ -711,7 +706,8 @@ function getServerGeoTitle() {
 async function autoDetectServerGeo() {
     try {
         const httpLib = require('http');
-        const req = httpLib.get('http://ip-api.com/json/?fields=status,country,countryCode,city,query,isp', { timeout: 6000 }, (res) => {
+        // 🚀 lang=zh-CN 直接请求官方原生中文地理数据，实现全自动探测，杜绝在代码里硬编码字典
+        const req = httpLib.get('http://ip-api.com/json/?lang=zh-CN&fields=status,country,countryCode,city,query,isp', { timeout: 6000 }, (res) => {
             let data = '';
             res.on('data', chunk => data += chunk);
             res.on('end', () => {
@@ -721,9 +717,9 @@ async function autoDetectServerGeo() {
                         serverGeo.ip = json.query;
                         serverGeo.countryCode = json.countryCode || '';
                         serverGeo.flag = getFlagEmoji(serverGeo.countryCode);
-                        serverGeo.country = countryTranslate[serverGeo.countryCode] || json.country || '海外';
-                        const lowerCity = (json.city || '').toLowerCase();
-                        serverGeo.city = cityTranslate[lowerCity] || json.city || '';
+                        // 优先使用 API 原生返回的中文国家名，其次使用 Node.js 原生 Intl.DisplayNames 兜底
+                        serverGeo.country = json.country || getRegionChineseName(serverGeo.countryCode) || '海外';
+                        serverGeo.city = json.city || '';
                         serverGeo.isp = json.isp || '';
                         console.log(`[GeoIP] 🌐 自动探测服务器公网身份: ${serverGeo.flag} ${serverGeo.country}·${serverGeo.city} (IP: ${serverGeo.ip})`);
                         if (!siteSettings.subDomain || isPlaceholderDomain(siteSettings.subDomain)) {
@@ -5492,7 +5488,10 @@ function renderAdminDashboardPage() {
                     if (geo.country || geo.city) {
                         let parts = [];
                         if (geo.country) parts.push(geo.country);
-                        if (geo.city && geo.city !== geo.country) parts.push(geo.city);
+                        if (geo.city && geo.city !== geo.country) {
+                            const cleanCity = geo.city.replace(/特别市|直辖市|市$/g, '') || geo.city;
+                            parts.push(cleanCity);
+                        }
                         const loc = parts.join('·');
                         const flag = (geo.flag && geo.flag !== '🌐') ? geo.flag + ' ' : '';
                         const dynTitle = (flag + loc).trim() || '节点';
