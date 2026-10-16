@@ -59,14 +59,19 @@ ensure_swap_buffer() {
         fi
     fi
     if [ "$DETECTED_MEM_KB" -eq 0 ] && [ -f /proc/meminfo ]; then
-        DETECTED_MEM_KB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}')
+        DETECTED_MEM_KB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}' | tr -cd '0-9')
     fi
+    case "$DETECTED_MEM_KB" in
+        ''|*[!0-9]*) DETECTED_MEM_KB=0 ;;
+    esac
 
     local SWAP_TOTAL_KB=0
     if [ -f /proc/meminfo ]; then
-        SWAP_TOTAL_KB=$(grep SwapTotal /proc/meminfo 2>/dev/null | awk '{print $2}' || echo 0)
+        SWAP_TOTAL_KB=$(grep SwapTotal /proc/meminfo 2>/dev/null | awk '{print $2}' | tr -cd '0-9' || echo 0)
     fi
-    SWAP_TOTAL_KB=${SWAP_TOTAL_KB:-0}
+    case "$SWAP_TOTAL_KB" in
+        ''|*[!0-9]*) SWAP_TOTAL_KB=0 ;;
+    esac
 
     # 当总内存 <= 600MB (涵盖 128MB / 256MB / 512MB 规格) 且未配置任何 Swap 时尝试创建
     if [ "$DETECTED_MEM_KB" -gt 0 ] && [ "$DETECTED_MEM_KB" -le 614400 ] && [ "$SWAP_TOTAL_KB" -le 10240 ]; then
@@ -105,7 +110,12 @@ ensure_swap_buffer() {
         # 🚀 第二优先级防御: 若系统未开启 ZRAM 模块，降级尝试创建常规磁盘 /swapfile 虚拟缓冲
         if [ "$ZRAM_ACTIVATED" = "false" ]; then
             local NEED_DISK_KB=$(( SWAP_SIZE_MB * 1024 + 150000 ))
-            local DISK_FREE_KB=$(df -k / 2>/dev/null | tail -n 1 | awk '{print $4}' || echo 0)
+            # 兼容各类 Linux / Busybox / Alpine 系统的 df 输出，精确定位百分比(%)前一列的可用容量，并滤除所有非数字字符
+            local DISK_FREE_KB=$(df -k -P / 2>/dev/null | awk 'NR>1 {for(i=1;i<=NF;i++) if($i ~ /%/) {print $(i-1); exit}}' | tr -cd '0-9')
+            case "$DISK_FREE_KB" in
+                ''|*[!0-9]*) DISK_FREE_KB=0 ;;
+            esac
+
             if [ "$DISK_FREE_KB" -gt "$NEED_DISK_KB" ]; then
                 echo -e "${CYAN}系统未预置 ZRAM 模块，正在降级尝试创建 ${SWAP_SIZE_MB}MB 磁盘 Swap 虚拟缓冲 (/swapfile)...${PLAIN}"
                 if command -v fallocate >/dev/null 2>&1; then
@@ -129,7 +139,8 @@ ensure_swap_buffer() {
                     fi
                 fi
             else
-                echo -e "${YELLOW}💡 磁盘剩余空间较紧凑 ($(( DISK_FREE_KB / 1024 ))MB)，跳过自动创建 Swap。${PLAIN}"
+                local DISK_FREE_MB=$(( DISK_FREE_KB / 1024 ))
+                echo -e "${YELLOW}💡 磁盘剩余空间较紧凑 (${DISK_FREE_MB}MB)，跳过自动创建 Swap。${PLAIN}"
             fi
         fi
     fi
