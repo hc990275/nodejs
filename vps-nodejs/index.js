@@ -303,14 +303,26 @@ function updateEnvFile(updates) {
 }
 
 
-// ==========================================
-// ==========================================
 // 2.1 Cloudflare Argo 隧道智能感知与守护引擎
 // ==========================================
 // 核心逻辑：
 // 1. 本地已有合法程序 -> 绝不重复下载，0毫秒直接启动；
 // 2. 换服务器/新环境无程序 -> 自动探测 CPU/OS 架构，静默下载高速二进制并赋权运行；
 // 3. 进程异常退出 -> 自动拉起自愈，无缝保障隧道高可用。
+
+// 🚀 通用 Argo Token 纯化过滤器：自动去除 Windows / Linux 下复制的 cloudflared.exe service install 命令前缀
+function cleanArgoToken(token) {
+    if (!token || typeof token !== 'string') return '';
+    let val = token.trim();
+    // 优先提取从 eyJh 开始的标准 Base64 JWT 字符串
+    const match = val.match(/eyJh[A-Za-z0-9_-]+/);
+    if (match) return match[0];
+    // 容错：剔除常见的服务安装或运行命令前缀与引号
+    val = val.replace(/^(?:sudo\s+)?cloudflared(?:\.exe)?\s+(?:service\s+install|tunnel\s+run\s+--token)\s+["']?/i, '');
+    val = val.replace(/["']?\s*$/, '');
+    return val.trim();
+}
+
 let argoProcess = null;
 let argoStatus = 'stopped'; // 'connected', 'running', 'downloading', 'stopped', 'error', 'reconnecting'
 let argoLastLog = '';
@@ -409,6 +421,7 @@ async function autoFetchCloudflared(destPath) {
 
 async function startArgoTunnel(token) {
     isManualStoppingArgo = false;
+    token = cleanArgoToken(token);
     if (argoRestartTimer) { clearTimeout(argoRestartTimer); argoRestartTimer = null; }
     if (!token || token.trim() === '') {
         stopArgoTunnel();
@@ -2708,7 +2721,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
 
                 // 3. Cloudflare Argo 隧道配置
                 if (data.argoToken !== undefined) {
-                    siteSettings.argoToken = data.argoToken.trim();
+                    siteSettings.argoToken = cleanArgoToken(data.argoToken);
                     envUpdates.ARGO_TOKEN = siteSettings.argoToken;
                 }
                 if (data.argoDomain !== undefined) {
@@ -4932,7 +4945,7 @@ function renderAdminDashboardPage() {
                                 <th class="col-desktop" style="width:100px;">到期时间</th>
                                 <th class="col-desktop" style="width:80px;">状态</th>
                                 <th class="col-mobile-online sortable" style="width:85px; text-align:center;" onclick="toggleUserSort('onlineConns')" id="th_sort_onlineConns" title="点击切换在线连接正序/降序">在线 <span class="sort-icon" id="icon_sort_onlineConns">⇅</span></th>
-                                <th class="col-desktop" style="min-width:220px;">运维与设置</th>
+                                <th class="col-desktop" style="min-width:280px;">运维与设置</th>
                             </tr>
                         </thead>
                         <tbody id="usersTbody">
@@ -5119,8 +5132,8 @@ function renderAdminDashboardPage() {
                     </div>
                     <div class="form-row">
                         <label>Cloudflare Argo 隧道 Token (ARGO_TOKEN)</label>
-                        <textarea id="cfg_argoToken" rows="3" placeholder="在此粘贴 Cloudflare 零信任面板 (Zero Trust) 生成的 Tunnel Token (以 eyJh 开头)" style="font-family:Consolas, monospace; font-size:12px;"></textarea>
-                        <span style="font-size:11px; color:#64748b; margin-top:4px; display:block;">保存后自动落盘到 settings.json 与 .env 文件。</span>
+                        <textarea id="cfg_argoToken" rows="3" placeholder="在此粘贴 Cloudflare 零信任面板 (Zero Trust) 生成的 Tunnel Token (以 eyJh 开头)" style="font-family:Consolas, monospace; font-size:12px;" oninput="handleArgoTokenInput(this)" onpaste="handleArgoTokenPaste(event, this)"></textarea>
+                        <span style="font-size:11px; color:#16a34a; margin-top:4px; display:block;">💡 支持直接粘贴整条 cloudflared.exe service install 命令，系统将自动识别提取纯 Token；保存后自动落盘到 settings.json 与 .env 文件。</span>
                     </div>
                     <div class="form-row" style="margin-bottom:0;">
                         <label>Argo 隧道穿透主域名 (ARGO_DOMAIN)</label>
@@ -5340,6 +5353,7 @@ function renderAdminDashboardPage() {
             </div>
             <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-top:20px; flex-wrap:wrap;">
                 <div style="display:flex; gap:6px;">
+                    <button type="button" class="btn btn-sm" style="background:#eff6ff; color:#2563eb; border:1px solid #bfdbfe; font-weight:600;" onclick="copyUserSubLink(document.getElementById('edit_orig_uuid').value, document.getElementById('edit_username').value)">🔗 复制订阅链接</button>
                     <button type="button" class="btn btn-sm" onclick="renewUserFromModal()">⏳ +30天</button>
                     <button type="button" class="btn btn-sm btn-danger" onclick="deleteUserFromModal()">🗑️ 删除</button>
                 </div>
@@ -5882,6 +5896,7 @@ function renderAdminDashboardPage() {
                     '<td class="col-mobile-online" style="text-align:center;">' + connBadge + '</td>' +
                     // 8. 运维按钮（手机端隐藏）
                     '<td class="col-desktop"><div style="display:flex; gap:4px; flex-wrap:nowrap;">' +
+                        '<button class="btn btn-sm" style="background:#eff6ff; color:#2563eb; border:1px solid #bfdbfe; font-weight:600;" data-uuid="' + u.uuid + '" data-name="' + (u.username || '') + '" onclick="copyUserSubLink(this.dataset.uuid, this.dataset.name)" title="一键复制该用户的专属订阅链接">🔗 订阅</button>' +
                         '<button class="btn btn-sm btn-primary" data-uuid="' + u.uuid + '" onclick="openEditUserModal(this.dataset.uuid)">✏️ 设置</button>' +
                         '<button class="btn btn-sm" data-uuid="' + u.uuid + '" onclick="toggleBan(this.dataset.uuid)">' + banBtnText + '</button>' +
                         '<button class="btn btn-sm" data-uuid="' + u.uuid + '" onclick="renewUser(this.dataset.uuid)">⏳ +30天</button>' +
@@ -6023,6 +6038,44 @@ function renderAdminDashboardPage() {
             }
         }
 
+        // 🔗 一键复制任意用户的专属订阅链接
+        function copyUserSubLink(uuid, username) {
+            if (!uuid) return alert('无效用户 UUID');
+            const subUrl = window.location.origin + '/sub?token=' + encodeURIComponent(uuid);
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(subUrl).then(function() {
+                    alert('✅ 用户 [' + (username || uuid.substring(0, 8)) + '] 的专属订阅链接已成功复制到剪贴板！\n\n' + subUrl);
+                }).catch(function() {
+                    prompt('请按 Ctrl+C 复制该用户的专属订阅链接:', subUrl);
+                });
+            } else {
+                prompt('请按 Ctrl+C 复制该用户的专属订阅链接:', subUrl);
+            }
+        }
+
+        // ⚡ 前端 Argo Token 智能清洗提取器：自动剥离 cloudflared.exe service install 命令前缀
+        function cleanArgoToken(val) {
+            if (!val || typeof val !== 'string') return '';
+            val = val.trim();
+            const match = val.match(/eyJh[A-Za-z0-9_-]+/);
+            if (match) return match[0];
+            val = val.replace(/^(?:sudo\s+)?cloudflared(?:\.exe)?\s+(?:service\s+install|tunnel\s+run\s+--token)\s+["']?/i, '');
+            val = val.replace(/["']?\s*$/, '');
+            return val.trim();
+        }
+
+        function handleArgoTokenInput(el) {
+            if (!el) return;
+            const cleaned = cleanArgoToken(el.value);
+            if (cleaned && cleaned !== el.value.trim()) {
+                el.value = cleaned;
+            }
+        }
+
+        function handleArgoTokenPaste(e, el) {
+            setTimeout(function() { handleArgoTokenInput(el); }, 10);
+        }
+
         async function toggleBan(uuid) {
             const res = await fetch('/admin/api/user/toggle-ban', {
                 method: 'POST',
@@ -6144,7 +6197,7 @@ function renderAdminDashboardPage() {
                 subDomain: document.getElementById('cfg_subDomain').value.trim(),
                 subApi: document.getElementById('cfg_subApi').value.trim(),
                 subConfig: document.getElementById('cfg_subConfig').value.trim(),
-                argoToken: document.getElementById('cfg_argoToken').value.trim(),
+                argoToken: cleanArgoToken(document.getElementById('cfg_argoToken').value),
                 argoDomain: document.getElementById('cfg_argoDomain').value.trim(),
                 newAdminPassword: document.getElementById('cfg_newAdminPassword').value.trim()
             };
