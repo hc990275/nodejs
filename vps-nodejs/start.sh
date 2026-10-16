@@ -135,13 +135,16 @@ change_port() {
         printf "${YELLOW}请输入新的服务监听端口 (1-65535): ${PLAIN}"
         read -r new_port
     fi
-    if [ -n "$new_port" ]; then
-        update_env_kv "PORT" "${new_port}"
-        update_env_kv "SERVER_PORT" "${new_port}"
-        echo -e "${GREEN}✅ 端口已变更为 ${new_port}，正在重启服务...${PLAIN}"
+    local clean_port=$(echo "$new_port" | tr -cd '0-9')
+    if [ -n "$clean_port" ] && [ "$clean_port" = "$new_port" ] && [ "$clean_port" -ge 1 ] && [ "$clean_port" -le 65535 ]; then
+        update_env_kv "PORT" "${clean_port}"
+        update_env_kv "SERVER_PORT" "${clean_port}"
+        echo -e "${GREEN}✅ 端口已变更为 ${clean_port}，正在重启服务...${PLAIN}"
         restart_service
         sleep 1
         show_info
+    else
+        echo -e "${RED}[Error] 端口输入非法，必须为 1 到 65535 之间的纯数字！${PLAIN}"
     fi
 }
 
