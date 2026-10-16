@@ -2605,6 +2605,37 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
             });
         }
 
+        // 🚀 Argo 专属独立打通/控制 API: 立即保存并拉起/重启/停止 Cloudflare 隧道
+        if (pathname === '/admin/api/argo/action' && method === 'POST') {
+            readBody(data => {
+                const action = data.action || 'start';
+                if (data.token !== undefined) {
+                    siteSettings.argoToken = cleanArgoToken(data.token);
+                    updateEnvFile({ ARGO_TOKEN: siteSettings.argoToken });
+                }
+                if (data.domain !== undefined) {
+                    siteSettings.argoDomain = cleanArgoDomain(data.domain);
+                    updateEnvFile({ ARGO_DOMAIN: siteSettings.argoDomain });
+                }
+                saveSettings();
+
+                if (action === 'stop') {
+                    stopArgoTunnel();
+                    console.log('[Argo] 🛑 管理员手动停止了 Argo 隧道');
+                    return sendJson({ success: true, message: 'Argo 隧道已成功停止', status: argoStatus });
+                }
+
+                if (!siteSettings.argoToken) {
+                    return sendJson({ error: '请先填入有效的 Argo 隧道 Token' }, 400);
+                }
+
+                console.log('[Argo] 🚀 管理员从面板触发立即打通/重启隧道...');
+                startArgoTunnel(siteSettings.argoToken);
+                return sendJson({ success: true, message: '隧道打通指令已下发，正在与 Cloudflare 边缘网络建立握手...', status: argoStatus });
+            });
+            return;
+        }
+
         // 🚑 一键自愈 API: 查杀冲突孤儿进程、重启 Argo 隧道、复位桥接、回收超时僵尸连接
         if (pathname === '/admin/api/self-heal' && method === 'POST') {
             console.log('[Self-Heal] 🚑 触发一键自愈引擎：清理孤儿进程、重启 Argo 隧道、回收超时长连接...');
@@ -5191,6 +5222,16 @@ function renderAdminDashboardPage() {
                         <input type="text" id="cfg_argoDomain" placeholder="例如: tunnel.yourdomain.com (在 CF 网页点击 Next 绑定后再填入)" onblur="handleArgoDomainBlur(this)" />
                         <span style="font-size:11px; color:#64748b; margin-top:4px; display:block;">💡 说明：CF 隧道 Token 本身不含域名信息，需先连通隧道方可在 CF 网页端设置域名。设置完成后回填至此处，系统将全自动生成 443 直连与三网优选节点！</span>
                     </div>
+
+                    <!-- 专属操作按钮栏：立即打通、刷新状态、断开连接 -->
+                    <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; margin-top:16px; padding-top:14px; border-top:1px dashed #bbf7d0;">
+                        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                            <button type="button" class="btn btn-primary" style="background:#16a34a; border-color:#15803d; padding:8px 18px; font-size:13px; font-weight:700;" id="btn_argo_connect" onclick="triggerArgoAction('start')">🚀 立即打通 / 启动隧道</button>
+                            <button type="button" class="btn btn-secondary" style="padding:8px 14px; font-size:13px; color:#475569;" id="btn_argo_refresh" onclick="fetchHealthProbes(true); fetchStatus();">🔄 刷新连通状态</button>
+                            <button type="button" class="btn btn-secondary" style="padding:8px 14px; font-size:13px; color:#dc2626; border-color:#fecaca;" id="btn_argo_stop" onclick="triggerArgoAction('stop')">🛑 停止/断开</button>
+                        </div>
+                        <span style="font-size:12px; color:#15803d; font-weight:600;" id="argoActionHint">💡 填入上方 Token 后点击「立即打通」，即可全自动握手 Cloudflare 边缘网络！</span>
+                    </div>
                 </div>
 
                 <!-- 注册与默认配额 -->
@@ -6219,6 +6260,84 @@ function renderAdminDashboardPage() {
             const cleaned = cleanArgoDomain(el.value);
             if (cleaned !== el.value) {
                 el.value = cleaned;
+            }
+        }
+
+        async function triggerArgoAction(action) {
+            var rawToken = document.getElementById('cfg_argoToken').value;
+            var token = cleanArgoToken(rawToken);
+            var domain = cleanArgoDomain(document.getElementById('cfg_argoDomain').value);
+            document.getElementById('cfg_argoDomain').value = domain;
+            
+            if (action === 'start' && !token) {
+                return alert('请先在上方输入框粘贴 Cloudflare 零信任面板生成的 Token！');
+            }
+
+            var btn = document.getElementById('btn_argo_connect');
+            var hint = document.getElementById('argoActionHint');
+            var origText = btn ? btn.innerText : '';
+            if (btn && action === 'start') {
+                btn.disabled = true;
+                btn.innerText = '⏳ 正在打通握手中...';
+            }
+            if (hint) hint.innerText = action === 'start' ? '⏳ 正在与 Cloudflare 边缘节点握手...' : '🛑 正在断开隧道...';
+
+            try {
+                var res = await fetch('/admin/api/argo/action', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: action, token: token, domain: domain })
+                });
+                var d = await res.json();
+                if (!res.ok) {
+                    alert('操作失败: ' + (d.error || '未知错误'));
+                    if (btn) { btn.disabled = false; btn.innerText = origText; }
+                    return;
+                }
+
+                if (action === 'stop') {
+                    alert('🛑 Argo 隧道已安全停止！');
+                    if (btn) { btn.disabled = false; btn.innerText = '🚀 立即打通 / 启动隧道'; }
+                    if (hint) hint.innerText = '⚪ 隧道已停止';
+                    fetchStatus();
+                    return;
+                }
+
+                // 启动轮询探测检查，最多轮询 8 次 (每 1.5 秒一次)
+                var attempts = 0;
+                var pollInterval = setInterval(async function() {
+                    attempts++;
+                    try {
+                        var statusRes = await fetch('/admin/api/status?_t=' + Date.now());
+                        if (statusRes.ok) {
+                            var statusData = await statusRes.json();
+                            if (statusData.argoStatus === 'connected') {
+                                clearInterval(pollInterval);
+                                if (btn) { btn.disabled = false; btn.innerText = '🚀 重新打通 / 重启隧道'; }
+                                if (hint) hint.innerText = '🟢 隧道已成功握手连通！';
+                                fetchStatus();
+                                alert('🎉 Cloudflare 隧道已成功握手连通！\\n\\n⚡ 适配 CF 新规提示：\\n现在 Cloudflare 零信任网页端的「继续 (Next)」按钮已点亮！\\n请前往网页端添加公共主机名 (Public Hostname，指向 HTTP -> localhost:8001)，完成后将绑定的域名填入上方保存，即可全自动生成 443 节点！');
+                                return;
+                            } else if (statusData.argoStatus === 'error') {
+                                clearInterval(pollInterval);
+                                if (btn) { btn.disabled = false; btn.innerText = origText; }
+                                if (hint) hint.innerText = '⚠️ 握手遇到异常: ' + (statusData.argoLastLog || '');
+                                fetchStatus();
+                                alert('⚠️ 隧道启动异常: ' + (statusData.argoLastLog || '请检查 Token 是否有效'));
+                                return;
+                            }
+                        }
+                    } catch (_) {}
+                    if (attempts >= 8) {
+                        clearInterval(pollInterval);
+                        if (btn) { btn.disabled = false; btn.innerText = origText; }
+                        fetchStatus();
+                    }
+                }, 1500);
+
+            } catch (err) {
+                alert('网络请求异常: ' + err.message);
+                if (btn) { btn.disabled = false; btn.innerText = origText; }
             }
         }
 
