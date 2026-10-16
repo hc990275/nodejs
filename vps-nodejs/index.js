@@ -662,10 +662,10 @@ if (!ADMIN_PASSWORD) {
 // ==========================================
 let serverGeo = {
     ip: '',
-    countryCode: 'US',
-    country: '美国',
-    city: '凤凰城',
-    flag: '🇺🇸',
+    countryCode: '',
+    country: '',
+    city: '',
+    flag: '🌐',
     isp: ''
 };
 
@@ -684,14 +684,29 @@ const cityTranslate = {
     'chicago': '芝加哥', 'dallas': '达拉斯', 'tokyo': '东京',
     'osaka': '大阪', 'hong kong': '香港', 'singapore': '新加坡',
     'london': '伦敦', 'frankfurt': '法兰克福', 'paris': '巴黎',
-    'amsterdam': '阿姆斯特丹', 'seoul': '首尔', 'sydney': '悉尼'
+    'amsterdam': '阿姆斯特丹', 'seoul': '首尔', 'sydney': '悉尼',
+    'jakarta': '雅加达', 'taipei': '台北', 'bangkok': '曼谷',
+    'kuala lumpur': '吉隆坡', 'mumbai': '孟买', 'toronto': '多伦多'
 };
 
 const countryTranslate = {
     'US': '美国', 'HK': '香港', 'TW': '台湾', 'JP': '日本', 'SG': '新加坡',
     'KR': '韩国', 'DE': '德国', 'GB': '英国', 'FR': '法国', 'CA': '加拿大',
-    'AU': '澳大利亚', 'NL': '荷兰', 'RU': '俄罗斯', 'IN': '印度', 'TH': '泰国'
+    'AU': '澳大利亚', 'NL': '荷兰', 'RU': '俄罗斯', 'IN': '印度', 'TH': '泰国',
+    'ID': '印度尼西亚', 'MY': '马来西亚', 'VN': '越南', 'PH': '菲律宾',
+    'TR': '土耳其', 'BR': '巴西', 'ZA': '南非', 'AE': '阿联酋'
 };
+
+// 提取友好的服务器归属国家与地区标题 (绝不硬编码 VPS-Tunnel)
+function getServerGeoTitle() {
+    let parts = [];
+    if (serverGeo.country) parts.push(serverGeo.country);
+    if (serverGeo.city && serverGeo.city !== serverGeo.country) parts.push(serverGeo.city);
+    const loc = parts.join('·');
+    const flag = (serverGeo.flag && serverGeo.flag !== '🌐') ? serverGeo.flag + ' ' : '';
+    if (loc) return `${flag}${loc}`;
+    return '海外节点';
+}
 
 async function autoDetectServerGeo() {
     try {
@@ -704,7 +719,7 @@ async function autoDetectServerGeo() {
                     const json = JSON.parse(data);
                     if (json.status === 'success' && json.query) {
                         serverGeo.ip = json.query;
-                        serverGeo.countryCode = json.countryCode || 'US';
+                        serverGeo.countryCode = json.countryCode || '';
                         serverGeo.flag = getFlagEmoji(serverGeo.countryCode);
                         serverGeo.country = countryTranslate[serverGeo.countryCode] || json.country || '海外';
                         const lowerCity = (json.city || '').toLowerCase();
@@ -740,7 +755,7 @@ function getEffectiveHost() {
 }
 
 // 启动即刻异步触发自动探测
-setTimeout(() => { autoDetectServerGeo(); }, 500);
+setTimeout(() => { autoDetectServerGeo(); }, 100);
 
 // ==========================================
 // 3. 运营配置与三网优选池持久化
@@ -3923,12 +3938,13 @@ function renderCarrierRows(carrierName, badgeClass, list, overrideIp) {
 // ──────────────── 管理后台页面渲染 ────────────────
 // ──────────────── 管理后台页面渲染 ────────────────
 function renderAdminLoginPage() {
+    const geoTitle = getServerGeoTitle();
     return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VPS-Tunnel 管理中枢登录</title>
+    <title>${geoTitle} 管理中枢登录</title>
     <style>
         :root {
             --el-primary: #2563eb;
@@ -4062,7 +4078,7 @@ function renderAdminLoginPage() {
     <div class="login-box">
         <div class="brand-header">
             <div class="brand-badge">🛡️</div>
-            <div class="brand-title">VPS-Tunnel 运维控制台</div>
+            <div class="brand-title">${geoTitle} 运维控制台</div>
             <div class="brand-desc">308MB 原生轻核 · 0依赖高性能隧道</div>
         </div>
 
@@ -4140,12 +4156,13 @@ function renderAdminLoginPage() {
 }
 
 function renderAdminDashboardPage() {
+    const geoTitle = getServerGeoTitle();
     return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VPS-Tunnel 运维管理中枢 (Pro Admin)</title>
+    <title>${geoTitle} 运维管理中枢 (Pro Admin)</title>
     <style>
         :root {
             --primary: #2563eb;
@@ -4816,7 +4833,7 @@ function renderAdminDashboardPage() {
     <aside class="sidebar">
         <div class="sidebar-brand">
             <div class="brand-logo">🛡️</div>
-            <div class="brand-name">VPS-Tunnel</div>
+            <div class="brand-name" id="adminBrandName">${geoTitle}</div>
             <span class="brand-tag">v2.6 Pro</span>
         </div>
         <ul class="sidebar-menu">
@@ -5471,6 +5488,17 @@ function renderAdminDashboardPage() {
                         if (!currentSettings.subDomain) {
                             document.getElementById('cfg_subDomain').placeholder = '留空默认使用探测 IP: ' + geo.ip;
                         }
+                    }
+                    if (geo.country || geo.city) {
+                        let parts = [];
+                        if (geo.country) parts.push(geo.country);
+                        if (geo.city && geo.city !== geo.country) parts.push(geo.city);
+                        const loc = parts.join('·');
+                        const flag = (geo.flag && geo.flag !== '🌐') ? geo.flag + ' ' : '';
+                        const dynTitle = (flag + loc).trim() || '节点';
+                        document.title = dynTitle + ' 运维管理中枢 (Pro Admin)';
+                        const brandEl = document.getElementById('adminBrandName');
+                        if (brandEl) brandEl.innerText = dynTitle;
                     }
 
                     // 终端日志更新
