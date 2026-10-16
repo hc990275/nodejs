@@ -5643,7 +5643,7 @@ function renderAdminDashboardPage() {
                             guideBox.style.background = '#ecfdf5';
                             guideBox.style.border = '1px solid #6ee7b7';
                             guideBox.style.color = '#065f46';
-                            guideBox.innerHTML = '🎉 <b>Cloudflare 隧道已成功握手连通！</b><br>适配 CF 新规：现在 Cloudflare 零信任网页端的<b>「继续 / Next」</b>按钮已点亮！请前往网页端完成下一步，添加公共主机名 (Public Hostname，指向 <code>HTTP -> localhost:8001</code>)，完成后将该域名回填到下方保存，即可全自动生成 443 节点！';
+                            guideBox.innerHTML = '🎉 <b>Cloudflare 隧道已成功握手连通！</b><br>适配 CF 新规：现在 Cloudflare 零信任网页端的<b>「继续 / Next」</b>按钮已点亮！请前往网页端完成下一步，添加公共主机名 (Public Hostname：<b>Type 务必选 HTTP，切勿选 HTTPS！URL 填 <code>localhost:8001</code></b>)，绑定完成后将域名回填到下方保存，即可全自动生成 443 节点！';
                         } else if (hasToken && argoStatus === 'connected' && hasDomain) {
                             guideBox.style.display = 'block';
                             guideBox.style.background = '#f0fdf4';
@@ -6316,7 +6316,7 @@ function renderAdminDashboardPage() {
                                 if (btn) { btn.disabled = false; btn.innerText = '🚀 重新打通 / 重启隧道'; }
                                 if (hint) hint.innerText = '🟢 隧道已成功握手连通！';
                                 fetchStatus();
-                                alert('🎉 Cloudflare 隧道已成功握手连通！\\n\\n⚡ 适配 CF 新规提示：\\n现在 Cloudflare 零信任网页端的「继续 (Next)」按钮已点亮！\\n请前往网页端添加公共主机名 (Public Hostname，指向 HTTP -> localhost:8001)，完成后将绑定的域名填入上方保存，即可全自动生成 443 节点！');
+                                alert('🎉 Cloudflare 隧道已成功握手连通！\\n\\n⚡ 适配 CF 新规提示：\\n现在 Cloudflare 零信任网页端的「继续 (Next)」按钮已点亮！\\n请前往网页端添加公共主机名 (Public Hostname)：\\n👉 Type 务必选 HTTP (切勿选 HTTPS，否则报 502！)\\n👉 URL 填 localhost:8001\\n绑定完成后回填域名并保存，即可全自动生成 443 节点！');
                                 return;
                             } else if (statusData.argoStatus === 'error') {
                                 clearInterval(pollInterval);
@@ -6478,7 +6478,7 @@ function renderAdminDashboardPage() {
             });
             if (res.ok) {
                 if (token && !domain) {
-                    alert('✅ Argo 隧道 Token 已保存并在后台即刻拉起！\\n\\n⚡ 适配 Cloudflare 新规提示：\\n当前系统正在与 Cloudflare 边缘握手。请观察上方隧道状态徽标，显示 🟢 Connected 后，请前往 Cloudflare 零信任网页端，点击已点亮的「继续 (Next)」按钮完成公共主机名绑定 (指向 HTTP -> localhost:8001)，完成后将绑定的域名回填至此处即可全自动生成 443 节点！');
+                    alert('✅ Argo 隧道 Token 已保存并在后台即刻拉起！\\n\\n⚡ 适配 Cloudflare 新规提示：\\n当前系统正在与 Cloudflare 边缘握手。请观察上方隧道状态徽标，显示 🟢 Connected 后，请前往 Cloudflare 零信任网页端，点击已点亮的「继续 (Next)」按钮完成公共主机名绑定：\\n👉 Type 务必选 HTTP (切勿选 HTTPS，否则报 502！)\\n👉 URL 填 localhost:8001\\n绑定完成后回填域名并保存，即可全自动生成 443 节点！');
                 } else {
                     alert('✅ 系统变量与 Argo 隧道配置已成功落盘！若修改了管理员密码，请使用新密码重新登录。');
                 }
