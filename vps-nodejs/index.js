@@ -518,9 +518,11 @@ async function startArgoTunnel(token) {
         argoProcess.stderr.on('data', chunk => {
             const str = chunk.toString();
             argoLastLog = str.trim();
-            if (str.includes('Registered tunnel connection') || (str.includes('Connection') && str.includes('registered'))) {
-                argoStatus = 'connected';
-                console.log(`[Argo] 🟢 隧道已成功握手接入 Cloudflare 全球边缘网络！443端口直通与三网优选已全面激活！`);
+            if (str.includes('Registered tunnel connection') || (str.includes('Connection') && str.includes('registered')) || (str.includes('Updated to new configuration') && str.includes('ingress')) || (str.includes('connIndex=') && str.includes('location='))) {
+                if (argoStatus !== 'connected') {
+                    argoStatus = 'connected';
+                    console.log(`[Argo] 🟢 隧道已成功握手接入 Cloudflare 全球边缘网络！443端口直通与三网优选已全面激活！`);
+                }
             }
             console.log(`[Argo LOG] ${argoLastLog}`);
         });
@@ -6490,6 +6492,17 @@ function renderAdminDashboardPage() {
         // 初始化
         fetchStatus();
         fetchUsers();
+
+        // 🚀 全局前端状态实时保活轮询引擎 (每 3 秒静默自动同步一次，握手状态毫秒级无感更新，无需手动按 F5 刷新)
+        setInterval(function() {
+            if (!document.hidden) {
+                fetchStatus();
+                var activePanel = document.querySelector('.card-panel:not([style*="display: none"]):not([style*="display:none"])');
+                if (activePanel && (activePanel.id === 'panel_sys' || activePanel.id === 'panel_status')) {
+                    fetchHealthProbes();
+                }
+            }
+        }, 3000);
     </script>
 </body>
 </html>`;
