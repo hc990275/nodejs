@@ -6071,7 +6071,7 @@ function renderAdminDashboardPage() {
             const subUrl = window.location.origin + '/sub?token=' + encodeURIComponent(uuid);
             if (navigator.clipboard && navigator.clipboard.writeText) {
                 navigator.clipboard.writeText(subUrl).then(function() {
-                    alert('✅ 用户 [' + (username || uuid.substring(0, 8)) + '] 的专属订阅链接已成功复制到剪贴板！\n\n' + subUrl);
+                    alert('✅ 用户 [' + (username || uuid.substring(0, 8)) + '] 的专属订阅链接已成功复制到剪贴板！\\n\\n' + subUrl);
                 }).catch(function() {
                     prompt('请按 Ctrl+C 复制该用户的专属订阅链接:', subUrl);
                 });
