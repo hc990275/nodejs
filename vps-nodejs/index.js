@@ -323,6 +323,16 @@ function cleanArgoToken(token) {
     return val.trim();
 }
 
+// 🚀 通用 Argo 域名纯化过滤器：自动去除 http://、https:// 前缀、路径后缀以及端口号
+function cleanArgoDomain(domain) {
+    if (!domain || typeof domain !== 'string') return '';
+    let val = domain.trim();
+    val = val.replace(/^https?:\/\//i, '');
+    val = val.replace(/\/.*$/, '');
+    val = val.replace(/:\d+$/, '');
+    return val.trim();
+}
+
 let argoProcess = null;
 let argoStatus = 'stopped'; // 'connected', 'running', 'downloading', 'stopped', 'error', 'reconnecting'
 let argoLastLog = '';
@@ -2730,14 +2740,29 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
                     envUpdates.SUB_DOMAIN = siteSettings.subDomain;
                 }
 
-                // 3. Cloudflare Argo 隧道配置
+                // 3. Cloudflare Argo 隧道配置 (支持仅填 Token 先行连通，适配 CF 新规)
+                let tokenChanged = false;
                 if (data.argoToken !== undefined) {
-                    siteSettings.argoToken = cleanArgoToken(data.argoToken);
-                    envUpdates.ARGO_TOKEN = siteSettings.argoToken;
+                    const cleanedToken = cleanArgoToken(data.argoToken);
+                    if (cleanedToken !== siteSettings.argoToken) {
+                        siteSettings.argoToken = cleanedToken;
+                        envUpdates.ARGO_TOKEN = siteSettings.argoToken;
+                        tokenChanged = true;
+                    }
                 }
                 if (data.argoDomain !== undefined) {
-                    siteSettings.argoDomain = data.argoDomain.trim();
+                    siteSettings.argoDomain = cleanArgoDomain(data.argoDomain);
                     envUpdates.ARGO_DOMAIN = siteSettings.argoDomain;
+                }
+
+                if (tokenChanged) {
+                    if (siteSettings.argoToken) {
+                        console.log('[Argo] ⚡ 管理员更新了 Argo Token，立即在后台启动隧道连接...');
+                        startArgoTunnel(siteSettings.argoToken);
+                    } else {
+                        console.log('[Argo] 🛑 管理员清空了 Argo Token，停止现有隧道...');
+                        stopArgoTunnel();
+                    }
                 }
 
                 // 4. 三网优选与自定义域名开关
@@ -5139,19 +5164,32 @@ function renderAdminDashboardPage() {
 
                 <!-- Argo 隧道配置 -->
                 <div style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px; padding:16px; margin-bottom:20px;">
-                    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
-                        <span style="font-weight:700; color:#16a34a; font-size:14px;">⚡ Cloudflare Argo 隧道 443 直通配置</span>
-                        <span style="font-size:12px; color:#15803d;">免公网 IPv4 · 突破面板限制</span>
+                    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+                        <span style="font-weight:700; color:#16a34a; font-size:14px;">⚡ Cloudflare Argo 隧道 443 直通配置 (适配 CF 最新 Zero Trust 规则)</span>
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <span id="argoRuntimeStatusBadge" style="font-size:12px; font-weight:600; padding:2px 8px; border-radius:4px; background:#e2e8f0; color:#475569;">⚪ 检查中...</span>
+                            <span style="font-size:12px; color:#15803d;">免公网 IPv4 · 突破面板限制</span>
+                        </div>
                     </div>
+
+                    <!-- 适配 CF 新规智能引导提示框 -->
+                    <div id="argoStepGuideBox" style="display:none; border-radius:6px; padding:12px 14px; margin-bottom:14px; font-size:12px; line-height:1.6;"></div>
+
                     <div class="form-row">
-                        <label>Cloudflare Argo 隧道 Token (ARGO_TOKEN)</label>
-                        <textarea id="cfg_argoToken" rows="3" placeholder="在此粘贴 Cloudflare 零信任面板 (Zero Trust) 生成的 Tunnel Token (以 eyJh 开头)" style="font-family:Consolas, monospace; font-size:12px;" oninput="handleArgoTokenInput(this)" onpaste="handleArgoTokenPaste(event, this)"></textarea>
-                        <span style="font-size:11px; color:#16a34a; margin-top:4px; display:block;">💡 支持直接粘贴整条 cloudflared.exe service install 命令，系统将自动识别提取纯 Token；保存后自动落盘到 settings.json 与 .env 文件。</span>
+                        <label style="display:flex; justify-content:space-between; align-items:center;">
+                            <span>Cloudflare Argo 隧道 Token (ARGO_TOKEN)</span>
+                            <span style="font-size:11px; color:#16a34a; font-weight:600;">先行打通 · 必填</span>
+                        </label>
+                        <textarea id="cfg_argoToken" rows="3" placeholder="在此粘贴 Cloudflare 零信任面板 (Zero Trust) 生成的 Tunnel Token (以 eyJh 开头，或整条安装命令)" style="font-family:Consolas, monospace; font-size:12px;" oninput="handleArgoTokenInput(this)" onpaste="handleArgoTokenPaste(event, this)"></textarea>
+                        <span style="font-size:11px; color:#16a34a; margin-top:4px; display:block;">💡 适配 CF 最新规则：新版 CF 强制要求先连通隧道才允许继续绑定域名。支持直接粘贴整条 cloudflared service install 命令或纯 Token；先填此处保存，系统即刻在后台与 CF 边缘握手！</span>
                     </div>
                     <div class="form-row" style="margin-bottom:0;">
-                        <label>Argo 隧道穿透主域名 (ARGO_DOMAIN)</label>
-                        <input type="text" id="cfg_argoDomain" placeholder="例如: tunnel.yourdomain.com" />
-                        <span style="font-size:11px; color:#64748b; margin-top:4px; display:block;">填入为此隧道映射的 Public Hostname，系统将自动生成 443 端口直连订阅！</span>
+                        <label style="display:flex; justify-content:space-between; align-items:center;">
+                            <span>Argo 隧道穿透主域名 (ARGO_DOMAIN)</span>
+                            <span style="font-size:11px; color:#64748b; font-weight:600;">选填 · 隧道连通后在 CF 网页端绑定再回填</span>
+                        </label>
+                        <input type="text" id="cfg_argoDomain" placeholder="例如: tunnel.yourdomain.com (在 CF 网页点击 Next 绑定后再填入)" onblur="handleArgoDomainBlur(this)" />
+                        <span style="font-size:11px; color:#64748b; margin-top:4px; display:block;">💡 说明：CF 隧道 Token 本身不含域名信息，需先连通隧道方可在 CF 网页端设置域名。设置完成后回填至此处，系统将全自动生成 443 直连与三网优选节点！</span>
                     </div>
                 </div>
 
@@ -5527,6 +5565,66 @@ function renderAdminDashboardPage() {
                     document.getElementById('cfg_subConfig').value = currentSettings.subConfig || '';
                     document.getElementById('cfg_argoToken').value = currentSettings.argoToken || '';
                     document.getElementById('cfg_argoDomain').value = currentSettings.argoDomain || '';
+
+                    // Argo 隧道状态徽标与适配 CF 新规智能引导框
+                    const argoStatus = data.argoStatus || 'stopped';
+                    const argoBadge = document.getElementById('argoRuntimeStatusBadge');
+                    const guideBox = document.getElementById('argoStepGuideBox');
+                    if (argoBadge) {
+                        if (argoStatus === 'connected') {
+                            argoBadge.style.background = '#dcfce7';
+                            argoBadge.style.color = '#15803d';
+                            argoBadge.innerText = '🟢 隧道已连通 (Connected)';
+                        } else if (argoStatus === 'starting' || argoStatus === 'downloading') {
+                            argoBadge.style.background = '#fef9c3';
+                            argoBadge.style.color = '#854d0e';
+                            argoBadge.innerText = '⏳ 启动握手中 (' + argoStatus + ')';
+                        } else if (argoStatus === 'reconnecting') {
+                            argoBadge.style.background = '#ffedd5';
+                            argoBadge.style.color = '#c2410c';
+                            argoBadge.innerText = '🔄 重连自愈中...';
+                        } else if (argoStatus === 'error') {
+                            argoBadge.style.background = '#fee2e2';
+                            argoBadge.style.color = '#b91c1c';
+                            argoBadge.innerText = '🔴 连接异常';
+                        } else {
+                            argoBadge.style.background = '#f1f5f9';
+                            argoBadge.style.color = '#64748b';
+                            argoBadge.innerText = '⚪ 未运行';
+                        }
+                    }
+
+                    if (guideBox) {
+                        const hasToken = !!(currentSettings.argoToken || (document.getElementById('cfg_argoToken') && document.getElementById('cfg_argoToken').value.trim()));
+                        const hasDomain = !!(currentSettings.argoDomain || (document.getElementById('cfg_argoDomain') && document.getElementById('cfg_argoDomain').value.trim()));
+                        if (hasToken && argoStatus === 'connected' && !hasDomain) {
+                            guideBox.style.display = 'block';
+                            guideBox.style.background = '#ecfdf5';
+                            guideBox.style.border = '1px solid #6ee7b7';
+                            guideBox.style.color = '#065f46';
+                            guideBox.innerHTML = '🎉 <b>Cloudflare 隧道已成功握手连通！</b><br>适配 CF 新规：现在 Cloudflare 零信任网页端的<b>「继续 / Next」</b>按钮已点亮！请前往网页端完成下一步，添加公共主机名 (Public Hostname，指向 <code>HTTP -> localhost:8001</code>)，完成后将该域名回填到下方保存，即可全自动生成 443 节点！';
+                        } else if (hasToken && argoStatus === 'connected' && hasDomain) {
+                            guideBox.style.display = 'block';
+                            guideBox.style.background = '#f0fdf4';
+                            guideBox.style.border = '1px solid #bbf7d0';
+                            guideBox.style.color = '#166534';
+                            guideBox.innerHTML = '🟢 <b>Cloudflare Argo 443 直通与三网优选已全部就绪！</b> 客户端订阅中已注入 443 端口直连与移动/联通/电信各运营商优选节点。';
+                        } else if (hasToken && (argoStatus === 'starting' || argoStatus === 'downloading')) {
+                            guideBox.style.display = 'block';
+                            guideBox.style.background = '#fffbeb';
+                            guideBox.style.border = '1px solid #fde68a';
+                            guideBox.style.color = '#92400e';
+                            guideBox.innerHTML = '⏳ <b>正在启动 Cloudflare 隧道并握手边缘网络...</b> 预计耗时 3~10 秒，握手成功后即可前往 CF 网页端点击「继续 / Next」。';
+                        } else if (hasToken && argoStatus === 'error') {
+                            guideBox.style.display = 'block';
+                            guideBox.style.background = '#fef2f2';
+                            guideBox.style.border = '1px solid #fecaca';
+                            guideBox.style.color = '#991b1b';
+                            guideBox.innerHTML = '⚠️ <b>Argo 隧道连接遇到异常</b>: ' + (data.argoLastLog || '请检查 Token 是否有效或点击顶部「一键自愈」重新拉起') + '。';
+                        } else {
+                            guideBox.style.display = 'none';
+                        }
+                    }
 
                     document.getElementById('cfg_enableDirectNode').checked = currentSettings.enableDirectNode === true;
                     document.getElementById('cfg_autoSyncWetest').checked = currentSettings.autoSyncWetest !== false;
@@ -6103,6 +6201,22 @@ function renderAdminDashboardPage() {
             setTimeout(function() { handleArgoTokenInput(el); }, 10);
         }
 
+        // 🌐 前端 Argo 域名智能清洗提取器：自动剔除协议前缀、斜杠路径与端口
+        function cleanArgoDomain(val) {
+            if (!val || typeof val !== 'string') return '';
+            let d = val.trim();
+            d = d.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').replace(/:\d+$/, '').trim();
+            return d;
+        }
+
+        function handleArgoDomainBlur(el) {
+            if (!el) return;
+            const cleaned = cleanArgoDomain(el.value);
+            if (cleaned !== el.value) {
+                el.value = cleaned;
+            }
+        }
+
         async function toggleBan(uuid) {
             const res = await fetch('/admin/api/user/toggle-ban', {
                 method: 'POST',
@@ -6215,6 +6329,11 @@ function renderAdminDashboardPage() {
         }
 
         async function saveSystemSettings() {
+            const rawToken = document.getElementById('cfg_argoToken').value;
+            const token = cleanArgoToken(rawToken);
+            const domain = cleanArgoDomain(document.getElementById('cfg_argoDomain').value);
+            document.getElementById('cfg_argoDomain').value = domain;
+
             const payload = {
                 allowRegister: document.getElementById('cfg_allowRegister').value === 'true',
                 defaultDays: parseInt(document.getElementById('cfg_defaultDays').value, 10),
@@ -6224,8 +6343,8 @@ function renderAdminDashboardPage() {
                 subDomain: document.getElementById('cfg_subDomain').value.trim(),
                 subApi: document.getElementById('cfg_subApi').value.trim(),
                 subConfig: document.getElementById('cfg_subConfig').value.trim(),
-                argoToken: cleanArgoToken(document.getElementById('cfg_argoToken').value),
-                argoDomain: document.getElementById('cfg_argoDomain').value.trim(),
+                argoToken: token,
+                argoDomain: domain,
                 newAdminPassword: document.getElementById('cfg_newAdminPassword').value.trim()
             };
             const res = await fetch('/admin/api/settings', {
@@ -6234,7 +6353,11 @@ function renderAdminDashboardPage() {
                 body: JSON.stringify(payload)
             });
             if (res.ok) {
-                alert('✅ 系统变量与 Argo 隧道配置已成功落盘！若修改了管理员密码，请使用新密码重新登录。');
+                if (token && !domain) {
+                    alert('✅ Argo 隧道 Token 已保存并在后台即刻拉起！\\n\\n⚡ 适配 Cloudflare 新规提示：\\n当前系统正在与 Cloudflare 边缘握手。请观察上方隧道状态徽标，显示 🟢 Connected 后，请前往 Cloudflare 零信任网页端，点击已点亮的「继续 (Next)」按钮完成公共主机名绑定 (指向 HTTP -> localhost:8001)，完成后将绑定的域名回填至此处即可全自动生成 443 节点！');
+                } else {
+                    alert('✅ 系统变量与 Argo 隧道配置已成功落盘！若修改了管理员密码，请使用新密码重新登录。');
+                }
                 document.getElementById('cfg_newAdminPassword').value = '';
                 fetchStatus();
             }
