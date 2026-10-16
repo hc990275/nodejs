@@ -249,8 +249,19 @@ else
     fi
 fi
 
-# 确保基础配置与交互式参数采集 (兼容 curl 管道 /dev/tty 穿透)
+# 确保基础配置与交互式参数采集 (兼容 curl 管道 /dev/tty 穿透与脏缓冲自愈熔断)
 PUBLIC_IP=$(curl -fsSL --connect-timeout 3 -m 5 https://api.ipify.org 2>/dev/null || curl -fsSL --connect-timeout 3 -m 5 https://ifconfig.me 2>/dev/null || echo "127.0.0.1")
+
+# 脏输入特征检测 (针对 Web 终端重放、多重粘贴、命令残留进行深度防护)
+is_contaminated_input() {
+    local val="$1"
+    case "$val" in
+        *wget*|*curl*|*setup.sh*|*http:*|*https:*|*"|"*|*">"*|*"<"*|*";"*|*"&"*|*" "*)
+            return 0
+            ;;
+    esac
+    return 1
+}
 
 read_interactive() {
     local prompt="$1"
@@ -260,13 +271,19 @@ read_interactive() {
         echo "${default_val}"
         return 0
     fi
-    if [ -e /dev/tty ] && [ -r /dev/tty ]; then
+    if [ -e /dev/tty ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
         printf "%b" "${prompt}" > /dev/tty
-        read -r result < /dev/tty
+        if ! read -r result < /dev/tty; then
+            result=""
+        fi
     elif [ -t 0 ]; then
         printf "%b" "${prompt}"
-        read -r result
+        if ! read -r result; then
+            result=""
+        fi
     fi
+    # 清洗首尾空白字符与 Windows 换行符
+    result=$(echo "${result}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     if [ -z "${result}" ]; then
         result="${default_val}"
     fi
@@ -277,27 +294,68 @@ echo -e "\n${CYAN}========================================================${PLAI
 echo -e "${GREEN}⚙️  服务参数交互配置 (直接按回车可使用默认推荐值)${PLAIN}"
 echo -e "${CYAN}========================================================${PLAIN}"
 
-# 1. 端口配置提示
+TTY_BUFFER_CONTAMINATED=false
+
+# 1. 端口配置提示与强类型合规校验
 DETECTED_DEFAULT_PORT="${SET_PORT:-19900}"
-INPUT_PORT=$(read_interactive "${YELLOW}👉 请输入服务监听端口 (NAT 小鸡请填写映射端口，默认: ${DETECTED_DEFAULT_PORT}): ${PLAIN}" "${DETECTED_DEFAULT_PORT}")
-echo -e "${GREEN}✅ 已设定服务监听端口: ${BOLD}${INPUT_PORT}${PLAIN}"
+RAW_PORT=$(read_interactive "${YELLOW}👉 请输入服务监听端口 (NAT 小鸡请填写映射端口，默认: ${DETECTED_DEFAULT_PORT}): ${PLAIN}" "${DETECTED_DEFAULT_PORT}")
+
+# 端口清洗与严格数字范围校验
+CLEAN_PORT=$(echo "$RAW_PORT" | tr -cd '0-9')
+if is_contaminated_input "$RAW_PORT" || [ -z "$CLEAN_PORT" ] || [ "$CLEAN_PORT" != "$RAW_PORT" ] || [ "$CLEAN_PORT" -lt 1 ] || [ "$CLEAN_PORT" -gt 65535 ]; then
+    if is_contaminated_input "$RAW_PORT"; then
+        echo -e "${YELLOW}⚠️ 检测到终端输入缓冲残留命令字符，已自动熔断拦截脏命令！${PLAIN}"
+        TTY_BUFFER_CONTAMINATED=true
+    else
+        echo -e "${YELLOW}⚠️ 输入端口号非法或超出有效范围 (1-65535): '${RAW_PORT}'${PLAIN}"
+    fi
+    INPUT_PORT="${DETECTED_DEFAULT_PORT}"
+    echo -e "${GREEN}👉 端口已自动采用稳态推荐值: ${BOLD}${INPUT_PORT}${PLAIN}"
+else
+    INPUT_PORT="${CLEAN_PORT}"
+    echo -e "${GREEN}✅ 已设定服务监听端口: ${BOLD}${INPUT_PORT}${PLAIN}"
+fi
 
 # 2. 后台管理密码提示
 DEFAULT_GEN_PWD=$(head -c 32 /dev/urandom 2>/dev/null | tr -dc 'A-Za-z0-9' | head -c 16 || echo "Admin$(date +%s)")
 if [ -n "$SET_ADMIN_PASSWORD" ]; then
     INPUT_PWD="$SET_ADMIN_PASSWORD"
+    echo -e "${GREEN}✅ 已由环境变量设定管理密码: ${BOLD}${INPUT_PWD}${PLAIN}"
+elif [ "$TTY_BUFFER_CONTAMINATED" = "true" ]; then
+    # 若终端输入流已被前序命令污染，自动绕过读取，杜绝二次吞入脏命令
+    INPUT_PWD="${DEFAULT_GEN_PWD}"
+    echo -e "${GREEN}👉 终端输入流异常，后台管理密码自动采用随机安全口令: ${BOLD}${INPUT_PWD}${PLAIN}"
 else
-    INPUT_PWD=$(read_interactive "${YELLOW}👉 请输入管理后台密码 (直接回车将使用随机安全口令: ${DEFAULT_GEN_PWD}): ${PLAIN}" "${DEFAULT_GEN_PWD}")
+    RAW_PWD=$(read_interactive "${YELLOW}👉 请输入管理后台密码 (直接回车将使用随机安全口令: ${DEFAULT_GEN_PWD}): ${PLAIN}" "${DEFAULT_GEN_PWD}")
+    if is_contaminated_input "$RAW_PWD" || [ "${#RAW_PWD}" -gt 64 ] || echo "$RAW_PWD" | grep -q "[[:space:]]"; then
+        echo -e "${YELLOW}⚠️ 检测到密码输入包含命令行特征或非法字符，已自动熔断！${PLAIN}"
+        INPUT_PWD="${DEFAULT_GEN_PWD}"
+        TTY_BUFFER_CONTAMINATED=true
+        echo -e "${GREEN}👉 后台管理密码已自动采用随机安全口令: ${BOLD}${INPUT_PWD}${PLAIN}"
+    else
+        INPUT_PWD="${RAW_PWD}"
+        echo -e "${GREEN}✅ 已设定管理后台密码: ${BOLD}${INPUT_PWD}${PLAIN}"
+    fi
 fi
-echo -e "${GREEN}✅ 已设定管理后台密码: ${BOLD}${INPUT_PWD}${PLAIN}"
 
 # 3. 域名/公网 IP 绑定
 if [ -n "$SET_SUB_DOMAIN" ]; then
     INPUT_DOMAIN="$SET_SUB_DOMAIN"
+    echo -e "${GREEN}✅ 已由环境变量设定公网地址: ${BOLD}${INPUT_DOMAIN}${PLAIN}"
+elif [ "$TTY_BUFFER_CONTAMINATED" = "true" ]; then
+    INPUT_DOMAIN="${PUBLIC_IP}"
+    echo -e "${GREEN}👉 公网绑定地址自动采用探测 IP: ${BOLD}${INPUT_DOMAIN}${PLAIN}"
 else
-    INPUT_DOMAIN=$(read_interactive "${YELLOW}👉 请输入节点绑定的公网 IP 或域名 [默认自动探测: ${PUBLIC_IP}]: ${PLAIN}" "${PUBLIC_IP}")
+    RAW_DOMAIN=$(read_interactive "${YELLOW}👉 请输入节点绑定的公网 IP 或域名 [默认自动探测: ${PUBLIC_IP}]: ${PLAIN}" "${PUBLIC_IP}")
+    if is_contaminated_input "$RAW_DOMAIN" || [ "${#RAW_DOMAIN}" -gt 128 ] || echo "$RAW_DOMAIN" | grep -q "[[:space:]/:]"; then
+        echo -e "${YELLOW}⚠️ 检测到域名输入受终端脏缓冲污染或格式非法，已自动熔断！${PLAIN}"
+        INPUT_DOMAIN="${PUBLIC_IP}"
+        echo -e "${GREEN}👉 公网绑定地址已自动采用探测 IP: ${BOLD}${INPUT_DOMAIN}${PLAIN}"
+    else
+        INPUT_DOMAIN="${RAW_DOMAIN}"
+        echo -e "${GREEN}✅ 已设定公网绑定地址: ${BOLD}${INPUT_DOMAIN}${PLAIN}"
+    fi
 fi
-echo -e "${GREEN}✅ 已设定公网绑定地址: ${BOLD}${INPUT_DOMAIN}${PLAIN}"
 
 # 写入或更新 .env
 if [ ! -f "${INSTALL_DIR}/.env" ]; then
