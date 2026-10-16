@@ -316,41 +316,38 @@ else
     echo -e "${GREEN}✅ 已设定服务监听端口: ${BOLD}${INPUT_PORT}${PLAIN}"
 fi
 
-# 2. 后台管理密码提示
-DEFAULT_GEN_PWD=$(head -c 32 /dev/urandom 2>/dev/null | tr -dc 'A-Za-z0-9' | head -c 16 || echo "Admin$(date +%s)")
-if [ -n "$SET_ADMIN_PASSWORD" ]; then
-    INPUT_PWD="$SET_ADMIN_PASSWORD"
-    echo -e "${GREEN}✅ 已由环境变量设定管理密码: ${BOLD}${INPUT_PWD}${PLAIN}"
-elif [ "$TTY_BUFFER_CONTAMINATED" = "true" ]; then
-    # 若终端输入流已被前序命令污染，自动绕过读取，杜绝二次吞入脏命令
-    INPUT_PWD="${DEFAULT_GEN_PWD}"
-    echo -e "${GREEN}👉 终端输入流异常，后台管理密码自动采用随机安全口令: ${BOLD}${INPUT_PWD}${PLAIN}"
+# 2. 后台管理密码提示 (支持手动输入自定义密码，直接回车默认采用当前变量或已有密码)
+EXISTING_PWD=""
+if [ -f "${INSTALL_DIR}/.env" ]; then
+    EXISTING_PWD=$(grep "^ADMIN_PASSWORD=" "${INSTALL_DIR}/.env" 2>/dev/null | cut -d'=' -f2- | tr -d '\r')
+fi
+RANDOM_GEN_PWD=$(head -c 32 /dev/urandom 2>/dev/null | tr -dc 'A-Za-z0-9' | head -c 16 || echo "Admin$(date +%s)")
+DEFAULT_PWD="${SET_ADMIN_PASSWORD:-${EXISTING_PWD:-$RANDOM_GEN_PWD}}"
+
+if [ -n "$NON_INTERACTIVE" ] || [ -n "$CI" ]; then
+    INPUT_PWD="${DEFAULT_PWD}"
+    echo -e "${GREEN}✅ 非交互环境已自动配置管理密码: ${BOLD}${INPUT_PWD}${PLAIN}"
 else
-    RAW_PWD=$(read_interactive "${YELLOW}👉 请输入管理后台密码 (直接回车将使用随机安全口令: ${DEFAULT_GEN_PWD}): ${PLAIN}" "${DEFAULT_GEN_PWD}")
+    RAW_PWD=$(read_interactive "${YELLOW}👉 请输入管理后台密码 [直接回车默认采用: ${DEFAULT_PWD}]: ${PLAIN}" "${DEFAULT_PWD}")
     if is_contaminated_input "$RAW_PWD" || [ "${#RAW_PWD}" -gt 64 ] || echo "$RAW_PWD" | grep -q "[[:space:]]"; then
-        echo -e "${YELLOW}⚠️ 检测到密码输入包含命令行特征或非法字符，已自动熔断！${PLAIN}"
-        INPUT_PWD="${DEFAULT_GEN_PWD}"
-        TTY_BUFFER_CONTAMINATED=true
-        echo -e "${GREEN}👉 后台管理密码已自动采用随机安全口令: ${BOLD}${INPUT_PWD}${PLAIN}"
+        INPUT_PWD="${DEFAULT_PWD}"
+        echo -e "${GREEN}👉 已采用默认推荐管理密码: ${BOLD}${INPUT_PWD}${PLAIN}"
     else
         INPUT_PWD="${RAW_PWD}"
         echo -e "${GREEN}✅ 已设定管理后台密码: ${BOLD}${INPUT_PWD}${PLAIN}"
     fi
 fi
 
-# 3. 域名/公网 IP 绑定
-if [ -n "$SET_SUB_DOMAIN" ]; then
-    INPUT_DOMAIN="$SET_SUB_DOMAIN"
-    echo -e "${GREEN}✅ 已由环境变量设定公网地址: ${BOLD}${INPUT_DOMAIN}${PLAIN}"
-elif [ "$TTY_BUFFER_CONTAMINATED" = "true" ]; then
-    INPUT_DOMAIN="${PUBLIC_IP}"
-    echo -e "${GREEN}👉 公网绑定地址自动采用探测 IP: ${BOLD}${INPUT_DOMAIN}${PLAIN}"
+# 3. 域名/公网 IP 绑定 (支持手动输入，回车默认采用环境变量或自动探测 IP)
+DEFAULT_DOMAIN="${SET_SUB_DOMAIN:-${PUBLIC_IP}}"
+if [ -n "$NON_INTERACTIVE" ] || [ -n "$CI" ]; then
+    INPUT_DOMAIN="${DEFAULT_DOMAIN}"
+    echo -e "${GREEN}✅ 非交互环境已自动绑定公网地址: ${BOLD}${INPUT_DOMAIN}${PLAIN}"
 else
-    RAW_DOMAIN=$(read_interactive "${YELLOW}👉 请输入节点绑定的公网 IP 或域名 [默认自动探测: ${PUBLIC_IP}]: ${PLAIN}" "${PUBLIC_IP}")
+    RAW_DOMAIN=$(read_interactive "${YELLOW}👉 请输入节点绑定的公网 IP 或域名 [直接回车默认采用: ${DEFAULT_DOMAIN}]: ${PLAIN}" "${DEFAULT_DOMAIN}")
     if is_contaminated_input "$RAW_DOMAIN" || [ "${#RAW_DOMAIN}" -gt 128 ] || echo "$RAW_DOMAIN" | grep -q "[[:space:]/:]"; then
-        echo -e "${YELLOW}⚠️ 检测到域名输入受终端脏缓冲污染或格式非法，已自动熔断！${PLAIN}"
-        INPUT_DOMAIN="${PUBLIC_IP}"
-        echo -e "${GREEN}👉 公网绑定地址已自动采用探测 IP: ${BOLD}${INPUT_DOMAIN}${PLAIN}"
+        INPUT_DOMAIN="${DEFAULT_DOMAIN}"
+        echo -e "${GREEN}👉 已采用默认推荐绑定地址: ${BOLD}${INPUT_DOMAIN}${PLAIN}"
     else
         INPUT_DOMAIN="${RAW_DOMAIN}"
         echo -e "${GREEN}✅ 已设定公网绑定地址: ${BOLD}${INPUT_DOMAIN}${PLAIN}"
