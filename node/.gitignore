@@ -1,0 +1,21 @@
+# 敏感环境变量凭据
+.env
+.env.local
+
+# 代理核心与隧道二进制运行时文件
+sing-box
+sing-box.exe
+cloudflared
+cloudflared.exe
+
+# 运行时动态生成的代理核心配置与凭据
+config.json
+reality.json
+cert.pem
+key.pem
+
+# 系统与编辑器缓存
+.DS_Store
+Thumbs.db
+node_modules/
+npm-debug.log*
