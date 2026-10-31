@@ -344,4 +344,19 @@ FATAL[0000] create service: parse route options: parse rule[0]: missing conditio
      - 在顶部状态栏动态展示当前回溯域名（`🌐 回溯: yylsl.abcai.online` 或 `⚠️ 回溯域名: 未设置`），点击直达配置；
      - 弹出卡片式配置弹窗，支持可视化配置回溯主域名、服务监听端口、公网 IPv4、管理密码、极速 QUIC 协议（Hy2 / TUIC）、Argo 隧道与 Reality 伪装参数，点击保存即刻无缝热生效。
 
+---
+
+## 问题 11: 管理后台新增按钮点击无反应（浏览器端 JavaScript 语法崩溃）
+
+- **问题现象**：在管理后台页面点击“🌐 回溯域名与核心配置”按钮或右上角“回溯状态”徽章时，弹窗没有任何反应。
+- **根本原因**：
+  1. 在向 HTML 模板注入前端脚本时，由于字符匹配重叠，导致在 `async function openServerConfigModal()` 前方遗留了一个孤立悬空的 `async` 关键字。
+  2. 紧接着下方的 `submitSettings()` 被截断为非 `async` 函数，而其函数体内部使用了 `await fetch(...)`。
+  3. 现代浏览器 JavaScript 解析器在遇到非 async 函数内的 await 及悬空关键字时，抛出 `SyntaxError: await is only valid in async functions` 语法解析错误。
+  4. 这一语法错误导致整个 `<script>` 标签解析中断，使得页面上所有挂载在 `window` 作用域的弹窗函数均未成功定义，点击触发 `ReferenceError`。
+- **解决方案**：
+  1. 彻底清除悬空的 `async` 关键字，确保 `openServerConfigModal` 与 `submitSettings` 结构完整。
+  2. 使用 Node.js 语法校验器 (`node -c`) 对前台生成的完整内嵌脚本进行全语法解析测试，确认 100% 零 SyntaxError 通过。
+  3. 重新提交推送代码到 GitHub 仓库。
+
 
