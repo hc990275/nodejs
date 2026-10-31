@@ -57,6 +57,67 @@ function loadEnvFile(isInitial = false) {
 // 首次同步载入 .env
 loadEnvFile(true);
 
+// 核心配置安全写回 .env 与即时热重载
+function saveEnvFile(updates = {}) {
+    let current = {};
+    if (fs.existsSync(ENV_FILE)) {
+        try {
+            const raw = fs.readFileSync(ENV_FILE, "utf8");
+            current = parseEnvContent(raw);
+        } catch (e) { }
+    }
+
+    // 合并 updates 并即刻写入 process.env
+    for (const [k, v] of Object.entries(updates)) {
+        if (v === null || v === undefined) continue;
+        current[k] = String(v).trim();
+        process.env[k] = current[k];
+    }
+
+    const lines = [
+        "# ==============================================================================",
+        "# V3 节点网关环境变量配置文件 (.env)",
+        "# 由管理后台可视化控制面板自动更新保存 (支持毫秒级无感知热重载)",
+        "# ==============================================================================",
+        "",
+        "# ----------------- 1. 安全与管理后台口令 (必填) -----------------",
+        `ADMIN_TOKEN=${current.ADMIN_TOKEN || ""}`,
+        "",
+        "# ----------------- 2. 网络监听与公网地址自适应 -----------------",
+        `SERVER_PORT=${current.SERVER_PORT || ""}`,
+        `SERVER_IP=${current.SERVER_IP || ""}`,
+        `SERVER_DOMAIN=${current.SERVER_DOMAIN || ""}`,
+        "",
+        "# ----------------- 3. Cloudflare Argo 隧道与 CDN 优选 (选填) -----------------",
+        `ARGO_TOKEN=${current.ARGO_TOKEN || ""}`,
+        `ARGO_DOMAIN=${current.ARGO_DOMAIN || ""}`,
+        `OPTIMIZED_DOMAIN=${current.OPTIMIZED_DOMAIN || ""}`,
+        "",
+        "# ----------------- 4. 多节点集群与异地节点扩展 (选填) -----------------",
+        `EXTRA_NODES=${current.EXTRA_NODES || ""}`,
+        "",
+        "# ----------------- 5. 极速协议参数配置 (Hy2 / TUIC / Reality) -----------------",
+        `UDP_QUIC_PROTOCOL=${current.UDP_QUIC_PROTOCOL || "hy2"}`,
+        `TUIC_PORT=${current.TUIC_PORT || ""}`,
+        `REALITY_DEST=${current.REALITY_DEST || "www.apple.com:443"}`,
+        `REALITY_SNI=${current.REALITY_SNI || "www.apple.com"}`
+    ];
+
+    const handledKeys = new Set([
+        "ADMIN_TOKEN", "SERVER_PORT", "SERVER_IP", "SERVER_DOMAIN",
+        "ARGO_TOKEN", "ARGO_DOMAIN", "OPTIMIZED_DOMAIN", "EXTRA_NODES",
+        "UDP_QUIC_PROTOCOL", "TUIC_PORT", "REALITY_DEST", "REALITY_SNI"
+    ]);
+    for (const [k, v] of Object.entries(current)) {
+        if (!handledKeys.has(k)) {
+            lines.push(`${k}=${v}`);
+        }
+    }
+
+    fs.writeFileSync(ENV_FILE, lines.join("\n") + "\n", "utf8");
+    console.log("[Env] .env 文件已通过后台可视化修改并毫秒级保存！");
+}
+
 // 智能探测翼龙面板 (Pterodactyl) 多 Allocations 附加端口
 function detectPterodactylAdditionalPorts(mainPort) {
     const detectedPorts = new Set();
@@ -2592,6 +2653,60 @@ function handleHttpRequest(req, res) {
             return;
         }
 
+        if (pathname === "/admin/api/server-config" && req.method === "GET") {
+            res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+            return res.end(JSON.stringify({
+                success: true,
+                config: {
+                    serverDomain: appConfig.serverDomain,
+                    serverPort: appConfig.port || "",
+                    serverIp: appConfig.serverIp,
+                    adminToken: appConfig.adminToken,
+                    argoToken: process.env.ARGO_TOKEN || "",
+                    argoDomain: process.env.ARGO_DOMAIN || "",
+                    optimizedDomain: process.env.OPTIMIZED_DOMAIN || "",
+                    extraNodes: process.env.EXTRA_NODES || "",
+                    udpQuicProtocol: (process.env.UDP_QUIC_PROTOCOL || "hy2").toLowerCase(),
+                    tuicPort: process.env.TUIC_PORT || "",
+                    realityDest: process.env.REALITY_DEST || "www.apple.com:443",
+                    realitySni: process.env.REALITY_SNI || "www.apple.com"
+                }
+            }));
+        }
+
+        if (pathname === "/admin/api/server-config" && req.method === "POST") {
+            let body = "";
+            req.on("data", (c) => { body += c; });
+            req.on("end", () => {
+                try {
+                    const data = JSON.parse(body || "{}");
+                    const updates = {};
+                    if (data.serverDomain !== undefined) updates.SERVER_DOMAIN = String(data.serverDomain).trim();
+                    if (data.serverPort !== undefined && String(data.serverPort).trim()) updates.SERVER_PORT = String(data.serverPort).trim();
+                    if (data.serverIp !== undefined) updates.SERVER_IP = String(data.serverIp).trim();
+                    if (data.adminToken !== undefined && String(data.adminToken).trim()) updates.ADMIN_TOKEN = String(data.adminToken).trim();
+                    if (data.argoToken !== undefined) updates.ARGO_TOKEN = String(data.argoToken).trim();
+                    if (data.argoDomain !== undefined) updates.ARGO_DOMAIN = String(data.argoDomain).trim();
+                    if (data.optimizedDomain !== undefined) updates.OPTIMIZED_DOMAIN = String(data.optimizedDomain).trim();
+                    if (data.extraNodes !== undefined) updates.EXTRA_NODES = String(data.extraNodes).trim();
+                    if (data.udpQuicProtocol !== undefined) updates.UDP_QUIC_PROTOCOL = String(data.udpQuicProtocol).trim().toLowerCase();
+                    if (data.tuicPort !== undefined) updates.TUIC_PORT = String(data.tuicPort).trim();
+                    if (data.realityDest !== undefined) updates.REALITY_DEST = String(data.realityDest).trim();
+                    if (data.realitySni !== undefined) updates.REALITY_SNI = String(data.realitySni).trim();
+
+                    saveEnvFile(updates);
+                    safeReloadSingbox();
+
+                    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+                    res.end(JSON.stringify({ success: true, message: "核心参数已保存，.env 毫秒级热重载已生效！" }));
+                } catch (e) {
+                    res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+                    res.end(JSON.stringify({ success: false, error: "解析配置数据失败: " + e.message }));
+                }
+            });
+            return;
+        }
+
         if (pathname === "/admin/api/settings" && req.method === "GET") {
             res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
             return res.end(JSON.stringify({ success: true, settings: siteSettings }));
@@ -3116,6 +3231,9 @@ function handleHttpRequest(req, res) {
                             <div class="header-desc">统一网关路由 · 多协议分流 · 实时感知运维</div>
                         </div>
                         <div class="header-right" style="display:flex; align-items:center; gap:10px;">
+                            ${appConfig.serverDomain
+                ? `<span style="font-size:12px; color:#409eff; background:#ecf5ff; border:1px solid #d9ecff; padding:3px 8px; border-radius:4px; font-weight:600; cursor:pointer;" onclick="openServerConfigModal()" title="点击修改回溯域名与系统参数">🌐 回溯: ${appConfig.serverDomain}</span>`
+                : `<span style="font-size:12px; color:#e6a23c; background:#fdf6ec; border:1px solid #faecd8; padding:3px 8px; border-radius:4px; font-weight:600; cursor:pointer;" onclick="openServerConfigModal()" title="点击设置回溯域名">⚠️ 回溯域名: 未设置</span>`}
                             ${appConfig.isTunnelAvailable
                 ? '<span style="font-size:12px; color:#67c23a; background:#f0f9eb; border:1px solid #e1f3d8; padding:3px 8px; border-radius:4px;">⚡ 隧道: 已激活 (含3优选节点)</span>'
                 : '<span style="font-size:12px; color:#909399; background:#f4f4f5; border:1px solid #dcdfe6; padding:3px 8px; border-radius:4px;">⚪ 隧道: 未配置 (仅3直连节点)</span>'}
@@ -3150,6 +3268,10 @@ function handleHttpRequest(req, res) {
                                 <button class="btn" style="background:#fef0f0; border:1px solid #fde2e2; color:#f56c6c; cursor:pointer;" onclick="clearInvalidUsers()" title="一键清理所有过期、流量超额或被冻结的失效用户">
                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
                                     一键清理失效
+                                </button>
+                                <button class="btn" style="background:#eef2ff; border:1px solid #c7d2fe; color:#4338ca; cursor:pointer; font-weight:600;" onclick="openServerConfigModal()" title="设置 Cloudflare 端口回溯主域名、服务监听端口、公网IP及极速传输协议">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>
+                                    回溯域名与核心配置
                                 </button>
                                 <button class="btn" style="background:var(--el-primary-light); border:1px solid var(--el-primary-border); color:var(--el-primary); cursor:pointer;" onclick="openSettingsModal()" title="设置是否开放注册以及新注册用户初始配额">
                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
@@ -3463,7 +3585,102 @@ function handleHttpRequest(req, res) {
                                 <button class="btn btn-primary" id="saveCdnOptBtn" onclick="submitCdnOptSettings()">保存配置</button>
                             </div>
                         </div>
+                    
+                    <!-- ⚙️ 核心网络与回溯配置弹窗 -->
+                    <div class="modal-mask" id="serverConfigModal">
+                        <div class="modal" style="max-width:640px; max-height:88vh; overflow-y:auto;">
+                            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; border-bottom:1px solid var(--el-border); padding-bottom:10px;">
+                                <div style="display:flex; align-items:center; gap:8px;">
+                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" color="var(--el-primary)"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>
+                                    <h4 style="margin:0; font-size:16px;">Cloudflare 回溯域名与系统参数配置</h4>
+                                </div>
+                                <span style="font-size:11px; background:#eff6ff; color:#3b82f6; border:1px solid #bfdbfe; padding:2px 8px; border-radius:10px; font-weight:500;">.env 即时热重载</span>
+                            </div>
+
+                            <!-- 1. 核心回溯主域名 -->
+                            <div style="background:#f0f9eb; border:1px solid #c2e7b0; border-radius:6px; padding:12px; margin-bottom:12px;">
+                                <label style="font-weight:700; color:#27ae60; font-size:13px; display:flex; align-items:center; gap:6px;">
+                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>
+                                    Cloudflare 端口回溯主域名 (SERVER_DOMAIN)
+                                </label>
+                                <div style="font-size:12px; color:#555; margin:4px 0 8px 0; line-height:1.5;">
+                                    在 Cloudflare 配置 Origin Rules（将外部 443 回溯至本服务器端口）后，填入该主域名（例如 <code>yylsl.abcai.online</code>）。保存后生成的优选节点和自适应订阅将自动以此域名为主公网出口。
+                                </div>
+                                <input type="text" id="cfg_server_domain" placeholder="例如: yylsl.abcai.online (留空使用 IP 直连)" style="width:100%; box-sizing:border-box; padding:8px 10px; border:1px solid #a8d59d; border-radius:4px; font-size:13px; font-family:Consolas, monospace;" />
+                            </div>
+
+                            <!-- 2. 网络监听与公网 IPv4 -->
+                            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-bottom:12px;">
+                                <div class="field-box" style="margin-bottom:0;">
+                                    <label style="font-size:12px; font-weight:600;">服务回溯监听端口 (SERVER_PORT)</label>
+                                    <input type="number" id="cfg_server_port" placeholder="默认 21216" style="width:100%; box-sizing:border-box; padding:7px 9px; font-size:13px;" />
+                                    <div style="font-size:11px; color:var(--el-text-secondary); margin-top:2px;">物理监听端口或 NAT 转发端口</div>
+                                </div>
+                                <div class="field-box" style="margin-bottom:0;">
+                                    <label style="font-size:12px; font-weight:600;">服务器公网 IPv4 (SERVER_IP)</label>
+                                    <input type="text" id="cfg_server_ip" placeholder="留空系统自动探测" style="width:100%; box-sizing:border-box; padding:7px 9px; font-size:13px;" />
+                                    <div style="font-size:11px; color:var(--el-text-secondary); margin-top:2px;">留空则自动抓取公网 IPv4</div>
+                                </div>
+                            </div>
+
+                            <!-- 3. 管理员口令 -->
+                            <div class="field-box" style="margin-bottom:12px;">
+                                <label style="font-size:12px; font-weight:600;">管理后台访问密码 (ADMIN_TOKEN)</label>
+                                <input type="text" id="cfg_admin_token" placeholder="输入新的管理密码" style="width:100%; box-sizing:border-box; padding:7px 9px; font-size:13px;" />
+                                <div style="font-size:11px; color:var(--el-text-secondary); margin-top:2px;">用于直接登录 /admin 管理后台，修改后立即热生效</div>
+                            </div>
+
+                            <!-- 4. 传输协议选择 -->
+                            <div class="field-box" style="margin-bottom:12px;">
+                                <label style="font-size:12px; font-weight:600;">极速 UDP/QUIC 协议选择 (UDP_QUIC_PROTOCOL)</label>
+                                <select id="cfg_udp_protocol" style="width:100%; box-sizing:border-box; padding:7px 9px; font-size:13px;">
+                                    <option value="hy2">Hysteria 2 (推荐: 极速抗丢包，最高支持 2000 Mbps)</option>
+                                    <option value="tuic">TUIC v5 (基于 BBR-QUIC 协议栈)</option>
+                                </select>
+                            </div>
+
+                            <!-- 5. 可选高级配置折叠/展开 -->
+                            <details style="background:#fafafa; border:1px solid #ebeef5; border-radius:6px; padding:10px; margin-bottom:12px;">
+                                <summary style="font-size:12px; font-weight:600; color:var(--el-text-regular); cursor:pointer;">高级隧道与伪装参数 (Argo / Reality / 节点聚合)</summary>
+                                <div style="margin-top:10px; display:flex; flex-direction:column; gap:10px;">
+                                    <div>
+                                        <label style="font-size:11px; font-weight:600; color:#606266;">Cloudflare Argo 隧道 Token (ARGO_TOKEN)</label>
+                                        <input type="text" id="cfg_argo_token" placeholder="留空不使用 Argo 隧道" style="width:100%; box-sizing:border-box; padding:6px 8px; font-size:12px;" />
+                                    </div>
+                                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+                                        <div>
+                                            <label style="font-size:11px; font-weight:600; color:#606266;">Argo 隧道域名 (ARGO_DOMAIN)</label>
+                                            <input type="text" id="cfg_argo_domain" placeholder="例如 tunnel.example.com" style="width:100%; box-sizing:border-box; padding:6px 8px; font-size:12px;" />
+                                        </div>
+                                        <div>
+                                            <label style="font-size:11px; font-weight:600; color:#606266;">Argo 优选域名 (OPTIMIZED_DOMAIN)</label>
+                                            <input type="text" id="cfg_optimized_domain" placeholder="例如 cf.example.com" style="width:100%; box-sizing:border-box; padding:6px 8px; font-size:12px;" />
+                                        </div>
+                                    </div>
+                                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
+                                        <div>
+                                            <label style="font-size:11px; font-weight:600; color:#606266;">Reality 伪装目标 (REALITY_DEST)</label>
+                                            <input type="text" id="cfg_reality_dest" placeholder="默认 www.apple.com:443" style="width:100%; box-sizing:border-box; padding:6px 8px; font-size:12px;" />
+                                        </div>
+                                        <div>
+                                            <label style="font-size:11px; font-weight:600; color:#606266;">Reality 伪装 SNI (REALITY_SNI)</label>
+                                            <input type="text" id="cfg_reality_sni" placeholder="默认 www.apple.com" style="width:100%; box-sizing:border-box; padding:6px 8px; font-size:12px;" />
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label style="font-size:11px; font-weight:600; color:#606266;">异地节点扩展 (EXTRA_NODES, Base64/分享链接)</label>
+                                        <textarea id="cfg_extra_nodes" rows="2" placeholder="多节点聚合直连链接，每行一个" style="width:100%; box-sizing:border-box; padding:6px 8px; font-size:12px; font-family:Consolas, monospace;"></textarea>
+                                    </div>
+                                </div>
+                            </details>
+
+                            <div class="modal-footer" style="margin-top:14px;">
+                                <button class="btn" style="background:#fff; border:1px solid var(--el-border); color:var(--el-text-regular);" onclick="closeServerConfigModal()">取消</button>
+                                <button class="btn btn-primary" id="saveServerConfigBtn" onclick="submitServerConfig()">💾 保存配置并毫秒级生效</button>
+                            </div>
+                        </div>
                     </div>
+
                 </div>
 
                 <script>
@@ -3976,7 +4193,100 @@ function handleHttpRequest(req, res) {
                         }
                     }
 
-                    async function submitSettings() {
+                    async 
+                    async function openServerConfigModal() {
+                        const modal = document.getElementById("serverConfigModal");
+                        if (!modal) return;
+                        modal.style.display = "flex";
+
+                        try {
+                            const qToken = new URLSearchParams(window.location.search).get("token") || "";
+                            const apiUrl = qToken ? ("/admin/api/server-config?token=" + encodeURIComponent(qToken)) : "/admin/api/server-config";
+                            const res = await fetch(apiUrl);
+                            const data = await res.json();
+                            if (res.ok && data.success && data.config) {
+                                const c = data.config;
+                                if (document.getElementById("cfg_server_domain")) document.getElementById("cfg_server_domain").value = c.serverDomain || "";
+                                if (document.getElementById("cfg_server_port")) document.getElementById("cfg_server_port").value = c.serverPort || "";
+                                if (document.getElementById("cfg_server_ip")) document.getElementById("cfg_server_ip").value = c.serverIp || "";
+                                if (document.getElementById("cfg_admin_token")) document.getElementById("cfg_admin_token").value = c.adminToken || "";
+                                if (document.getElementById("cfg_udp_protocol")) document.getElementById("cfg_udp_protocol").value = c.udpQuicProtocol || "hy2";
+                                if (document.getElementById("cfg_argo_token")) document.getElementById("cfg_argo_token").value = c.argoToken || "";
+                                if (document.getElementById("cfg_argo_domain")) document.getElementById("cfg_argo_domain").value = c.argoDomain || "";
+                                if (document.getElementById("cfg_optimized_domain")) document.getElementById("cfg_optimized_domain").value = c.optimizedDomain || "";
+                                if (document.getElementById("cfg_reality_dest")) document.getElementById("cfg_reality_dest").value = c.realityDest || "www.apple.com:443";
+                                if (document.getElementById("cfg_reality_sni")) document.getElementById("cfg_reality_sni").value = c.realitySni || "www.apple.com";
+                                if (document.getElementById("cfg_extra_nodes")) document.getElementById("cfg_extra_nodes").value = c.extraNodes || "";
+                            }
+                        } catch (e) {
+                            console.error("加载核心配置失败:", e);
+                        }
+                    }
+
+                    function closeServerConfigModal() {
+                        const modal = document.getElementById("serverConfigModal");
+                        if (modal) modal.style.display = "none";
+                    }
+
+                    async function submitServerConfig() {
+                        const btn = document.getElementById("saveServerConfigBtn");
+                        if (btn) {
+                            btn.innerText = "保存中...";
+                            btn.disabled = true;
+                        }
+
+                        try {
+                            const serverDomain = document.getElementById("cfg_server_domain") ? document.getElementById("cfg_server_domain").value.trim() : "";
+                            const serverPort = document.getElementById("cfg_server_port") ? document.getElementById("cfg_server_port").value.trim() : "";
+                            const serverIp = document.getElementById("cfg_server_ip") ? document.getElementById("cfg_server_ip").value.trim() : "";
+                            const adminToken = document.getElementById("cfg_admin_token") ? document.getElementById("cfg_admin_token").value.trim() : "";
+                            const udpQuicProtocol = document.getElementById("cfg_udp_protocol") ? document.getElementById("cfg_udp_protocol").value : "hy2";
+                            const argoToken = document.getElementById("cfg_argo_token") ? document.getElementById("cfg_argo_token").value.trim() : "";
+                            const argoDomain = document.getElementById("cfg_argo_domain") ? document.getElementById("cfg_argo_domain").value.trim() : "";
+                            const optimizedDomain = document.getElementById("cfg_optimized_domain") ? document.getElementById("cfg_optimized_domain").value.trim() : "";
+                            const realityDest = document.getElementById("cfg_reality_dest") ? document.getElementById("cfg_reality_dest").value.trim() : "";
+                            const realitySni = document.getElementById("cfg_reality_sni") ? document.getElementById("cfg_reality_sni").value.trim() : "";
+                            const extraNodes = document.getElementById("cfg_extra_nodes") ? document.getElementById("cfg_extra_nodes").value.trim() : "";
+
+                            const qToken = new URLSearchParams(window.location.search).get("token") || "";
+                            const apiUrl = qToken ? ("/admin/api/server-config?token=" + encodeURIComponent(qToken)) : "/admin/api/server-config";
+
+                            const res = await fetch(apiUrl, {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({
+                                    serverDomain, serverPort, serverIp, adminToken,
+                                    udpQuicProtocol, argoToken, argoDomain, optimizedDomain,
+                                    realityDest, realitySni, extraNodes
+                                })
+                            });
+
+                            const data = await res.json();
+                            if (res.ok && data.success) {
+                                showToast("🎉 核心回溯与系统参数已成功保存并即刻生效！");
+                                closeServerConfigModal();
+                                setTimeout(() => {
+                                    // 若修改了后台密码且当前有 token 参数，平滑更新 URL
+                                    if (adminToken && qToken && adminToken !== qToken) {
+                                        window.location.href = "/admin?token=" + encodeURIComponent(adminToken);
+                                    } else {
+                                        window.location.reload();
+                                    }
+                                }, 800);
+                            } else {
+                                alert(data.error || "保存失败，请检查填写内容");
+                            }
+                        } catch (err) {
+                            alert("网络通信异常: " + err.message);
+                        } finally {
+                            if (btn) {
+                                btn.innerText = "💾 保存配置并毫秒级生效";
+                                btn.disabled = false;
+                            }
+                        }
+                    }
+
+                    function submitSettings() {
                         const btn = document.getElementById("saveSettingsBtn");
                         btn.innerText = "保存中...";
                         btn.disabled = true;
