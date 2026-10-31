@@ -294,4 +294,37 @@ FATAL[0000] create service: parse route options: parse rule[0]: missing conditio
 4. **自动化测试 100% 验证**：
    - [test_optimal_api_and_hy2.js](file:///d:/DeskTop/GitHub/测/lunes/nodejs/node/test_optimal_api_and_hy2.js) 绿灯通过，验证配置结构与 URI 生成完全正确。
 
+---
+
+## 问题 8: Cloudflare 端口回溯优选节点测速 -1 故障与 ECH + ACL4SSR 规则集集成
+
+- **问题现象**：在通过 Cloudflare Origin Rules 对 VPS 的 21216 端口配置 443 回溯后，客户端拉取的 CF 优选节点测速全部超时或报错 `-1`。
+- **根本原因**：
+  1. GFW 对 Cloudflare 443 边缘节点全面启用了 SNI 深度阻断，常规明文 SNI 握手会被立即注入 TCP RST 断开。
+  2. 生成的 Clash 配置缺少 `client-fingerprint: chrome` 与 `ech: { enable: true }` 参数支持。
+  3. 未在 `.env` 中显式指定 `SERVER_DOMAIN` 时，通过 IP 访问订阅无法触发 `isDomain` 优选节点下发逻辑。
+  4. 原生配置缺少精细化分流规则，无法实现流媒体、AI 与广告分流。
+- **解决方案**：
+  1. 在 `.env` 中写入 `SERVER_DOMAIN=yylsl.abcai.online`，锁定端口回溯主域名。
+  2. 在 `generateClashConfig` 中为所有 CF 443 端口优选节点注入 `ech: { enable: true }` 与 `client-fingerprint: chrome`。
+  3. 配置全局权威 DoH（阿里 DNS `https://dns.alidns.com/dns-query#h3=true`），确保客户端能从权威 DNS 解析到 Cloudflare 域名的 HTTPS/SVCB ECH 加密公钥。
+  4. 完整集成鼻祖级 **ACL4SSR** 云端规则集（`rule-providers`），支持 24 小时定时自动更新，配套包含节点选择、自动优选、三网优选、人工智能、国外媒体、电报消息、广告拦截与全球直连策略组。
+  5. 热推送到远程 VPS 并重启验证，下发的 Clash 订阅完全符合标准。
+  6. 在通用的 Base64 单链接导出函数 `getNodesForUser` 中，为 VLESS、VMess、Trojan 链接补全 `fp=chrome` 与 `echConfigList=cloudflare-ech.com+https://dns.alidns.com/dns-query`，使得 v2rayN 客户端导入后能自动填充 `Fingerprint` 与 `EchConfigList` 字段，实现原生零手动配置 ECH。
+  7. 修正 Clash Meta (Mihomo) ECH 语法为规范的 `ech-opts: enable: true`，并将外部 rule-providers 域名替换为国内高速 CDN（`cdn.jsdelivr.net`），避免直连 GitHub Raw 超时；扩展订阅入口对各类 Clash 客户端 UA 的宽容探测，支持带 `&type=clash` 显式下发。
+
+---
+
+## 问题 9: VPS 一键安装脚本在管道模式 (curl | sh) 下终端无法交互输入的问题
+
+- **问题现象**：在通过 `curl -fsSL ... | sh` 远程执行部署脚本时，终端直接跳过用户输入或抛出 `read: read error: 0: Bad file descriptor`，无法交互式设定回溯端口、管理密码与域名。
+- **根本原因**：
+  1. 通过管道 `| sh` 启动时，标准输入（`stdin`，fd 0）已被管道占用（用于传输脚本内容），直接调用 `read` 无法从键盘控制台读取用户输入。
+  2. 部分精简 Linux（如 Alpine BusyBox）在管道读取完毕后直接向 `read` 返回 EOF。
+- **解决方案**：
+  1. 在脚本初始化阶段加入文件描述符探测：若存在控制终端设备 `[ -e /dev/tty ]`，执行 `exec < /dev/tty` 将标准输入重新定向至当前物理终端。
+  2. 实现交互式向导：回溯端口提供默认值 `21216` 并进行纯数字范围校验；管理密码提供回车自动生成 10 位高强度随机串；回溯域名提供回车直接跳过（支持后续在 Web 后台随时修改）。
+  3. 公网 IPv4 通过权威接口（ipify / ifconfig.me）全自动探测，无需用户手动输入。
+  4. 自适应系统守护（systemd / OpenRC）并在完成后输出美观的访问地址与运维命令。
+
 

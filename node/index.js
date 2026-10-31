@@ -1695,7 +1695,12 @@ function getNodesForUser(user, req = null) {
             const sniStr = n.sni ? `sni=${n.sni}&` : "";
             const hostStr = n.wsHeaders && n.wsHeaders.Host ? `host=${n.wsHeaders.Host}&` : "";
             const encPath = encodeURIComponent(n.wsPath);
-            linkList.push(`vless://${n.uuid}@${n.server}:${n.port}?type=ws&${tlsStr}${sniStr}${hostStr}path=${encPath}#${n.name}`);
+            let echStr = "";
+            if (n.tls) {
+                const echVal = "cloudflare-ech.com+https://dns.alidns.com/dns-query";
+                echStr = `fp=chrome&alpn=h2,http/1.1&ech=${echVal}&echConfigList=${echVal}&`;
+            }
+            linkList.push(`vless://${n.uuid}@${n.server}:${n.port}?type=ws&${tlsStr}${sniStr}${hostStr}${echStr}path=${encPath}#${n.name}`);
         } else if (n.type === "vless-reality") {
             const encName = encodeURIComponent(n.name);
             linkList.push(`vless://${n.uuid}@${n.server}:${n.port}?security=reality&encryption=none&pbk=${n.pbk}&headerType=none&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=${n.sni}&sid=${n.sid}#${encName}`);
@@ -1714,8 +1719,11 @@ function getNodesForUser(user, req = null) {
                 path: n.wsPath,
                 tls: n.tls ? "tls" : "",
                 sni: n.sni || "",
-                alpn: "",
-                fp: "chrome"
+                alpn: n.tls ? "h2,http/1.1" : "",
+                fp: "chrome",
+                ech: n.tls ? "cloudflare-ech.com+https://dns.alidns.com/dns-query" : "",
+                echConfigList: n.tls ? "cloudflare-ech.com+https://dns.alidns.com/dns-query" : "",
+                ech_config_list: n.tls ? "cloudflare-ech.com+https://dns.alidns.com/dns-query" : ""
             };
             linkList.push("vmess://" + Buffer.from(JSON.stringify(vmessObj)).toString("base64"));
         } else if (n.type === "trojan") {
@@ -1723,7 +1731,12 @@ function getNodesForUser(user, req = null) {
             const sniStr = n.sni ? `sni=${n.sni}&` : "";
             const hostStr = n.wsHeaders && n.wsHeaders.Host ? `host=${n.wsHeaders.Host}&` : "";
             const encPath = encodeURIComponent(n.wsPath);
-            linkList.push(`trojan://${n.password}@${n.server}:${n.port}?${tlsStr}${sniStr}${hostStr}type=ws&path=${encPath}#${n.name}`);
+            let echStr = "";
+            if (n.tls) {
+                const echVal = "cloudflare-ech.com+https://dns.alidns.com/dns-query";
+                echStr = `fp=chrome&alpn=h2,http/1.1&ech=${echVal}&echConfigList=${echVal}&`;
+            }
+            linkList.push(`trojan://${n.password}@${n.server}:${n.port}?${tlsStr}${sniStr}${hostStr}${echStr}type=ws&path=${encPath}#${n.name}`);
         } else if (n.type === "hysteria2") {
             const encName = encodeURIComponent(n.name);
             linkList.push(`hysteria2://${n.password}@${n.server}:${n.port}/?upmbps=2000&downmbps=2000&insecure=1&allowInsecure=1&sni=${n.sni}#${encName}`);
@@ -1761,6 +1774,11 @@ function generateClashConfig(user, req = null) {
                 proxiesYaml += `      headers:\n`;
                 proxiesYaml += `        Host: ${n.wsHeaders.Host}\n`;
             }
+            if (n.tls) {
+                proxiesYaml += `    client-fingerprint: chrome\n`;
+                proxiesYaml += `    ech-opts:\n`;
+                proxiesYaml += `      enable: true\n`;
+            }
         } else if (n.type === "vless-reality") {
             proxiesYaml += `  - name: "${n.name}"\n`;
             proxiesYaml += `    type: vless\n`;
@@ -1793,6 +1811,11 @@ function generateClashConfig(user, req = null) {
                 proxiesYaml += `      headers:\n`;
                 proxiesYaml += `        Host: ${n.wsHeaders.Host}\n`;
             }
+            if (n.tls) {
+                proxiesYaml += `    client-fingerprint: chrome\n`;
+                proxiesYaml += `    ech-opts:\n`;
+                proxiesYaml += `      enable: true\n`;
+            }
         } else if (n.type === "trojan") {
             proxiesYaml += `  - name: "${n.name}"\n`;
             proxiesYaml += `    type: trojan\n`;
@@ -1808,6 +1831,11 @@ function generateClashConfig(user, req = null) {
             if (n.wsHeaders && n.wsHeaders.Host) {
                 proxiesYaml += `      headers:\n`;
                 proxiesYaml += `        Host: ${n.wsHeaders.Host}\n`;
+            }
+            if (n.tls) {
+                proxiesYaml += `    client-fingerprint: chrome\n`;
+                proxiesYaml += `    ech-opts:\n`;
+                proxiesYaml += `      enable: true\n`;
             }
         } else if (n.type === "hysteria2") {
             proxiesYaml += `  - name: "${n.name}"\n`;
@@ -1881,12 +1909,48 @@ function generateClashConfig(user, req = null) {
     proxies:
       ${(directNames.length > 0 ? directNames.map(n => `"${n}"`) : quotedAll).map(n => "- " + n).join("\n      ")}
 
+  - name: "🤖 人工智能"
+    type: select
+    proxies:
+      - "🚀 节点选择"
+      - "⚡ 自动优选"
+      - DIRECT
+      ${quotedAll.map(n => "- " + n).join("\n      ")}
+
+  - name: "🎥 国外媒体"
+    type: select
+    proxies:
+      - "🚀 节点选择"
+      - "⚡ 自动优选"
+      - DIRECT
+      ${quotedAll.map(n => "- " + n).join("\n      ")}
+
+  - name: "📲 电报消息"
+    type: select
+    proxies:
+      - "🚀 节点选择"
+      - "⚡ 自动优选"
+      - DIRECT
+      ${quotedAll.map(n => "- " + n).join("\n      ")}
+
+  - name: "🛑 全球拦截"
+    type: select
+    proxies:
+      - REJECT
+      - DIRECT
+
+  - name: "🎯 全球直连"
+    type: select
+    proxies:
+      - DIRECT
+      - "🚀 节点选择"
+
   - name: "🐟 漏网之鱼"
     type: select
     proxies:
       - "🚀 节点选择"
       - "⚡ 自动优选"
-      - DIRECT`;
+      - "🎯 全球直连"`;
 
     return `port: 7890
 socks-port: 7891
@@ -1904,7 +1968,7 @@ dns:
   enhanced-mode: fake-ip
   fake-ip-range: 198.18.0.1/16
   nameserver:
-    - https://dns.alidns.com/dns-query
+    - https://dns.alidns.com/dns-query#h3=true
     - https://doh.pub/dns-query
   fallback:
     - https://1.1.1.1/dns-query
@@ -1921,7 +1985,65 @@ ${proxiesYaml}
 proxy-groups:
 ${groupsYaml}
 
+# 🚀 鼻祖级 ACL4SSR 云端全自动同步规则集 (定时 24 小时刷新)
+rule-providers:
+  reject:
+    type: http
+    behavior: domain
+    url: "https://cdn.jsdelivr.net/gh/ACL4SSR/ACL4SSR@master/Clash/Providers/BanAD.yaml"
+    path: ./ruleset/reject.yaml
+    interval: 86400
+
+  special:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/ACL4SSR/ACL4SSR@master/Clash/Providers/LocalAreaNetwork.yaml"
+    path: ./ruleset/special.yaml
+    interval: 86400
+
+  telegram:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/ACL4SSR/ACL4SSR@master/Clash/Providers/Ruleset/Telegram.yaml"
+    path: ./ruleset/telegram.yaml
+    interval: 86400
+
+  openai:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/ACL4SSR/ACL4SSR@master/Clash/Providers/Ruleset/OpenAi.yaml"
+    path: ./ruleset/openai.yaml
+    interval: 86400
+
+  media:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/ACL4SSR/ACL4SSR@master/Clash/Providers/Ruleset/ProxyMedia.yaml"
+    path: ./ruleset/media.yaml
+    interval: 86400
+
+  gfw:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/ACL4SSR/ACL4SSR@master/Clash/Providers/Ruleset/ProxyGFW.yaml"
+    path: ./ruleset/gfw.yaml
+    interval: 86400
+
+  china:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/ACL4SSR/ACL4SSR@master/Clash/Providers/ChinaDomain.yaml"
+    path: ./ruleset/china.yaml
+    interval: 86400
+
 rules:
+  - RULE-SET,special,🎯 全球直连
+  - RULE-SET,reject,🛑 全球拦截
+  - RULE-SET,openai,🤖 人工智能
+  - RULE-SET,telegram,📲 电报消息
+  - RULE-SET,media,🎥 国外媒体
+  - RULE-SET,gfw,🚀 节点选择
+  - RULE-SET,china,🎯 全球直连
   - GEOIP,LAN,DIRECT,no-resolve
   - GEOIP,CN,DIRECT,no-resolve
   - MATCH,🐟 漏网之鱼
@@ -1950,9 +2072,14 @@ function handleHttpRequest(req, res) {
             return res.end(`[Access Denied] 拒绝订阅下发：${invalidReason}。请联系管理员续约。`);
         }
 
+        const userAgent = (req.headers["user-agent"] || "").toLowerCase();
+        const acceptHeader = (req.headers["accept"] || "").toLowerCase();
         const isClash = query.get("type") === "clash" ||
             query.get("format") === "clash" ||
-            /clash|meta|mihomo|stash/i.test(req.headers["user-agent"] || "");
+            query.get("clash") === "1" ||
+            /clash|meta|mihomo|stash|verge|nyanpasu|flclash|sing-box/i.test(userAgent) ||
+            acceptHeader.includes("yaml") ||
+            acceptHeader.includes("clash");
 
         const subUserInfo = `upload=0; download=${user.trafficUsed}; total=${user.trafficLimit}; expire=${Math.floor(user.expireTime / 1000)}`;
 
