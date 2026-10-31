@@ -1,15 +1,91 @@
-本项目是一个轻量级、开箱即用的网络代理接入与多用户权限管理网关，专为翼龙面板（Pterodactyl）等容器化托管环境设计。核心基于 Node.js 运行时实现反向代理分流，底层无缝调度 Sing-box 代理核心与 Cloudflare Argo 隧道，提供集“用户认证、独立计量、动态配置、全端订阅”于一体的综合接入方案。
+# V3 极轻量多协议节点管理中枢与自适应订阅网关
 
-核心功能特性
+本项目是一个极轻量、开箱即用的多协议网络代理接入与多用户权限管理网关。核心基于原生 Node.js 实现反向代理与流量分发，底层无缝调度 Sing-box 代理核心，全面支持 **VLESS / VMess / Trojan / Reality / Hysteria 2** 协议，并集成 **ECH (Encrypted Client Hello)** 与 **ACL4SSR 分流策略库**。
 
-协议集成与弹性分流：Node.js 单端口监听，通过解析 WebSocket 握手路径自动分流至内部隔离的 VLESS、VMess 与 Trojan 端口服务。
+---
 
-双模网络支持：支持物理公网 IP 端口直连与 Cloudflare Argo 隧道（搭配优选域名/TLS）双通道，兼顾低延迟与高隐匿性。
+## ⚡ 全平台交互式一键部署
 
-用户隔离与精准记账：引入用户专属动态路径机制，彻底解决共享代理端口下的流量混淆问题。采用 256 KB 流式实时计费，避免长连接导致的用量统计延迟。
+在任意全新的 Linux 服务器（支持 **Ubuntu / Debian / Alpine / CentOS / Rocky / Alma / Arch**）终端中执行以下命令（`curl` 或 `wget` 二选一）即可启动全自动交互式部署向导：
 
-严格鉴权与自动断流：内置基于 SHA-256 加盐认证的账户体系，支持精确到 MB/GB/TB 的流量限额与到期日控制。一旦欠费或超额，系统将在网关与核心层实时掐断连接并拦截订阅。
+### 1. 官方主干通道
+**使用 curl：**
+```sh
+curl -fsSL https://raw.githubusercontent.com/hc990275/nodejs/main/node/install.sh | sh
+```
 
-现代毛玻璃 UI 交互：前台提供端到端的注册、登入与仪表盘，支持实时用量进度条与一键导入订阅；后台提供全局数据看板、弹窗式用户增删改查及流量一键清零功能。
+**使用 wget：**
+```sh
+wget -qO- https://raw.githubusercontent.com/hc990275/nodejs/main/node/install.sh | sh
+```
 
-防死锁与原子化重载：配备进程守护、端口强杀与空配置保底逻辑，杜绝频繁变更配置引发的端口占用与核心崩溃现象。
+### 2. 国内 / 阻断地区加速通道 (带 GitHub CDN 镜像)
+**使用 curl：**
+```sh
+curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/hc990275/nodejs/main/node/install.sh | sh
+```
+
+**使用 wget：**
+```sh
+wget -qO- https://ghproxy.net/https://raw.githubusercontent.com/hc990275/nodejs/main/node/install.sh | sh
+```
+
+---
+
+## 🛠️ 交互式配置说明
+
+运行一键脚本后，向导将自动执行以下流程：
+
+1. **IPv4 自动探测**：无需手动填写，脚本将自动抓取当前服务器真实公网 IPv4。
+2. **回溯端口设定**：提示输入回溯监听端口（默认 `21216`，普通 VPS 可设为 `8080`，NAT 鸡填写分配的公网转发端口）。
+3. **管理后台密码**：提示输入后台管理员密码（直接回车将自动生成随机高强度密码）。
+4. **回溯域名设定**：提示输入 Cloudflare 端口回溯主域名（如 `yylsl.abcai.online`）。**直接回车可跳过**，后续可在 Web 管理后台随时填写或修改，立即热重载生效。
+
+> 💡 **小内存保护**：脚本会自动感知 VPS 物理内存大小（如 128MB / 256MB NAT 鸡），自动注入 `--max-old-space-size=48` 内存隔离保护，杜绝 OOM 崩溃。
+
+---
+
+## 🌐 访问与管理
+
+安装完成后，终端将即刻输出交付凭据：
+
+* **前台用户中心**：`http://<服务器IP>:<端口>/`
+* **管理后台入口**：`http://<服务器IP>:<端口>/admin`
+* **后台免密直通**：`http://<服务器IP>:<端口>/admin?token=<管理员密码>`
+* **全平台自适应订阅**：`https://<回溯域名>/sub?token=<用户UUID>`
+  * **v2rayN / Shadowrocket**：自适应返回携带原生 Chrome 指纹与 ECH 配置的 Base64 订阅。
+  * **Clash / Mihomo / Clash Verge / Flclash**：自适应返回携带 12 大策略组与 ACL4SSR 规则源的开箱即用 YAML 配置。
+
+---
+
+## 📋 常用运维命令
+
+系统已根据宿主机自动适配开机自启守护：
+
+### 针对 systemd 体系 (Debian / Ubuntu / CentOS / Rocky)
+```sh
+# 查看运行状态
+systemctl status v3-node
+
+# 重启服务
+systemctl restart v3-node
+
+# 查看实时日志
+journalctl -u v3-node -f -n 50
+```
+
+### 针对 OpenRC 体系 (Alpine Linux)
+```sh
+# 查看运行状态
+rc-service v3-node status
+
+# 重启服务
+rc-service v3-node restart
+
+# 查看实时日志
+tail -f /var/log/v3-node.log
+```
+
+### 配置文件修改
+* 路径：`/opt/v3-node/.env`
+* 支持**毫秒级无感知热重载**，修改并保存 `.env` 即可自动生效，无需重启服务进程。
