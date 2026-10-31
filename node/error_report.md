@@ -319,12 +319,13 @@ FATAL[0000] create service: parse route options: parse rule[0]: missing conditio
 
 - **问题现象**：在通过 `curl -fsSL ... | sh` 远程执行部署脚本时，终端直接跳过用户输入或抛出 `read: read error: 0: Bad file descriptor`，无法交互式设定回溯端口、管理密码与域名。
 - **根本原因**：
-  1. 通过管道 `| sh` 启动时，标准输入（`stdin`，fd 0）已被管道占用（用于传输脚本内容），直接调用 `read` 无法从键盘控制台读取用户输入。
-  2. 部分精简 Linux（如 Alpine BusyBox）在管道读取完毕后直接向 `read` 返回 EOF。
+  1. 通过管道 `| sh` 启动时，标准输入（`stdin`，fd 0）已被管道占用（用于传输脚本内容）。若在脚本中执行 `exec < /dev/tty`，会强制将 shell 自身的 stdin 切换为控制台终端，从而**意外掐断并关闭了来自 curl 的输入管道**。
+  2. curl 在试图向已关闭的管道写入后续脚本内容时触发 Broken Pipe，抛出 `curl: (23) Failure writing output to destination` 错误中断。
+  3. 此时 sh 只执行到了前几十行，进而陷入等待终端命令输入的假死状态。
+  4. Alpine BusyBox 默认 `echo` 不解析 `\033` 等八进制转义序列，导致颜色控制字符被原样打印为乱码字符串。
 - **解决方案**：
-  1. 在脚本初始化阶段加入文件描述符探测：若存在控制终端设备 `[ -e /dev/tty ]`，执行 `exec < /dev/tty` 将标准输入重新定向至当前物理终端。
-  2. 实现交互式向导：回溯端口提供默认值 `21216` 并进行纯数字范围校验；管理密码提供回车自动生成 10 位高强度随机串；回溯域名提供回车直接跳过（支持后续在 Web 后台随时修改）。
-  3. 公网 IPv4 通过权威接口（ipify / ifconfig.me）全自动探测，无需用户手动输入。
-  4. 自适应系统守护（systemd / OpenRC）并在完成后输出美观的访问地址与运维命令。
+  1. **安全终端读取函数**：彻底移除全局 `exec < /dev/tty`，封装 `prompt_read` 函数，仅在调用 `read` 接收用户输入时临时且按需从 `< /dev/tty` 获取，绝不破坏 sh 主进程与 curl 的管道连接。
+  2. **ANSI 颜色转义全平台规范化**：通过 `$(printf '\033[0;31m')` 在脚本头部直接生成原生 ANSI 控制字符，使 BusyBox ash、dash、bash 均能完美高亮渲染。
+  3. **推荐执行语法升级**：在文档中推荐采用 `sh -c "$(curl -fsSL ...)"` 或 `sh -c "$(wget -qO- ...)"`，先将完整脚本读入内存再无干扰执行，彻底杜绝管道中断风险。
 
 
