@@ -328,4 +328,20 @@ FATAL[0000] create service: parse route options: parse rule[0]: missing conditio
   2. **ANSI 颜色转义全平台规范化**：通过 `$(printf '\033[0;31m')` 在脚本头部直接生成原生 ANSI 控制字符，使 BusyBox ash、dash、bash 均能完美高亮渲染。
   3. **推荐执行语法升级**：在文档中推荐采用 `sh -c "$(curl -fsSL ...)"` 或 `sh -c "$(wget -qO- ...)"`，先将完整脚本读入内存再无干扰执行，彻底杜绝管道中断风险。
 
+---
+
+## 问题 10: 管理后台缺少 Cloudflare 端口回溯域名及核心系统参数的可视化设置入口
+
+- **问题现象**：部署完成后，管理员进入 Web 管理后台（`/admin`）后，仅能设置注册配额与三网优选 API，无法在网页端可视化查看和修改回溯域名（`SERVER_DOMAIN`）、回溯监听端口（`SERVER_PORT`）、公网 IP（`SERVER_IP`）、后台管理密码（`ADMIN_TOKEN`）及传输协议。
+- **根本原因**：
+  1. 此前上述系统级参数仅依赖部署初始化阶段注入宿主机环境变量或硬编码写入 `.env` 文件。
+  2. 后台既缺少与 `.env` 交互的持久化写回函数与 API 路由，前端界面也未提供对应的可视化配置弹窗。
+- **解决方案**：
+  1. **`.env` 持久化写回与原子重载引擎 (`saveEnvFile`)**：在服务端实现安全的配置写回函数，写入并保留标准注释，同时即刻在内存毫秒级同步 `process.env`，并触发代理核心 `safeReloadSingbox()` 重新生成路由。
+  2. **后台专属管理 API**：新增 `GET /admin/api/server-config` 与 `POST /admin/api/server-config` 接口。
+  3. **现代 Element UI 可视化控制台**：
+     - 在管理后台顶部工具栏新增 `🌐 回溯域名与核心配置` 操作入口；
+     - 在顶部状态栏动态展示当前回溯域名（`🌐 回溯: yylsl.abcai.online` 或 `⚠️ 回溯域名: 未设置`），点击直达配置；
+     - 弹出卡片式配置弹窗，支持可视化配置回溯主域名、服务监听端口、公网 IPv4、管理密码、极速 QUIC 协议（Hy2 / TUIC）、Argo 隧道与 Reality 伪装参数，点击保存即刻无缝热生效。
+
 
