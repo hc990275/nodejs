@@ -106,24 +106,30 @@ ensure_swap_buffer() {
         if [ "$ZRAM_ACTIVATED" != "true" ]; then
             local SWAP_FILE="/swapfile"
             if [ ! -f "$SWAP_FILE" ]; then
-                echo -e "${CYAN}正在创建 ${SWAP_SIZE_MB}MB 虚拟内存交换文件以保障稳定运行...${PLAIN}"
-                if command -v fallocate >/dev/null 2>&1; then
-                    fallocate -l "${SWAP_SIZE_MB}M" "$SWAP_FILE" 2>/dev/null || dd if=/dev/zero of="$SWAP_FILE" bs=1M count="$SWAP_SIZE_MB" 2>/dev/null
-                else
-                    dd if=/dev/zero of="$SWAP_FILE" bs=1M count="$SWAP_SIZE_MB" 2>/dev/null
-                fi
-                chmod 600 "$SWAP_FILE"
-                mkswap "$SWAP_FILE" >/dev/null 2>&1
-                swapon "$SWAP_FILE" >/dev/null 2>&1
-                if ! grep -q "$SWAP_FILE" /etc/fstab 2>/dev/null; then
-                    echo "$SWAP_FILE none swap sw 0 0" >> /etc/fstab
-                fi
-                echo -e "${GREEN}✅ 磁盘 Swap 虚拟内存交换文件已成功激活挂载！${PLAIN}"
+                echo -e "${CYAN}正在尝试配置 ${SWAP_SIZE_MB}MB 虚拟内存交换文件...${PLAIN}"
+                (
+                    if command -v fallocate >/dev/null 2>&1; then
+                        fallocate -l "${SWAP_SIZE_MB}M" "$SWAP_FILE" 2>/dev/null || dd if=/dev/zero of="$SWAP_FILE" bs=1M count="$SWAP_SIZE_MB" 2>/dev/null || true
+                    else
+                        dd if=/dev/zero of="$SWAP_FILE" bs=1M count="$SWAP_SIZE_MB" 2>/dev/null || true
+                    fi
+                    chmod 600 "$SWAP_FILE" 2>/dev/null || true
+                    mkswap "$SWAP_FILE" >/dev/null 2>&1 || true
+                    if swapon "$SWAP_FILE" >/dev/null 2>&1; then
+                        if ! grep -q "$SWAP_FILE" /etc/fstab 2>/dev/null; then
+                            echo "$SWAP_FILE none swap sw 0 0" >> /etc/fstab 2>/dev/null || true
+                        fi
+                        echo -e "${GREEN}✅ 磁盘 Swap 虚拟内存交换文件已成功激活挂载！${PLAIN}"
+                    else
+                        echo -e "${YELLOW}⚡ 检测到当前虚拟化容器限制了 swapon 权限，已安全跳过 Swap 挂载。${PLAIN}"
+                        rm -f "$SWAP_FILE" 2>/dev/null || true
+                    fi
+                ) || true
             fi
         fi
     fi
 }
-ensure_swap_buffer
+ensure_swap_buffer || true
 
 # ========================================================
 # 3. 安装依赖与 Node.js 运行时
@@ -132,8 +138,8 @@ echo -e "${YELLOW}[1/4] 检查并安装系统核心依赖与 Node.js 运行时..
 
 if command -v apk >/dev/null 2>&1; then
     echo -e "${CYAN}检测到 Alpine Linux 环境...${PLAIN}"
-    apk update
-    apk add --no-cache nodejs npm curl openssl ca-certificates bash
+    apk update || true
+    apk add --no-cache nodejs npm curl openssl ca-certificates bash || apk add --no-cache nodejs curl openssl ca-certificates || true
 elif command -v apt-get >/dev/null 2>&1; then
     echo -e "${CYAN}检测到 Debian/Ubuntu 环境...${PLAIN}"
     apt-get update -y
