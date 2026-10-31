@@ -6,14 +6,14 @@
 # ==============================================================================
 set -e
 
-# 终端高亮配色
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-NC='\033[0m'
+# 终端高亮配色 (使用 printf 生成标准 ANSI 转义码，全发行版通用)
+RED=$(printf '\033[0;31m')
+GREEN=$(printf '\033[0;32m')
+YELLOW=$(printf '\033[1;33m')
+BLUE=$(printf '\033[0;34m')
+CYAN=$(printf '\033[0;36m')
+BOLD=$(printf '\033[1m')
+NC=$(printf '\033[0m')
 
 echo ""
 echo "${BOLD}${CYAN}==============================================================${NC}"
@@ -33,10 +33,15 @@ if [ "$(id -u)" != "0" ]; then
     fi
 fi
 
-# 2. 管道输入转接 (确保 curl ... | sh 模式下支持终端交互式 read)
-if [ -e /dev/tty ]; then
-    exec < /dev/tty
-fi
+# 2. 交互式终端输入安全封装 (仅在输入时定向 /dev/tty，绝不劫持全局管道导致 curl 报 23 错误)
+prompt_read() {
+    _VAR_NAME="$1"
+    if ( : < /dev/tty ) 2>/dev/null; then
+        read -r "$_VAR_NAME" < /dev/tty
+    else
+        read -r "$_VAR_NAME"
+    fi
+}
 
 # 3. 目标安装路径
 INSTALL_DIR="${INSTALL_DIR:-/opt/v3-node}"
@@ -126,7 +131,7 @@ IN_PORT="${PORT:-${SERVER_PORT:-}}"
 if [ -z "$IN_PORT" ]; then
     while true; do
         printf "${BOLD}${BLUE}1. 请设置回溯监听端口 (SERVER_PORT)${NC} [默认: 21216]: "
-        read -r IN_PORT
+        prompt_read IN_PORT
         IN_PORT="${IN_PORT:-21216}"
         case "$IN_PORT" in
             ''|*[!0-9]*)
@@ -150,7 +155,7 @@ IN_TOKEN="${TOKEN:-${ADMIN_TOKEN:-}}"
 if [ -z "$IN_TOKEN" ]; then
     DEFAULT_TOKEN="$(tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c 10 || echo "Admin990299")"
     printf "${BOLD}${BLUE}2. 请设置管理后台密码 (ADMIN_TOKEN)${NC} [回车自动生成: %s]: " "$DEFAULT_TOKEN"
-    read -r IN_TOKEN
+    prompt_read IN_TOKEN
     IN_TOKEN="${IN_TOKEN:-$DEFAULT_TOKEN}"
 else
     echo "2. 管理后台密码: ${YELLOW}$IN_TOKEN${NC} (由环境变量指定)"
@@ -160,7 +165,7 @@ fi
 IN_DOMAIN="${DOMAIN:-${SERVER_DOMAIN:-}}"
 if [ -z "$IN_DOMAIN" ]; then
     printf "${BOLD}${BLUE}3. 请设置回溯域名 (SERVER_DOMAIN)${NC} [回车直接跳过，后续可在后台随时填写]: "
-    read -r IN_DOMAIN
+    prompt_read IN_DOMAIN
     IN_DOMAIN="${IN_DOMAIN:-}"
 else
     echo "3. 回溯域名: ${CYAN}$IN_DOMAIN${NC} (由环境变量指定)"
