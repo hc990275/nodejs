@@ -507,12 +507,93 @@ function renderLandingPage(req, res, options, sendHtmlResponseArg) {
             display: none;
         }
 
+        /* ─── 移动端深度自适应体系 (Element UI Modern Mobile Standard) ─── */
         @media (max-width: 768px) {
-            .nav-links { display: none; }
-            .hero-title { font-size: 28px; }
-            .pricing-grid { grid-template-columns: 1fr; }
+            /* 1. 顶部导航栏：精简紧凑，防止拥挤换行 */
+            .nav-links { display: none !important; }
+            .airport-nav { position: sticky; top: 0; z-index: 1000; }
+            .nav-container { padding: 0 12px !important; height: 54px !important; }
+            .brand-logo { font-size: 15px !important; gap: 6px !important; }
+            .brand-badge { display: none !important; }
+            .nav-actions { gap: 6px !important; }
+            .nav-actions .btn { padding: 6px 10px !important; font-size: 12px !important; border-radius: 4px !important; }
+
+            /* 2. Hero 区域：文字字号收敛，按钮纵向平铺满宽 */
+            .hero-section { padding: 32px 14px 36px !important; }
+            .hero-title { font-size: 24px !important; line-height: 1.3 !important; letter-spacing: -0.3px !important; margin-bottom: 12px !important; }
+            .hero-subtitle { font-size: 13px !important; line-height: 1.6 !important; margin-bottom: 20px !important; }
+            .tag-list { gap: 6px !important; margin-bottom: 24px !important; }
+            .tag-item { font-size: 11px !important; padding: 4px 8px !important; border-radius: 4px !important; }
+            
+            .hero-cta {
+                display: flex !important;
+                flex-direction: column !important;
+                gap: 10px !important;
+                width: 100% !important;
+                max-width: 360px !important;
+                margin: 0 auto !important;
+            }
+            .hero-cta .btn {
+                width: 100% !important;
+                justify-content: center !important;
+                padding: 12px 16px !important;
+                font-size: 14px !important;
+                box-sizing: border-box !important;
+            }
+
+            /* 3. 核心容器与板块间隔 */
+            .main-container { padding: 24px 12px 48px !important; }
+            .section-header { margin-bottom: 20px !important; }
+            .section-title { font-size: 20px !important; margin-bottom: 6px !important; }
+            .section-desc { font-size: 13px !important; }
+
+            /* 4. 套餐卡片：单列自适应，去除放大悬浮 */
+            .pricing-grid { grid-template-columns: 1fr !important; gap: 14px !important; margin-bottom: 36px !important; }
+            .pricing-card { padding: 20px 16px !important; border-radius: 8px !important; }
+            .pricing-card.featured { transform: none !important; border-width: 2px !important; }
+            .plan-name { font-size: 16px !important; }
+            .plan-amount { font-size: 32px !important; }
+            .plan-features { margin-bottom: 18px !important; }
+            .plan-features li { font-size: 13px !important; margin-bottom: 8px !important; }
+            .pricing-card .btn { width: 100% !important; padding: 11px 0 !important; }
+
+            /* 5. 核心优势卡片：单列自适应 */
+            .feature-grid { grid-template-columns: 1fr !important; gap: 12px !important; margin-bottom: 36px !important; }
+            .feature-card { padding: 16px 14px !important; border-radius: 8px !important; }
+            .feature-title { font-size: 15px !important; }
+            .feature-desc { font-size: 12px !important; line-height: 1.6 !important; }
+
+            /* 6. 节点矩阵表格：横向顺畅滑动 */
+            .node-preview-card { padding: 12px 8px !important; border-radius: 8px !important; }
+            .table-responsive { overflow-x: auto !important; -webkit-overflow-scrolling: touch !important; }
+            .node-table { min-width: 480px !important; font-size: 12px !important; }
+            .node-table th, .node-table td { padding: 8px 10px !important; white-space: nowrap !important; }
+
+            /* 7. 登录/注册浮窗：手机屏幕适配，防止溢出 */
+            .modal-overlay { padding: 12px !important; }
+            .modal-card {
+                width: 100% !important;
+                max-width: 100% !important;
+                margin: 0 !important;
+                border-radius: 12px !important;
+                padding: 16px 14px !important;
+            }
+            .modal-header { margin-bottom: 14px !important; padding-bottom: 10px !important; }
+            .modal-title { font-size: 16px !important; }
+            .modal-body .field-box { margin-bottom: 12px !important; }
+            .modal-body .btn { width: 100% !important; padding: 11px 0 !important; font-size: 14px !important; }
+
+            /* 8. 页脚自适应 */
+            .airport-footer { padding: 24px 12px !important; font-size: 12px !important; line-height: 1.8 !important; }
+            .footer-contact { margin-bottom: 6px !important; word-break: break-all !important; }
         }
-    </style>
+
+        /* ─── 超小屏手机特殊保护 (max-width: 360px) ─── */
+        @media (max-width: 360px) {
+            .hero-title { font-size: 21px !important; }
+            .brand-logo span { display: none; } /* 极窄屏只留图标 */
+        }
+        </style>
 </head>
 <body>
 
