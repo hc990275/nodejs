@@ -4187,7 +4187,6 @@ function handleHttpRequest(req, res) {
                         }
                     }
 
-                    async 
                     async function openServerConfigModal() {
                         const modal = document.getElementById("serverConfigModal");
                         if (!modal) return;
@@ -4280,7 +4279,7 @@ function handleHttpRequest(req, res) {
                         }
                     }
 
-                    function submitSettings() {
+                    async function submitSettings() {
                         const btn = document.getElementById("saveSettingsBtn");
                         btn.innerText = "保存中...";
                         btn.disabled = true;
