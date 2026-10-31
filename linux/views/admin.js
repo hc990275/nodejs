@@ -622,21 +622,24 @@ return sendHtmlResponse(res, 200, `
                         border-radius: 8px;
                         border: 1px solid var(--el-border);
                         width: 100%;
-                        max-width: 440px;
-                        box-shadow: 0 4px 20px rgba(0,0,0,0.15);
-                        padding: 22px 24px;
+                        max-width: 480px;
+                        max-height: 88vh;
+                        overflow-y: auto;
+                        box-shadow: 0 4px 24px rgba(0,0,0,0.18);
+                        padding: 20px 22px 16px;
+                        box-sizing: border-box;
                     }
-                    .modal h4 { font-size: 16px; font-weight: 600; margin-bottom: 18px; color: var(--el-text-main); }
-                    .field-box { margin-bottom: 14px; }
-                    .field-box label { display: block; font-size: 12px; color: var(--el-text-regular); margin-bottom: 6px; font-weight: 500; }
+                    .modal h4 { font-size: 16px; font-weight: 600; margin-bottom: 16px; color: var(--el-text-main); }
+                    .field-box { margin-bottom: 12px; }
+                    .field-box label { display: block; font-size: 12px; color: var(--el-text-regular); margin-bottom: 5px; font-weight: 500; }
                     .field-box input, .field-box select {
                         width: 100%;
-                        padding: 9px 12px;
+                        padding: 8px 12px;
                         border: 1px solid var(--el-border);
                         border-radius: 4px;
                         background: #ffffff;
                         color: var(--el-text-main);
-                        font-size: 14px;
+                        font-size: 13px;
                         outline: none;
                         transition: border-color 0.2s;
                     }
@@ -647,8 +650,13 @@ return sendHtmlResponse(res, 200, `
                     .input-unit-group { display: flex; gap: 8px; }
                     .modal-footer {
                         display: flex; justify-content: flex-end; gap: 10px;
-                        margin-top: 20px; padding-top: 14px;
+                        margin-top: 16px; padding-top: 12px;
                         border-top: 1px solid var(--el-border-light);
+                        position: sticky;
+                        bottom: -16px;
+                        background: var(--el-card);
+                        padding-bottom: 6px;
+                        z-index: 10;
                     }
                     /* 实时在线感知与 IP 归属地 (IP138级) UI 样式 */
                     .perception-cell {
@@ -1207,12 +1215,19 @@ return sendHtmlResponse(res, 200, `
                             width: 100% !important;
                         }
                         .modal-footer {
-                            flex-direction: column-reverse !important;
-                            gap: 8px !important;
+                            flex-direction: row !important;
+                            gap: 10px !important;
+                            position: sticky !important;
+                            bottom: -16px !important;
+                            background: var(--el-card) !important;
+                            padding-top: 10px !important;
+                            padding-bottom: 10px !important;
+                            z-index: 20 !important;
                         }
                         .modal-footer button {
-                            width: 100% !important;
+                            flex: 1 !important;
                             padding: 10px 0 !important;
+                            font-size: 14px !important;
                         }
                     }
                     .mobile-tip { display: none; }

@@ -973,10 +973,10 @@ function saveClusterNodes() {
     }
 }
 
-// 确保本地主控节点在集群表中始终就绪
+// 确保本地主控节点在集群表中始终就绪 (严格唯一性去重，杜绝历史假主控与残留)
 function ensureMasterNodeInCluster() {
-    let master = clusterNodes.find(n => n.id === "master" || n.role === "master");
     const loc = getEffectiveServerLocation();
+    const currentLocName = `${loc} (主控)`;
     const masterProtocols = {
         hy2: { enabled: ENABLE_HY2, port: PORT_HY2, hopPorts: HY2_HOP_PORTS },
         tuic: { enabled: ENABLE_TUIC, port: PORT_TUIC },
@@ -986,36 +986,27 @@ function ensureMasterNodeInCluster() {
         ss: { enabled: ENABLE_SS, port: PORT_SS }
     };
 
-    if (!master) {
-        master = {
-            id: "master",
-            role: "master",
-            name: `${loc} (主控)`,
-            ip: DIRECT_IP,
-            port: SERVER_PORT,
-            status: "online",
-            lastHeartbeat: Date.now(),
-            trafficReported: 0,
-            protocols: masterProtocols,
-            configVersion: 1,
-            needReload: false
-        };
-        clusterNodes.unshift(master);
-        saveClusterNodes();
-    } else {
-        master.ip = DIRECT_IP;
-        master.port = SERVER_PORT;
-        master.status = "online";
-        master.lastHeartbeat = Date.now();
-        const currentLocName = `${loc} (主控)`;
-        if (!master.name || master.name === "主控节点" || master.name.includes("undefined") || master.name.endsWith("(主控)") || master.name.includes("美国") || master.name.includes("US") || master.name.includes("us")) {
-            if (master.name !== currentLocName) {
-                master.name = currentLocName;
-                saveClusterNodes();
-            }
-        }
-        master.protocols = masterProtocols;
-    }
+    // 1. 过滤掉所有历史残留的假主控或重复 master (只保留真正的副机 workers)
+    const workers = clusterNodes.filter(n => n && n.id !== "master" && n.role !== "master");
+
+    // 2. 构造当前本地唯一权威主控节点
+    const master = {
+        id: "master",
+        role: "master",
+        name: currentLocName,
+        ip: DIRECT_IP,
+        port: SERVER_PORT,
+        status: "online",
+        lastHeartbeat: Date.now(),
+        trafficReported: 0,
+        protocols: masterProtocols,
+        configVersion: 1,
+        needReload: false
+    };
+
+    // 3. 权威主控始终置顶，合并真正副机
+    clusterNodes = [master, ...workers];
+    saveClusterNodes();
 }
 
 // 周期性健康扫描：副机超过 30 秒无心跳自动标记为离线
