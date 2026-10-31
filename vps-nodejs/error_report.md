@@ -303,3 +303,25 @@
   2. **放宽单用户并发至 64 连接**：确保多线程测速和多并发分片下载能跑满整机物理带宽；
   3. **优化 V8 堆配额与线程池**：128MB 机型堆配额提升至 64MB 并分配 16 线程池，64MB 机型新生代调整至 4MB，消除 GC 停顿；
   4. **一键部署全自动激活 BBR 与网络栈优化**：在 `setup.sh` 中自动静默执行 `optimize_bbr.sh`，开启 BBR 算法与提升系统 `rmem_max`/`wmem_max`。
+
+---
+
+## 25. ECH (Encrypted Client Hello) 权威 Wire-Format 解析与跨客户端订阅注入规范
+- **问题现象**：
+  常规 TLS 握手中的 Client Hello 包含明文 SNI，易受路径深度包检测 (DPI) 干扰与阻断；且第三方 Subconverter 在转换配置时不仅无法自动注入 ECH，还会抹除客户端专有的 TLS 指纹与 uTLS 混淆参数。
+- **原因剖析**：
+  1. **RFC 1035 / RFC 8484 DNS Type 65 (HTTPS 资源记录) 结构复杂**：ECH 公钥配置 (ECHConfigList) 封装于 DNS SVCB/HTTPS 记录的 SvcParam Key 5 中，常规操作系统 DNS API（如 `getaddrinfo`）不支持直接获取二进制 ECH 证书；
+  2. **各代理客户端 ECH 配置规范差异大**：
+     - **Clash Meta / Mihomo**：需在 proxy 节点注入 `ech-opts: { enable: true, query-server-name: cloudflare-ech.com }`，并在 `dns.nameserver-policy` 绑定 DoH 解析策略；
+     - **Sing-box**：需在 `tls.ech` 传入 PEM 格式标准证书 (`-----BEGIN ECH CONFIGS-----...`)，并开启 `utls.fingerprint: chrome`；
+     - **v2rayN / Shadowrocket**：需在 VLESS 链接 URI Query 中追加 `&ech=cloudflare-ech.com+https://dns.alidns.com/dns-query` 与 `&fp=chrome`。
+- **根本解决方案**：
+  1. **Node.js 纯原生 0 依赖 DoH Wire-Format 解析引擎 (`getCachedECH`)**：
+     直接构建 RFC 1035 二进制 DNS 请求报文，以 `application/dns-message` POST 阿里云/腾讯 DoH 服务器，逐字节无拷贝解析 Answer Section 中 Type 65 RDATA，精准提取 SvcParam 5 (ech)，并格式化为标准 PEM 证书；
+  2. **30 分钟内存缓存与优雅降级**：
+     增加 `echMemoryCache` 内存缓存，避免高并发订阅请求下重复向 DoH 发起网络开销；在网络波动或超时时自动复用已缓存证书，保障订阅下发毫秒级响应；
+  3. **全客户端矩阵双向注入引擎**：
+     - 本地原生引擎：`generateUserNodes`、`generateClashConfig`、`generateSingboxConfig` 原生内置 ECH、uTLS Chrome 指纹与 DoH 策略分流；
+     - 零信任转换后处理：在 `convertSubWithZeroTrust` 外部 Subconverter 返回后，先执行内存原子回填脱敏凭据，再通过 AST/正则级补丁器 (`patchClashWithECH` / `patchSingboxWithECH`) 注入 ECH 与指纹；
+  4. **管理后台可视化热生效**：
+     在 Element UI 风格后台设置中提供 ECH 开关、SNI、DoH 地址与客户端指纹配置，保存即刻热生效并双向同步 `.env` 与 `settings.json`。
