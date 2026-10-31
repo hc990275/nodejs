@@ -2558,13 +2558,7 @@ return sendHtmlResponse(res, 200, `
                             setBadgeText("badge_cf_total_count", "动态池: 已抓取 " + cfTotalLen + " 个优质节点");
 
 
-                            const awsCuTop = (awsNodes.cu && awsNodes.cu[0]) || { colo: "HKG", rtt: 38 };
-                            setBadgeText("badge_awsCUColo", "机房: " + (awsCuTop.colo || "HKG"));
-                            setBadgeText("badge_awsCURtt", "延迟: " + (awsCuTop.rtt ? awsCuTop.rtt + "ms" : "--"));
 
-                            const awsCmTop = (awsNodes.cm && awsNodes.cm[0]) || { colo: "HKG", rtt: 58 };
-                            setBadgeText("badge_awsCMColo", "机房: " + (awsCmTop.colo || "HKG"));
-                            setBadgeText("badge_awsCMRtt", "延迟: " + (awsCmTop.rtt ? awsCmTop.rtt + "ms" : "--"));
 
                             const syncEl = document.getElementById("wetest_last_sync_time");
                             if (syncEl) syncEl.innerText = data.wetestSyncTime || "未同步";
