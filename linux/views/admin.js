@@ -1013,6 +1013,57 @@ return sendHtmlResponse(res, 200, `
                         100% { box-shadow: 0 0 0 0 rgba(245, 108, 108, 0); }
                     }
 
+                                        /* 现代化 Element UI 单选框与卡片组 */
+                    .el-radio-group {
+                        display: flex;
+                        gap: 12px;
+                        margin-top: 8px;
+                        padding: 8px 12px;
+                        background: #f8f9fa;
+                        border: 1px solid var(--el-border);
+                        border-radius: 6px;
+                        flex-wrap: wrap;
+                    }
+                    .el-radio-item {
+                        display: flex;
+                        align-items: center;
+                        gap: 6px;
+                        cursor: pointer;
+                        font-size: 13px;
+                        padding: 4px 6px;
+                        border-radius: 4px;
+                        transition: background 0.15s;
+                    }
+                    .el-radio-item:hover {
+                        background: #eef2f8;
+                    }
+                    .el-radio-item input[type="radio"] {
+                        margin: 0;
+                        cursor: pointer;
+                        accent-color: var(--el-primary);
+                    }
+                                            .el-radio-group {
+                            flex-direction: column !important;
+                            gap: 8px !important;
+                            padding: 8px 10px !important;
+                        }
+                        .el-radio-item {
+                            width: 100% !important;
+                            padding: 4px 0 !important;
+                        }
+                        .client-download-box {
+                        display: flex;
+                        justify-content: space-between;
+                        align-items: center;
+                        margin-top: 8px;
+                        padding: 8px 12px;
+                        background: #f8f9fa;
+                        border: 1px solid var(--el-border);
+                        border-radius: 6px;
+                        flex-wrap: wrap;
+                        gap: 10px;
+                    }
+
                     /* 移动端手机界面媒体查询深度自适应 (Mobile First Responsive) */
                     @media (max-width: 768px) {
                         body { padding: 6px !important; }
@@ -1050,6 +1101,24 @@ return sendHtmlResponse(res, 200, `
                         }
                         .panel-header .btn-primary {
                             width: 100% !important;
+                        }
+                        .header-actions {
+                            display: grid !important;
+                            grid-template-columns: 1fr 1fr !important;
+                            gap: 8px !important;
+                            width: 100% !important;
+                        }
+                        .header-actions .btn {
+                            width: 100% !important;
+                            justify-content: center !important;
+                            padding: 8px 6px !important;
+                            font-size: 12px !important;
+                        }
+                        .header-actions .btn-primary {
+                            grid-column: 1 / -1 !important;
+                        }
+                        .header-actions .btn-danger-light {
+                            grid-column: 1 / -1 !important;
                         }
                         .table-toolbar {
                             flex-direction: column !important;
@@ -1207,20 +1276,20 @@ return sendHtmlResponse(res, 200, `
                     <div class="panel">
                         <div class="panel-header">
                             <div class="panel-title">用户清单与权限详情</div>
-                            <div style="display:flex; gap:10px; align-items:center;">
+                            <div class="header-actions" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
                                 <button class="btn" style="background:#ffffff; border:1px solid var(--el-border); color:var(--el-primary); font-weight:500;" onclick="openAllVisitorsModal()">
                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>
                                     实时访客IP监控
                                 </button>
-                                <button class="btn" style="background:#ffffff; border:1px solid var(--el-border); color:var(--el-primary); font-weight:500;" onclick="openClusterModal()">
+                                ${clusterNodes.length > 1 ? `<button class="btn" style="background:#ffffff; border:1px solid var(--el-border); color:var(--el-primary); font-weight:500;" onclick="openClusterModal()">
                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>
-                                    集群分机管理
-                                </button>
+                                    集群分机管理 (${clusterNodes.length}台)
+                                </button>` : ""}
                                 <button class="btn" style="background:#ffffff; border:1px solid var(--el-border); color:var(--el-text-main); font-weight:500;" onclick="openSettingsModal()">
                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
                                     站点与注册配置
                                 </button>
-                                <button class="btn" style="background:#ffffff; border:1px solid #fbc4c4; color:#f56c6c; font-weight:500;" onclick="openClearAllModal()" title="一键批量或全量清空用户">
+                                <button class="btn btn-danger-light" style="background:#ffffff; border:1px solid #fbc4c4; color:#f56c6c; font-weight:500;" onclick="openClearAllModal()" title="一键批量或全量清空用户">
                                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
                                     一键清空用户
                                 </button>
@@ -1298,30 +1367,30 @@ return sendHtmlResponse(res, 200, `
                             <div id="tab_content_ops">
                                 <div class="field-box">
                                     <label>推荐客户端下载 (FlClash 各平台全适配)</label>
-                                    <div class="client-download-box" style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; padding:8px 12px; background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px;">
-                                        <div style="display:flex; gap:16px; flex-wrap:wrap;">
-                                            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
+                                    <div class="client-download-box">
+                                        <div class="el-radio-group" style="margin-top:0; border:none; background:transparent; padding:0;">
+                                            <label class="el-radio-item">
                                                 <input type="radio" name="set_enableClientDownload" value="1" id="set_enableClientDownload_1" />
                                                 <span style="color:var(--el-success); font-weight:600;">开启推荐客户端</span>
                                             </label>
-                                            <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
+                                            <label class="el-radio-item">
                                                 <input type="radio" name="set_enableClientDownload" value="0" id="set_enableClientDownload_0" />
                                                 <span style="color:var(--el-danger); font-weight:600;">关闭显示</span>
                                             </label>
                                         </div>
-                                        <button type="button" class="btn" style="padding:4px 10px; font-size:12px; background:#ffffff; border:1px solid var(--el-border); color:var(--el-primary);" onclick="manualSyncClientDownloads(this)">
+                                        <button type="button" class="btn" style="padding:5px 12px; font-size:12px; background:#ffffff; border:1px solid var(--el-border); color:var(--el-primary); border-radius:4px;" onclick="manualSyncClientDownloads(this)">
                                             🔄 立即爬取同步
                                         </button>
                                     </div>
                                 </div>
                                 <div class="field-box">
                                     <label>开放游客自主注册</label>
-                                    <div style="display:flex; gap:16px; margin-top:8px; padding:8px 12px; background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px; flex-wrap:wrap;">
-                                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
+                                    <div class="el-radio-group">
+                                        <label class="el-radio-item">
                                             <input type="radio" name="set_allowRegister" value="0" id="set_allowRegister_0" />
-                                            <span style="color:var(--el-danger); font-weight:600;">关闭网页注册 (默认推荐，仅限 Telegram 机器人注册)</span>
+                                            <span style="color:var(--el-danger); font-weight:600;">关闭网页注册 (默认推荐，仅限 TG 机器人)</span>
                                         </label>
-                                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
+                                        <label class="el-radio-item">
                                             <input type="radio" name="set_allowRegister" value="1" id="set_allowRegister_1" />
                                             <span style="color:var(--el-success); font-weight:600;">允许网页自主注册</span>
                                         </label>
@@ -1396,12 +1465,12 @@ return sendHtmlResponse(res, 200, `
                                 </div>
                                 <div class="field-box">
                                     <label>新注册用户默认授权节点范围</label>
-                                    <div style="display:flex; gap:16px; margin-top:8px; padding:8px 12px; background:#f8f9fa; border:1px solid var(--el-border); border-radius:6px; flex-wrap:wrap;">
-                                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
+                                    <div class="el-radio-group">
+                                        <label class="el-radio-item">
                                             <input type="radio" name="set_defaultAssignedNodes" value="all" id="set_defaultAssignedNodes_all" checked />
                                             <span style="color:var(--el-success); font-weight:600;">全部服务器节点 (包含主机及所有分机)</span>
                                         </label>
-                                        <label style="display:flex; align-items:center; gap:6px; cursor:pointer; font-size:13px;">
+                                        <label class="el-radio-item">
                                             <input type="radio" name="set_defaultAssignedNodes" value="master" id="set_defaultAssignedNodes_master" />
                                             <span style="color:var(--el-primary); font-weight:600;">仅限当前主控主机 (分机需管理员单独授权)</span>
                                         </label>
@@ -1552,12 +1621,12 @@ return sendHtmlResponse(res, 200, `
                                 </div>
                             </div>
 
-                            <!-- TAB 4: CDN 优选分发矩阵 (Cloudflare + AWS CloudFront 独立开关控制) -->
+                            <!-- TAB 4: CDN 优选分发矩阵 (Cloudflare 独立开关控制) -->
                             <div id="tab_content_cdn" style="display:none;">
                                 <div style="background:#f4f4f5; border:1px solid #dcdfe6; border-radius:6px; padding:12px 14px; margin-bottom:14px;">
                                     <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
                                         <div>
-                                            <div style="font-size:13px; font-weight:600; color:#303133;">🚀 CDN 优选双擎全量动态矩阵 (Cloudflare + AWS CloudFront)</div>
+                                            <div style="font-size:13px; font-weight:600; color:#303133;">🚀 CDN 优选全量动态矩阵 (Cloudflare)</div>
                                             <div style="font-size:11px; color:#606266; margin-top:2px;">
                                                 自动从微测网 (wetest.vip) 动态抓取全部低延迟 IP (有多少抓多少)。下方各运营商线路<strong>全部独立开关</strong>，可自由组合开关。
                                             </div>
@@ -1666,79 +1735,6 @@ return sendHtmlResponse(res, 200, `
                                         </div>
                                     </div>
                                 </div>
-
-                                <!-- ════════ 第二部分：AWS CloudFront 矩阵 (全部抓取) ════════ -->
-                                <div style="margin-bottom:12px;">
-                                    <div style="font-size:13px; font-weight:700; color:#2c3e50; margin-bottom:8px; display:flex; align-items:center; gap:6px;">
-                                        <span>☁️ AWS CloudFront CDN 优选专线</span>
-                                        <span id="badge_aws_total_count" style="font-size:11px; font-weight:normal; background:#fdf6ec; color:#e6a23c; border:1px solid #faecd8; padding:1px 6px; border-radius:3px;">动态池: 已抓取</span>
-                                    </div>
-
-                                    <!-- 5. AWS 三网通用 Anycast -->
-                                    <div style="background:#ffffff; border:1px solid #dcdfe6; border-radius:6px; padding:10px 12px; margin-bottom:8px;">
-                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                                            <div style="display:flex; align-items:center; gap:6px;">
-                                                <span style="font-weight:600; font-size:12px; color:#303133;">AWS 三网通用 Anycast</span>
-                                                <span id="badge_aws_official_count" style="background:#f4f4f5; color:#909399; padding:1px 5px; border-radius:3px; font-size:10px;">5个IP</span>
-                                            </div>
-                                            <label style="display:flex; align-items:center; gap:4px; cursor:pointer; font-size:12px; font-weight:600; color:#409eff;">
-                                                <input type="checkbox" id="set_enableAwsOfficial" />
-                                                <span>开启下发</span>
-                                            </label>
-                                        </div>
-                                        <div style="font-size:11px; color:#909399;">AWS 全球高防 Anycast CDN 节点，多地区智能分发。</div>
-                                    </div>
-
-                                    <!-- 6. AWS 中国电信 -->
-                                    <div style="background:#ffffff; border:1px solid #dcdfe6; border-radius:6px; padding:10px 12px; margin-bottom:8px;">
-                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                                            <div style="display:flex; align-items:center; gap:6px;">
-                                                <span style="font-weight:600; font-size:12px; color:#303133;">AWS 中国电信 (CT) 优选</span>
-                                                <span id="badge_awsCTColo" style="background:#f0f9eb; color:#67c23a; border:1px solid #e1f3d8; padding:1px 5px; border-radius:3px; font-size:10px;">机房: --</span>
-                                                <span id="badge_awsCTRtt" style="background:#fdf6ec; color:#e6a23c; border:1px solid #faecd8; padding:1px 5px; border-radius:3px; font-size:10px;">延迟: --ms</span>
-                                                <span id="badge_aws_ct_count" style="background:#f4f4f5; color:#909399; padding:1px 5px; border-radius:3px; font-size:10px;">5个IP</span>
-                                            </div>
-                                            <label style="display:flex; align-items:center; gap:4px; cursor:pointer; font-size:12px; font-weight:600; color:#67c23a;">
-                                                <input type="checkbox" id="set_enableAwsCT" />
-                                                <span>开启下发</span>
-                                            </label>
-                                        </div>
-                                        <div style="font-size:11px; color:#909399;">针对中国电信骨干网的 AWS 东京 (NRT) 等亚太极速机房。</div>
-                                    </div>
-
-                                    <!-- 7. AWS 中国联通 -->
-                                    <div style="background:#ffffff; border:1px solid #dcdfe6; border-radius:6px; padding:10px 12px; margin-bottom:8px;">
-                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                                            <div style="display:flex; align-items:center; gap:6px;">
-                                                <span style="font-weight:600; font-size:12px; color:#303133;">AWS 中国联通 (CU) 优选</span>
-                                                <span id="badge_awsCUColo" style="background:#f0f9eb; color:#67c23a; border:1px solid #e1f3d8; padding:1px 5px; border-radius:3px; font-size:10px;">机房: --</span>
-                                                <span id="badge_awsCURtt" style="background:#fdf6ec; color:#e6a23c; border:1px solid #faecd8; padding:1px 5px; border-radius:3px; font-size:10px;">延迟: --ms</span>
-                                                <span id="badge_aws_cu_count" style="background:#f4f4f5; color:#909399; padding:1px 5px; border-radius:3px; font-size:10px;">5个IP</span>
-                                            </div>
-                                            <label style="display:flex; align-items:center; gap:4px; cursor:pointer; font-size:12px; font-weight:600; color:#409eff;">
-                                                <input type="checkbox" id="set_enableAwsCU" />
-                                                <span>开启下发</span>
-                                            </label>
-                                        </div>
-                                        <div style="font-size:11px; color:#909399;">针对中国联通直连的 AWS 香港/日本超低延迟机房。</div>
-                                    </div>
-
-                                    <!-- 8. AWS 中国移动 -->
-                                    <div style="background:#ffffff; border:1px solid #dcdfe6; border-radius:6px; padding:10px 12px; margin-bottom:8px;">
-                                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                                            <div style="display:flex; align-items:center; gap:6px;">
-                                                <span style="font-weight:600; font-size:12px; color:#303133;">AWS 中国移动 (CM) 优选</span>
-                                                <span id="badge_awsCMColo" style="background:#f0f9eb; color:#67c23a; border:1px solid #e1f3d8; padding:1px 5px; border-radius:3px; font-size:10px;">机房: --</span>
-                                                <span id="badge_awsCMRtt" style="background:#fdf6ec; color:#e6a23c; border:1px solid #faecd8; padding:1px 5px; border-radius:3px; font-size:10px;">延迟: --ms</span>
-                                                <span id="badge_aws_cm_count" style="background:#f4f4f5; color:#909399; padding:1px 5px; border-radius:3px; font-size:10px;">5个IP</span>
-                                            </div>
-                                            <label style="display:flex; align-items:center; gap:4px; cursor:pointer; font-size:12px; font-weight:600; color:#e6a23c;">
-                                                <input type="checkbox" id="set_enableAwsCM" />
-                                                <span>开启下发</span>
-                                            </label>
-                                        </div>
-                                        <div style="font-size:11px; color:#909399;">针对中国移动直连的 AWS 香港/新加坡超高速机房。</div>
-                                    </div>
                                 </div>
                             </div>
 
@@ -2441,6 +2437,25 @@ return sendHtmlResponse(res, 200, `
                             } else {
                                 sLoc.placeholder = "留空则根据公网IP自动识别";
                             }
+                            // 若 serverLocation 为空，自动探测真实地区并填入 placeholder
+                            if (!sLoc.value) {
+                                sLoc.placeholder = "正在自动探测服务器地区...";
+                                fetch("https://ip-api.com/json/?fields=countryCode,country,city")
+                                    .then(r => r.json()).then(geo => {
+                                        const flagMap = {CN:"\u{1F1E8}\u{1F1F3}",US:"\u{1F1FA}\u{1F1F8}",JP:"\u{1F1EF}\u{1F1F5}",SG:"\u{1F1F8}\u{1F1EC}",HK:"\u{1F1ED}\u{1F1F0}",GB:"\u{1F1EC}\u{1F1E7}",DE:"\u{1F1E9}\u{1F1EA}",KR:"\u{1F1F0}\u{1F1F7}",IN:"\u{1F1EE}\u{1F1F3}",AU:"\u{1F1E6}\u{1F1FA}",CA:"\u{1F1E8}\u{1F1E6}",FR:"\u{1F1EB}\u{1F1F7}",NL:"\u{1F1F3}\u{1F1F1}",MY:"\u{1F1F2}\u{1F1FE}",TW:"\u{1F1F9}\u{1F1FC}"};
+                                        const nameMap = {CN:"中国",US:"美国",JP:"日本",SG:"新加坡",HK:"香港",GB:"英国",DE:"德国",KR:"韩国",IN:"印度",AU:"澳大利亚",CA:"加拿大",FR:"法国",NL:"荷兰",MY:"马来西亚",TW:"台湾"};
+                                        const cc = (geo.countryCode || "").toUpperCase();
+                                        const flag = flagMap[cc] || "\u{1F310}";
+                                        const cn = nameMap[cc] || geo.country || cc;
+                                        const city = geo.city ? " " + geo.city : "";
+                                        const autoLoc = flag + " " + cn + city + "01";
+                                        const el = document.getElementById("set_serverLocation");
+                                        if (el && !el.value) el.placeholder = autoLoc + " (自动探测，留空则服务端生效)";
+                                    }).catch(() => {
+                                        const el = document.getElementById("set_serverLocation");
+                                        if (el && !el.value) el.placeholder = "例如: 日本01 (探测失败，请手动填写)";
+                                    });
+                            }
                         }
 
                         const defNodes = Array.isArray(s.defaultAssignedNodes) ? s.defaultAssignedNodes : ["*"];
@@ -2504,11 +2519,6 @@ return sendHtmlResponse(res, 200, `
                         setCheck("set_enableOptCM", s.enableOptCM !== false);
                         setCheck("set_autoSyncWetest", s.autoSyncWetest !== false);
 
-                        // 回显 AWS CloudFront 4 个独立优选开关
-                        setCheck("set_enableAwsOfficial", s.enableAwsOfficial !== false);
-                        setCheck("set_enableAwsCT", s.enableAwsCT !== false);
-                        setCheck("set_enableAwsCU", s.enableAwsCU !== false);
-                        setCheck("set_enableAwsCM", s.enableAwsCM !== false);
 
                         setVal("set_optOfficialIp", s.optOfficialIp || "");
                         setVal("set_optCTIp", s.optCTIp || "104.25.18.145");
@@ -2547,23 +2557,6 @@ return sendHtmlResponse(res, 200, `
                             setBadgeText("badge_cf_cm_count", cfCmLen + "个IP");
                             setBadgeText("badge_cf_total_count", "动态池: 已抓取 " + cfTotalLen + " 个优质节点");
 
-                            // AWS CloudFront 徽章更新与数量统计
-                            const awsNodes = data.awsNodes || {};
-                            const awsOfficialLen = (awsNodes.official && awsNodes.official.length) || 5;
-                            const awsCtLen = (awsNodes.ct && awsNodes.ct.length) || 5;
-                            const awsCuLen = (awsNodes.cu && awsNodes.cu.length) || 5;
-                            const awsCmLen = (awsNodes.cm && awsNodes.cm.length) || 5;
-                            const awsTotalLen = awsOfficialLen + awsCtLen + awsCuLen + awsCmLen;
-
-                            setBadgeText("badge_aws_official_count", awsOfficialLen + "个IP");
-                            setBadgeText("badge_aws_ct_count", awsCtLen + "个IP");
-                            setBadgeText("badge_aws_cu_count", awsCuLen + "个IP");
-                            setBadgeText("badge_aws_cm_count", awsCmLen + "个IP");
-                            setBadgeText("badge_aws_total_count", "动态池: 已抓取 " + awsTotalLen + " 个优质节点");
-
-                            const awsCtTop = (awsNodes.ct && awsNodes.ct[0]) || { colo: "NRT", rtt: 66 };
-                            setBadgeText("badge_awsCTColo", "机房: " + (awsCtTop.colo || "NRT"));
-                            setBadgeText("badge_awsCTRtt", "延迟: " + (awsCtTop.rtt ? awsCtTop.rtt + "ms" : "--"));
 
                             const awsCuTop = (awsNodes.cu && awsNodes.cu[0]) || { colo: "HKG", rtt: 38 };
                             setBadgeText("badge_awsCUColo", "机房: " + (awsCuTop.colo || "HKG"));
@@ -2604,7 +2597,7 @@ return sendHtmlResponse(res, 200, `
 
                                 updateCdnBadges(s);
 
-                                alert("✅ " + (data.message || "微测网 CDN 双擎优选 IP (Cloudflare + AWS CloudFront) 全量抓取成功！"));
+                                alert("✅ " + (data.message || "微测网 CDN 优选 IP (Cloudflare) 全量抓取成功！"));
                             } else {
                                 alert("❌ 同步失败: " + (data.error || "未知异常"));
                             }
@@ -2741,10 +2734,6 @@ return sendHtmlResponse(res, 200, `
                         const enableOptCT = getCheck("set_enableOptCT");
                         const enableOptCU = getCheck("set_enableOptCU");
                         const enableOptCM = getCheck("set_enableOptCM");
-                        const enableAwsOfficial = getCheck("set_enableAwsOfficial");
-                        const enableAwsCT = getCheck("set_enableAwsCT");
-                        const enableAwsCU = getCheck("set_enableAwsCU");
-                        const enableAwsCM = getCheck("set_enableAwsCM");
                         const autoSyncWetest = getCheck("set_autoSyncWetest");
                         const optOfficialIp = getVal("set_optOfficialIp");
                         const optCTIp = getVal("set_optCTIp");
@@ -2770,10 +2759,6 @@ return sendHtmlResponse(res, 200, `
                             enableOptCT,
                             enableOptCU,
                             enableOptCM,
-                            enableAwsOfficial,
-                            enableAwsCT,
-                            enableAwsCU,
-                            enableAwsCM,
                             autoSyncWetest,
                             optOfficialIp,
                             optCTIp,
