@@ -636,6 +636,23 @@ function reloadEnvHot() {
             siteSettings.ipDailyRegisterLimit = Math.max(0, parseInt(newEnv.IP_DAILY_REGISTER_LIMIT, 10) || 0);
             console.log('[Env] 🛡️ 单 IP 每日注册上限已热重载:', siteSettings.ipDailyRegisterLimit, '个');
         }
+
+        if (newEnv.ENABLE_ECH !== undefined) {
+            siteSettings.enableECH = newEnv.ENABLE_ECH.trim() === 'true';
+            console.log('[Env] 🛡️ ECH 开关已热更新:', siteSettings.enableECH);
+        }
+        if (newEnv.ECH_SNI !== undefined) {
+            siteSettings.echSni = newEnv.ECH_SNI.trim();
+            console.log('[Env] 🛡️ ECH SNI 已热更新:', siteSettings.echSni);
+        }
+        if (newEnv.ECH_DNS !== undefined) {
+            siteSettings.echDns = newEnv.ECH_DNS.trim();
+            console.log('[Env] 🛡️ ECH DoH 服务器已热更新:', siteSettings.echDns);
+        }
+        if (newEnv.CLIENT_FINGERPRINT !== undefined) {
+            siteSettings.clientFingerprint = newEnv.CLIENT_FINGERPRINT.trim();
+            console.log('[Env] 🛡️ 客户端混淆指纹已热更新:', siteSettings.clientFingerprint);
+        }
     } catch (e) {
         console.error('[Env] 热重载异常:', e.message);
     }
@@ -771,6 +788,252 @@ setTimeout(() => { autoDetectServerGeo(); }, 100);
 // ==========================================
 // 3. 运营配置与三网优选池持久化
 // ==========================================
+
+// ==========================================
+// 🚀 ECH (Encrypted Client Hello) RFC 1035 / RFC 8484 DNS Type 65 Wire-Format 权威解析引擎
+// ==========================================
+const echMemoryCache = new Map(); // sni -> { pem, expiresAt }
+
+async function getCachedECH(sni = 'cloudflare-ech.com', dnsUrl = 'https://dns.alidns.com/dns-query') {
+    const cacheKey = `${sni}@${dnsUrl}`;
+    const now = Date.now();
+    const cached = echMemoryCache.get(cacheKey);
+    if (cached && cached.expiresAt > now && cached.pem) {
+        return cached.pem;
+    }
+
+    try {
+        const labels = sni.split('.');
+        const qnameParts = [];
+        for (const l of labels) {
+            const buf = Buffer.from(l, 'utf8');
+            qnameParts.push(Buffer.from([buf.length]), buf);
+        }
+        qnameParts.push(Buffer.from([0]));
+        const qname = Buffer.concat(qnameParts);
+
+        // Header: 12 bytes, ID: random, Flags: 0x0100 (RD=1), QDCOUNT: 1
+        const id = Math.floor(Math.random() * 65535);
+        const header = Buffer.alloc(12);
+        header.writeUInt16BE(id, 0);
+        header.writeUInt16BE(0x0100, 2);
+        header.writeUInt16BE(1, 4);
+
+        // Question: qname + QTYPE(65) + QCLASS(1)
+        const qtail = Buffer.alloc(4);
+        qtail.writeUInt16BE(65, 0); // Type 65 (HTTPS)
+        qtail.writeUInt16BE(1, 2);  // Class 1 (IN)
+        const dnsMsg = Buffer.concat([header, qname, qtail]);
+
+        const parsedDns = url.parse(dnsUrl);
+        const httpModule = parsedDns.protocol === 'http:' ? http : https;
+        const options = {
+            hostname: parsedDns.hostname,
+            port: parsedDns.port || (parsedDns.protocol === 'http:' ? 80 : 443),
+            path: parsedDns.path,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/dns-message',
+                'Accept': 'application/dns-message',
+                'Content-Length': dnsMsg.length
+            },
+            timeout: 2500
+        };
+
+        const resBuf = await new Promise((resolve, reject) => {
+            const req = httpModule.request(options, (res) => {
+                if (res.statusCode < 200 || res.statusCode >= 300) {
+                    return reject(new Error('DoH status ' + res.statusCode));
+                }
+                const chunks = [];
+                res.on('data', d => chunks.push(d));
+                res.on('end', () => resolve(Buffer.concat(chunks)));
+            });
+            req.on('timeout', () => { req.destroy(); reject(new Error('DoH timeout')); });
+            req.on('error', reject);
+            req.write(dnsMsg);
+            req.end();
+        });
+
+        if (resBuf.length >= 12) {
+            const qdcount = resBuf.readUInt16BE(4);
+            const ancount = resBuf.readUInt16BE(6);
+
+            let p = 12;
+            // Skip Question Section
+            for (let i = 0; i < qdcount; i++) {
+                while (p < resBuf.length) {
+                    const len = resBuf[p++];
+                    if (len === 0) break;
+                    if ((len & 0xc0) === 0xc0) { p++; break; }
+                    p += len;
+                }
+                p += 4;
+            }
+
+            // Parse Answer Section
+            for (let i = 0; i < ancount && p < resBuf.length; i++) {
+                if ((resBuf[p] & 0xc0) === 0xc0) {
+                    p += 2;
+                } else {
+                    while (p < resBuf.length && resBuf[p] !== 0) {
+                        p += resBuf[p] + 1;
+                    }
+                    p++;
+                }
+                if (p + 10 > resBuf.length) break;
+                const rtype = resBuf.readUInt16BE(p);
+                p += 8;
+                const rdlen = resBuf.readUInt16BE(p);
+                p += 2;
+
+                if (rtype === 65 && p + rdlen <= resBuf.length) {
+                    const rdata = resBuf.subarray(p, p + rdlen);
+                    let np = 2; // Priority
+                    while (np < rdata.length && rdata[np] !== 0) {
+                        if ((rdata[np] & 0xc0) === 0xc0) { np += 2; break; }
+                        np += rdata[np] + 1;
+                    }
+                    if (np < rdata.length && rdata[np] === 0) np++;
+
+                    // SvcParams
+                    while (np + 4 <= rdata.length) {
+                        const key = rdata.readUInt16BE(np);
+                        const valLen = rdata.readUInt16BE(np + 2);
+                        np += 4;
+                        if (key === 5 && np + valLen <= rdata.length) { // key 5 = ech
+                            const echBytes = rdata.subarray(np, np + valLen);
+                            const b64 = echBytes.toString('base64');
+                            const pem = `-----BEGIN ECH CONFIGS-----\n${b64}\n-----END ECH CONFIGS-----`;
+                            echMemoryCache.set(cacheKey, { pem, expiresAt: now + 30 * 60 * 1000 });
+                            return pem;
+                        }
+                        np += valLen;
+                    }
+                }
+                p += rdlen;
+            }
+        }
+    } catch (e) {
+        if (cached && cached.pem) return cached.pem;
+    }
+    return null;
+}
+
+function patchClashWithECH(yamlStr, echSni = 'cloudflare-ech.com', echDns = 'https://dns.alidns.com/dns-query', fp = 'chrome', targetHost = '') {
+    try {
+        let content = yamlStr;
+        const hostEntry = targetHost ? `    "${targetHost}":\n      - ${echDns}\n` : '';
+        const policySnippet = `${hostEntry}    "${echSni}":\n      - ${echDns}`;
+
+        if (/^\s{2}nameserver-policy:\s*(?:\n|$)/m.test(content)) {
+            content = content.replace(/^(\s{2}nameserver-policy:\s*\n)/m, `$1${policySnippet}\n`);
+        } else if (/^dns:\s*$/m.test(content)) {
+            content = content.replace(/^dns:\s*$/m, `dns:\n  nameserver-policy:\n${policySnippet}`);
+        } else if (!/^dns:\s*(?:\n|$)/m.test(content)) {
+            content = `dns:\n  enable: true\n  nameserver-policy:\n${policySnippet}\n` + content;
+        }
+
+        const lines = content.split('\n');
+        const newLines = [];
+        let inProxies = false;
+        let currentProxyLines = [];
+        let baseIndent = 2;
+
+        const flushProxy = () => {
+            if (currentProxyLines.length === 0) return;
+            const fullBlock = currentProxyLines.join('\n');
+            const isTls = /tls:\s*true/i.test(fullBlock);
+            if (isTls) {
+                let hasFp = false;
+                for (let i = 0; i < currentProxyLines.length; i++) {
+                    if (/^\s*client-fingerprint:/i.test(currentProxyLines[i])) {
+                        currentProxyLines[i] = currentProxyLines[i].replace(/client-fingerprint:\s*.*/, `client-fingerprint: ${fp}`);
+                        hasFp = true;
+                        break;
+                    }
+                }
+                if (!hasFp) {
+                    const indent = ' '.repeat(baseIndent + 2);
+                    currentProxyLines.push(`${indent}client-fingerprint: ${fp}`);
+                }
+
+                if (!/ech-opts:/i.test(fullBlock)) {
+                    const indent = ' '.repeat(baseIndent + 2);
+                    currentProxyLines.push(`${indent}ech-opts:`);
+                    currentProxyLines.push(`${indent}  enable: true`);
+                    currentProxyLines.push(`${indent}  query-server-name: ${echSni}`);
+                }
+            }
+            newLines.push(...currentProxyLines);
+            currentProxyLines = [];
+        };
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const trimmed = line.trim();
+
+            if (/^proxies:\s*$/i.test(trimmed)) {
+                inProxies = true;
+                newLines.push(line);
+                continue;
+            }
+
+            if (inProxies && /^[a-zA-Z0-9_-]+:\s*$/i.test(trimmed) && !trimmed.startsWith('-')) {
+                flushProxy();
+                inProxies = false;
+                newLines.push(line);
+                continue;
+            }
+
+            if (inProxies) {
+                if (trimmed.startsWith('- name:')) {
+                    flushProxy();
+                    baseIndent = line.search(/\S/);
+                    currentProxyLines.push(line);
+                } else if (currentProxyLines.length > 0) {
+                    currentProxyLines.push(line);
+                } else {
+                    newLines.push(line);
+                }
+            } else {
+                newLines.push(line);
+            }
+        }
+        flushProxy();
+
+        return newLines.join('\n');
+    } catch (e) {
+        return yamlStr;
+    }
+}
+
+function patchSingboxWithECH(jsonStr, echPem, fp = 'chrome') {
+    try {
+        const obj = JSON.parse(jsonStr);
+        if (Array.isArray(obj.outbounds)) {
+            obj.outbounds.forEach(out => {
+                if (out && out.tls && out.tls.enabled !== false) {
+                    out.tls.utls = {
+                        enabled: true,
+                        fingerprint: fp
+                    };
+                    out.tls.alpn = ["h2", "http/1.1"];
+                    if (echPem) {
+                        out.tls.ech = {
+                            enabled: true,
+                            config: echPem
+                        };
+                    }
+                }
+            });
+        }
+        return JSON.stringify(obj, null, 2);
+    } catch (e) {
+        return jsonStr;
+    }
+}
+
 const DEFAULT_SETTINGS = {
     allowRegister: getEnv('DEFAULT_ALLOW_REGISTER', 'true') === 'true',
     defaultDays: parseInt(getEnv('DEFAULT_DAYS', '365'), 10),
@@ -782,6 +1045,12 @@ const DEFAULT_SETTINGS = {
     subDomain: getEnv('SUB_DOMAIN', ''),
     argoToken: getEnv('ARGO_TOKEN', ''),
     argoDomain: getEnv('ARGO_DOMAIN', ''),
+
+    // 🚀 ECH 全局安全防探测与客户端混淆指纹
+    enableECH: getEnv('ENABLE_ECH', 'true') === 'true',
+    echSni: getEnv('ECH_SNI', 'cloudflare-ech.com'),
+    echDns: getEnv('ECH_DNS', 'https://dns.alidns.com/dns-query'),
+    clientFingerprint: getEnv('CLIENT_FINGERPRINT', 'chrome'),
 
     // 原生端口直连节点开关 (默认关闭防被墙，按需开启)
     enableDirectNode: false,
@@ -1671,6 +1940,15 @@ function generateUserNodes(user) {
     const domain = siteSettings.argoDomain || getEffectiveHost();
     const geoTag = `${serverGeo.flag || '🌐'} ${serverGeo.country || '海外'}${serverGeo.city ? '·' + serverGeo.city : ''}`;
 
+    const enableECH = siteSettings.enableECH !== false;
+    const fp = siteSettings.clientFingerprint || 'chrome';
+    const echSni = siteSettings.echSni || 'cloudflare-ech.com';
+    const echDns = siteSettings.echDns || 'https://dns.alidns.com/dns-query';
+    const echParam = encodeURIComponent(`${echSni}+${echDns}`);
+    const tlsExtra = enableECH
+        ? `&fp=${fp}&alpn=h2,http/1.1&ech=${echParam}&echConfigList=${echParam}`
+        : `&fp=${fp}&alpn=h2,http/1.1`;
+
     // 1. VPS 原生端口直连节点 (默认关闭防被墙，按需在后台开启)
     if (siteSettings.enableDirectNode === true) {
         const directTag = `【${geoTag}·原生直连·${PORT}】-VLESS-WS`;
@@ -1680,14 +1958,14 @@ function generateUserNodes(user) {
     // 1.1 若配置了 Cloudflare Argo 隧道域名，额外下发专属 443 端口隧道直连节点
     if (siteSettings.argoDomain) {
         const argoTag = `【${geoTag}·Argo隧道·443】-VLESS-WS`;
-        list.push(`vless://${user.uuid}@${siteSettings.argoDomain}:443?encryption=none&security=tls&sni=${encodeURIComponent(siteSettings.argoDomain)}&type=ws&host=${encodeURIComponent(siteSettings.argoDomain)}&path=%2F#${encodeURIComponent(argoTag)}`);
+        list.push(`vless://${user.uuid}@${siteSettings.argoDomain}:443?encryption=none&security=tls&sni=${encodeURIComponent(siteSettings.argoDomain)}&type=ws&host=${encodeURIComponent(siteSettings.argoDomain)}&path=%2F${tlsExtra}#${encodeURIComponent(argoTag)}`);
     }
 
     // 2. CF 官方 Anycast
     if (siteSettings.enableOptOfficial !== false) {
         const anyIp = siteSettings.optOfficialIp || (siteSettings.cfNodes.official[0] && siteSettings.cfNodes.official[0].ip) || domain;
         const tag = `【${geoTag}·Anycast·443】-VLESS-WS`;
-        list.push(`vless://${user.uuid}@${anyIp}:443?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F#${encodeURIComponent(tag)}`);
+        list.push(`vless://${user.uuid}@${anyIp}:443?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F${tlsExtra}#${encodeURIComponent(tag)}`);
     }
 
     // 3. CF 中国电信 (CT) 优选
@@ -1698,7 +1976,7 @@ function generateUserNodes(user) {
             const colo = n.colo ? `·${n.colo}` : '';
             const rtt = n.rtt ? `·${n.rtt}ms` : '';
             const tag = `【${geoTag}·电信优选${idx + 1}${colo}${rtt}】-VLESS-WS`;
-            list.push(`vless://${user.uuid}@${ip}:443?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F#${encodeURIComponent(tag)}`);
+            list.push(`vless://${user.uuid}@${ip}:443?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F${tlsExtra}#${encodeURIComponent(tag)}`);
         });
     }
 
@@ -1710,7 +1988,7 @@ function generateUserNodes(user) {
             const colo = n.colo ? `·${n.colo}` : '';
             const rtt = n.rtt ? `·${n.rtt}ms` : '';
             const tag = `【${geoTag}·联通优选${idx + 1}${colo}${rtt}】-VLESS-WS`;
-            list.push(`vless://${user.uuid}@${ip}:443?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F#${encodeURIComponent(tag)}`);
+            list.push(`vless://${user.uuid}@${ip}:443?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F${tlsExtra}#${encodeURIComponent(tag)}`);
         });
     }
 
@@ -1722,7 +2000,7 @@ function generateUserNodes(user) {
             const colo = n.colo ? `·${n.colo}` : '';
             const rtt = n.rtt ? `·${n.rtt}ms` : '';
             const tag = `【${geoTag}·移动优选${idx + 1}${colo}${rtt}】-VLESS-WS`;
-            list.push(`vless://${user.uuid}@${ip}:443?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F#${encodeURIComponent(tag)}`);
+            list.push(`vless://${user.uuid}@${ip}:443?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F${tlsExtra}#${encodeURIComponent(tag)}`);
         });
     }
 
@@ -1730,15 +2008,15 @@ function generateUserNodes(user) {
     if (siteSettings.enableOptCMApi !== false && siteSettings.cmNodes) {
         (siteSettings.cmNodes.ct || []).forEach((n, idx) => {
             const tag = `【${geoTag}·CM电信${idx + 1}】-VLESS-WS`;
-            list.push(`vless://${user.uuid}@${n.ip}:${n.port || 443}?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F#${encodeURIComponent(tag)}`);
+            list.push(`vless://${user.uuid}@${n.ip}:${n.port || 443}?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F${tlsExtra}#${encodeURIComponent(tag)}`);
         });
         (siteSettings.cmNodes.cu || []).forEach((n, idx) => {
             const tag = `【${geoTag}·CM联通${idx + 1}】-VLESS-WS`;
-            list.push(`vless://${user.uuid}@${n.ip}:${n.port || 443}?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F#${encodeURIComponent(tag)}`);
+            list.push(`vless://${user.uuid}@${n.ip}:${n.port || 443}?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F${tlsExtra}#${encodeURIComponent(tag)}`);
         });
         (siteSettings.cmNodes.cm || []).forEach((n, idx) => {
             const tag = `【${geoTag}·CM移动${idx + 1}】-VLESS-WS`;
-            list.push(`vless://${user.uuid}@${n.ip}:${n.port || 443}?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F#${encodeURIComponent(tag)}`);
+            list.push(`vless://${user.uuid}@${n.ip}:${n.port || 443}?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F${tlsExtra}#${encodeURIComponent(tag)}`);
         });
     }
 
@@ -1749,7 +2027,7 @@ function generateUserNodes(user) {
             const item = parseCustomDomainLine(line);
             if (item) {
                 const tag = `【${geoTag}·${item.remark}】-VLESS-WS`;
-                list.push(`vless://${user.uuid}@${item.host}:${item.port}?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F#${encodeURIComponent(tag)}`);
+                list.push(`vless://${user.uuid}@${item.host}:${item.port}?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F${tlsExtra}#${encodeURIComponent(tag)}`);
             }
         });
     }
@@ -1917,7 +2195,9 @@ function parseVlessUri(uri) {
         const host = params.get('host') || sni;
         const path = params.get('path') || '/';
         const type = params.get('type') || 'ws';
-        return { name, uuid, server, port, tls, sni, host, path, type };
+        const fp = params.get('fp') || siteSettings.clientFingerprint || 'chrome';
+        const ech = params.get('ech') || '';
+        return { name, uuid, server, port, tls, sni, host, path, type, fp, ech };
     } catch (e) {
         return null;
     }
@@ -1926,9 +2206,10 @@ function parseVlessUri(uri) {
 function generateClashConfig(parsedNodes, subName = 'VPS-Tunnel') {
     const validNodes = parsedNodes.filter(n => n !== null);
     const nodeNames = validNodes.map(n => n.name);
+    const domain = siteSettings.argoDomain || siteSettings.subDomain || '127.0.0.1';
 
     let proxiesYaml = validNodes.map(n => {
-        return `  - name: "${n.name}"
+        let block = `  - name: "${n.name}"
     type: vless
     server: "${n.server}"
     port: ${n.port}
@@ -1943,6 +2224,23 @@ function generateClashConfig(parsedNodes, subName = 'VPS-Tunnel') {
       path: "${n.path}"
       headers:
         Host: "${n.host}"`;
+        if (n.tls) {
+            block += `
+    client-fingerprint: "${n.fp || siteSettings.clientFingerprint || 'chrome'}"`;
+            block += `
+    alpn:
+      - h2
+      - http/1.1`;
+            if (siteSettings.enableECH !== false) {
+                block += `
+    ech-opts:`;
+                block += `
+      enable: true`;
+                block += `
+      query-server-name: "${siteSettings.echSni || 'cloudflare-ech.com'}"`;
+            }
+        }
+        return block;
     }).join('\n');
 
     const ctNames = validNodes.filter(n => n.name.includes('电信')).map(n => `"${n.name}"`);
@@ -2000,7 +2298,7 @@ function generateClashConfig(parsedNodes, subName = 'VPS-Tunnel') {
 
     return `# ========================================================
 # 🚀 ${subName} Clash / Meta 专属开箱即用订阅配置
-# 🛡️ 零信任安全脱敏架构 · 内置国内权威 DNS 与三网自动测速
+# 🛡️ 零信任安全脱敏架构 · ECH 强加密与三网自动测速
 # ========================================================
 port: 7890
 socks-port: 7891
@@ -2034,6 +2332,11 @@ dns:
   nameserver:
     - https://dns.alidns.com/dns-query
     - https://doh.pub/dns-query
+  nameserver-policy:
+    "${domain}":
+      - "${siteSettings.echDns || 'https://dns.alidns.com/dns-query'}"
+    "${siteSettings.echSni || 'cloudflare-ech.com'}":
+      - "${siteSettings.echDns || 'https://dns.alidns.com/dns-query'}"
   fallback:
     - https://1.1.1.1/dns-query
     - https://8.8.8.8/dns-query
@@ -2057,7 +2360,7 @@ rules:
 `;
 }
 
-function generateSingboxConfig(parsedNodes, subName = 'VPS-Tunnel') {
+function generateSingboxConfig(parsedNodes, subName = 'VPS-Tunnel', echPem = null) {
     const validNodes = parsedNodes.filter(n => n !== null);
     const nodeTags = validNodes.map(n => n.name);
 
@@ -2078,6 +2381,24 @@ function generateSingboxConfig(parsedNodes, subName = 'VPS-Tunnel') {
     ];
 
     validNodes.forEach(n => {
+        const tlsConfig = {
+            enabled: n.tls,
+            server_name: n.sni,
+            insecure: false
+        };
+        if (n.tls) {
+            tlsConfig.utls = {
+                enabled: true,
+                fingerprint: n.fp || siteSettings.clientFingerprint || 'chrome'
+            };
+            tlsConfig.alpn = ["h2", "http/1.1"];
+            if (siteSettings.enableECH !== false && echPem) {
+                tlsConfig.ech = {
+                    enabled: true,
+                    config: echPem
+                };
+            }
+        }
         outbounds.push({
             type: "vless",
             tag: n.name,
@@ -2092,11 +2413,7 @@ function generateSingboxConfig(parsedNodes, subName = 'VPS-Tunnel') {
                     Host: n.host
                 }
             },
-            tls: {
-                enabled: n.tls,
-                server_name: n.sni,
-                insecure: false
-            }
+            tls: tlsConfig
         });
     });
 
@@ -2128,7 +2445,6 @@ function generateSingboxConfig(parsedNodes, subName = 'VPS-Tunnel') {
             strategy: "ipv4_only"
         },
         inbounds: [
-            // 🚀 客户端内核级 TUN 模式虚拟网卡 (网络层 L3 直通接管)
             {
                 type: "tun",
                 tag: "tun-in",
@@ -2280,7 +2596,7 @@ FINAL,🚀 节点选择,dns-failed
 `.replace(/\n\s*\n\s*\n/g, '\n\n');
 }
 
-async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEngineFn) {
+async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEngineFn, echPem = null) {
     const subApi = (settings.subApi || '').trim();
     // 本地原生零外传引擎模式 (物理级内网闭环)
     if (!subApi || subApi === 'local' || !subApi.startsWith('http')) {
@@ -2317,9 +2633,18 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
         });
 
         // 3. 内存原子回填真实凭据
-        const restored = converted
+        let restored = converted
             .replace(/00000000-0000-4000-8000-000000000000/g, user.uuid)
             .replace(/example\.com/g, currentTargetHost);
+
+        // 4. 🚀 注入 ECH 与客户端指纹
+        if (settings.enableECH !== false) {
+            if (target === 'clash') {
+                restored = patchClashWithECH(restored, settings.echSni, settings.echDns, settings.clientFingerprint, currentTargetHost);
+            } else if (target === 'singbox') {
+                restored = patchSingboxWithECH(restored, echPem, settings.clientFingerprint);
+            }
+        }
 
         return restored;
     } catch (err) {
@@ -2366,8 +2691,10 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
         const safeName = encodeURIComponent(user.username || 'user');
         const asciiName = (user.username || 'user').replace(/[^a-zA-Z0-9_-]/g, '_');
 
+        const echPem = (siteSettings.enableECH !== false) ? await getCachedECH(siteSettings.echSni, siteSettings.echDns) : null;
+
         if (target === 'clash') {
-            const clashContent = await convertSubWithZeroTrust(user, 'clash', rawNodes, siteSettings, () => generateClashConfig(parsedNodes, `VPS-${user.username}`));
+            const clashContent = await convertSubWithZeroTrust(user, 'clash', rawNodes, siteSettings, () => generateClashConfig(parsedNodes, `VPS-${user.username}`), echPem);
             res.writeHead(200, {
                 ...commonHeaders,
                 'Content-Type': 'application/x-yaml; charset=utf-8',
@@ -2375,7 +2702,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
             });
             return res.end(clashContent);
         } else if (target === 'singbox') {
-            const sbContent = await convertSubWithZeroTrust(user, 'singbox', rawNodes, siteSettings, () => generateSingboxConfig(parsedNodes, `VPS-${user.username}`));
+            const sbContent = await convertSubWithZeroTrust(user, 'singbox', rawNodes, siteSettings, () => generateSingboxConfig(parsedNodes, `VPS-${user.username}`, echPem), echPem);
             res.writeHead(200, {
                 ...commonHeaders,
                 'Content-Type': 'application/json; charset=utf-8',
@@ -2383,7 +2710,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
             });
             return res.end(sbContent);
         } else if (target === 'surge') {
-            const surgeContent = await convertSubWithZeroTrust(user, 'surge', rawNodes, siteSettings, () => generateSurgeConfig(parsedNodes, `VPS-${user.username}`));
+            const surgeContent = await convertSubWithZeroTrust(user, 'surge', rawNodes, siteSettings, () => generateSurgeConfig(parsedNodes, `VPS-${user.username}`), echPem);
             res.writeHead(200, {
                 ...commonHeaders,
                 'Content-Type': 'text/plain; charset=utf-8',
@@ -2391,7 +2718,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
             });
             return res.end(surgeContent);
         } else if (target === 'quantumultx' || target === 'qx') {
-            const qxContent = await convertSubWithZeroTrust(user, 'quantumultx', rawNodes, siteSettings, () => generateQuantumultXConfig(parsedNodes, `VPS-${user.username}`));
+            const qxContent = await convertSubWithZeroTrust(user, 'quantumultx', rawNodes, siteSettings, () => generateQuantumultXConfig(parsedNodes, `VPS-${user.username}`), echPem);
             res.writeHead(200, {
                 ...commonHeaders,
                 'Content-Type': 'text/plain; charset=utf-8',
@@ -2769,6 +3096,24 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
                 if (data.ipDailyRegisterLimit !== undefined) {
                     siteSettings.ipDailyRegisterLimit = Math.max(0, parseInt(data.ipDailyRegisterLimit, 10) || 0);
                     envUpdates.IP_DAILY_REGISTER_LIMIT = siteSettings.ipDailyRegisterLimit;
+                }
+
+                // 🚀 ECH 参数接收与回写
+                if (data.enableECH !== undefined) {
+                    siteSettings.enableECH = Boolean(data.enableECH);
+                    envUpdates.ENABLE_ECH = String(siteSettings.enableECH);
+                }
+                if (data.echSni !== undefined) {
+                    siteSettings.echSni = data.echSni.trim() || 'cloudflare-ech.com';
+                    envUpdates.ECH_SNI = siteSettings.echSni;
+                }
+                if (data.echDns !== undefined) {
+                    siteSettings.echDns = data.echDns.trim() || 'https://dns.alidns.com/dns-query';
+                    envUpdates.ECH_DNS = siteSettings.echDns;
+                }
+                if (data.clientFingerprint !== undefined) {
+                    siteSettings.clientFingerprint = data.clientFingerprint.trim() || 'chrome';
+                    envUpdates.CLIENT_FINGERPRINT = siteSettings.clientFingerprint;
                 }
                 if (data.subDomain !== undefined) {
                     const val = data.subDomain.trim();
@@ -5283,12 +5628,45 @@ function renderAdminDashboardPage() {
                         <div class="form-row" style="margin-bottom:0;">
                             <label>订阅转换后端 (SUBAPI)</label>
                             <input type="text" id="cfg_subApi" placeholder="填 local (本地原生零外传引擎) 或外部地址" />
-                            <span style="font-size:11px; color:#64748b; margin-top:3px; display:block;">推荐填 local (物理级内网闭环，绝无任何外传风险) 或 https://api.v1.mk 等。</span>
+                            <span style="font-size:11px; color:#64748b; margin-top:3px; display:block;">推荐填 local (物理级内网闭环，绝无任何外传风险) 或 https://subapi.cmliussss.net 等。</span>
                         </div>
                         <div class="form-row" style="margin-bottom:0;">
                             <label>Clash 分流规则模板 (SUBCONFIG)</label>
                             <input type="text" id="cfg_subConfig" placeholder="留空使用默认 ACL4SSR 经典模板" />
                             <span style="font-size:11px; color:#64748b; margin-top:3px; display:block;">仅在调用外部 Subconverter 时生效，支持自定义分流规则集。</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 🛡️ ECH (Encrypted Client Hello) 强安全混淆模块 -->
+                <div style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px; padding:16px; margin-bottom:18px;">
+                    <div style="font-weight:700; color:#16a34a; font-size:13px; margin-bottom:10px; display:flex; justify-content:space-between; align-items:center;">
+                        <span>🛡️ ECH (Encrypted Client Hello) 全局防探测与指纹混淆</span>
+                        <span style="font-size:11px; color:#15803d; font-weight:600;">RFC 1035/8484 Type 65 权威解析</span>
+                    </div>
+                    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:16px;">
+                        <div class="form-row" style="margin-bottom:0;">
+                            <label>ECH 全局加密开关</label>
+                            <select id="cfg_enableECH">
+                                <option value="true">🟢 开启 ECH 防探测 (全客户端矩阵适配)</option>
+                                <option value="false">⚪ 关闭 ECH (仅标准 TLS)</option>
+                            </select>
+                            <span style="font-size:11px; color:#64748b; margin-top:3px; display:block;">自动为 Clash Meta、Sing-box、v2rayN、Shadowrocket 注入 ECH 配置。</span>
+                        </div>
+                        <div class="form-row" style="margin-bottom:0;">
+                            <label>ECH SNI 探测域名 (ECH_SNI)</label>
+                            <input type="text" id="cfg_echSni" placeholder="默认: cloudflare-ech.com" />
+                            <span style="font-size:11px; color:#64748b; margin-top:3px; display:block;">用于请求 DNS Type 65 HTTPS 记录提取 ECH PEM 证书的公网权威 SNI。</span>
+                        </div>
+                        <div class="form-row" style="margin-bottom:0;">
+                            <label>ECH DoH 解析服务器 (ECH_DNS)</label>
+                            <input type="text" id="cfg_echDns" placeholder="默认: https://dns.alidns.com/dns-query" />
+                            <span style="font-size:11px; color:#64748b; margin-top:3px; display:block;">支持阿里 DoH、腾讯 DNSPod 或 Cloudflare DoH。</span>
+                        </div>
+                        <div class="form-row" style="margin-bottom:0;">
+                            <label>客户端 uTLS 指纹混淆 (CLIENT_FINGERPRINT)</label>
+                            <input type="text" id="cfg_clientFingerprint" placeholder="默认: chrome" />
+                            <span style="font-size:11px; color:#64748b; margin-top:3px; display:block;">推荐 chrome、firefox、safari、ios 或 randomized。</span>
                         </div>
                     </div>
                 </div>
@@ -5701,6 +6079,10 @@ function renderAdminDashboardPage() {
             safeSetVal('cfg_subDomain', isPlaceholder ? ((geo && geo.ip) || '') : s.subDomain);
             safeSetVal('cfg_subApi', s.subApi || 'local');
             safeSetVal('cfg_subConfig', s.subConfig || '');
+            safeSetVal('cfg_enableECH', String(s.enableECH !== false));
+            safeSetVal('cfg_echSni', s.echSni || 'cloudflare-ech.com');
+            safeSetVal('cfg_echDns', s.echDns || 'https://dns.alidns.com/dns-query');
+            safeSetVal('cfg_clientFingerprint', s.clientFingerprint || 'chrome');
             safeSetVal('cfg_argoToken', s.argoToken || '');
             safeSetVal('cfg_argoDomain', s.argoDomain || '');
 
@@ -6503,6 +6885,10 @@ function renderAdminDashboardPage() {
                 subDomain: document.getElementById('cfg_subDomain').value.trim(),
                 subApi: document.getElementById('cfg_subApi').value.trim(),
                 subConfig: document.getElementById('cfg_subConfig').value.trim(),
+                enableECH: document.getElementById('cfg_enableECH').value === 'true',
+                echSni: document.getElementById('cfg_echSni').value.trim(),
+                echDns: document.getElementById('cfg_echDns').value.trim(),
+                clientFingerprint: document.getElementById('cfg_clientFingerprint').value.trim(),
                 argoToken: token,
                 argoDomain: domain,
                 newAdminPassword: document.getElementById('cfg_newAdminPassword').value.trim()
