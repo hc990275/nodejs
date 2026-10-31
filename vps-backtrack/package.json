@@ -1,0 +1,12 @@
+{
+  "name": "vps-backtrack",
+  "version": "1.0.0",
+  "description": "High-performance Pure Native Node.js VLESS-WebSocket & Cloudflare Origin Rules Port-Backtrack Engine for NAT VPS",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "author": "Antigravity",
+  "license": "MIT",
+  "dependencies": {}
+}

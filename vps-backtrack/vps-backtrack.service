@@ -1,0 +1,23 @@
+[Unit]
+Description=VPS-Backtrack Native Node.js Port-Backtrack VLESS Service
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/vps-backtrack
+ExecStart=/usr/bin/env node /opt/vps-backtrack/index.js
+Restart=always
+RestartSec=3s
+LimitNOFILE=65535
+LimitNPROC=65535
+
+# 针对 128M/256M NAT 内存优化
+Environment=NODE_ENV=production
+Environment=UV_THREADPOOL_SIZE=16
+Environment=MALLOC_ARENA_MAX=2
+
+[Install]
+WantedBy=multi-user.target
+
