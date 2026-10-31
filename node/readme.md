@@ -6,28 +6,35 @@
 
 ## ⚡ 全平台交互式一键部署
 
-在任意全新的 Linux 服务器（支持 **Ubuntu / Debian / Alpine / CentOS / Rocky / Alma / Arch**）终端中执行以下命令（`curl` 或 `wget` 二选一）即可启动全自动交互式部署向导：
+在任意全新的 Linux 服务器（支持 **Ubuntu / Debian / Alpine / CentOS / Rocky / Alma / Arch**）终端中执行以下命令（推荐使用 `sh -c "$(curl ...)"` 或 `sh -c "$(wget ...)"` 获得最佳终端交互体验）：
 
 ### 1. 官方主干通道
-**使用 curl：**
+**推荐命令 (curl)：**
 ```sh
-curl -fsSL https://raw.githubusercontent.com/hc990275/nodejs/main/node/install.sh | sh
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/hc990275/nodejs/main/node/install.sh)"
 ```
 
-**使用 wget：**
+**推荐命令 (wget)：**
 ```sh
+sh -c "$(wget -qO- https://raw.githubusercontent.com/hc990275/nodejs/main/node/install.sh)"
+```
+
+*也可以使用标准管道执行：*
+```sh
+curl -fsSL https://raw.githubusercontent.com/hc990275/nodejs/main/node/install.sh | sh
+# 或
 wget -qO- https://raw.githubusercontent.com/hc990275/nodejs/main/node/install.sh | sh
 ```
 
 ### 2. 国内 / 阻断地区加速通道 (带 GitHub CDN 镜像)
-**使用 curl：**
+**加速命令 (curl)：**
 ```sh
-curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/hc990275/nodejs/main/node/install.sh | sh
+sh -c "$(curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/hc990275/nodejs/main/node/install.sh)"
 ```
 
-**使用 wget：**
+**加速命令 (wget)：**
 ```sh
-wget -qO- https://ghproxy.net/https://raw.githubusercontent.com/hc990275/nodejs/main/node/install.sh | sh
+sh -c "$(wget -qO- https://ghproxy.net/https://raw.githubusercontent.com/hc990275/nodejs/main/node/install.sh)"
 ```
 
 ---
