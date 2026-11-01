@@ -43,13 +43,13 @@
 
 ## Ⅲ. 卡塔服务器一键部署指南
 
-以 **卡塔 9 号机 (`soc@abcai.online` / `51.75.118.151:20255`)** 为例：
+以 **卡塔 9 号机 (`example@abcai.online` / `127.0.0.1:20000`)** 为例：
 
 ### 1. 上传文件到卡塔服务器
 使用任意 SFTP 工具（如 WinSCP、FileZilla、FinalShell）连接卡塔面板的 SFTP：
-- **SFTP 地址**：`sftp.fr-node-46.katabump.com:2022`
-- **SFTP 用户名**：`864a8bda322da0d.750d1e90`
-- **SFTP 密码**：`9a233cffcc49`
+- **SFTP 地址**：`sftp.example.katabump.com:2022`
+- **SFTP 用户名**：`example_user_id.allocation`
+- **SFTP 密码**：`example_sftp_password`
 
 将本目录下的以下文件直接上传至根目录：
 - `index.js`
@@ -60,10 +60,10 @@
 ### 2. 检查 .env 配置
 在 `.env` 中确认基本参数：
 ```ini
-SERVER_PORT=20255
-PORT=20255
-ADMIN_PASSWORD=admin123
-SUB_DOMAIN=51.75.118.151
+SERVER_PORT=20000
+PORT=20000
+ADMIN_PASSWORD=your_secure_password
+SUB_DOMAIN=127.0.0.1
 DEFAULT_ALLOW_REGISTER=true
 DEFAULT_DAYS=365
 DEFAULT_TRAFFIC_GB=100
@@ -74,6 +74,6 @@ DEFAULT_TRAFFIC_GB=100
 ```bash
 node --max-old-space-size=96 index.js
 ```
-- 前台访问：`http://51.75.118.151:20255/`
-- 后台访问：`http://51.75.118.151:20255/admin`（默认密码 `admin123`）
-- 节点订阅：`http://51.75.118.151:20255/sub?token=用户UUID`
+- 前台访问：`http://127.0.0.1:20000/`
+- 后台访问：`http://127.0.0.1:20000/admin`（默认密码 `your_secure_password`）
+- 节点订阅：`http://127.0.0.1:20000/sub?token=用户UUID`
