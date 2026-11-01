@@ -1,8 +1,8 @@
 # =========================================================================
-# Git Ignore 规则 (严格保障凭据与数据隔离，杜绝误传泄密)
+# Git Ignore 规则 (最高安全级别凭据隔离，彻底杜绝泄露)
 # =========================================================================
 
-# 1. 核心敏感凭据与环境变量 (强制使用 .env.example 作为分享模板)
+# 1. 环境变量与凭据文件 (强制使用 .env.example 作为脱敏模板)
 .env
 .env.local
 .env.*.local
@@ -10,17 +10,30 @@
 **/.env.*
 !**/.env.example
 
-# 2. 运行时动态数据与用户数据库 (禁止提交真实用户与动态配置)
+# 2. 运行时动态数据、用户库与节点凭据
 data/*
 !data/.gitkeep
 **/data/*
 !**/data/.gitkeep
 users.json
 settings.json
+nodes.json
+groups.json
+tg_users.json
 **/users.json
 **/settings.json
+**/nodes.json
+**/groups.json
+**/tg_users.json
+**/v3_settings.json
+**/v3_settings.json.bak
 
-# 3. 二进制可执行程序与大型核心 (禁止将数十兆二进制程序提交至 GitHub)
+# 3. 真实服务配置文件与密钥 (防止公网端口密码外泄)
+config.json
+**/config.json
+!**/config.example.json
+
+# 4. 二进制可执行程序与内核
 cloudflared
 cloudflared.exe
 cloudflared-*
@@ -30,7 +43,7 @@ sing-box.exe
 sing-box-*
 **/sing-box*
 
-# 4. Node.js 运行时依赖与包管理缓存
+# 5. Node.js 运行时依赖与缓存
 node_modules/
 **/node_modules/
 .npm/
@@ -42,7 +55,7 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# 5. 临时文件、缓存目录与进程 PID
+# 6. 临时文件与进程 PID
 .tmp/
 **/.tmp/
 *.tmp
@@ -52,12 +65,12 @@ pnpm-debug.log*
 *.pid
 **/*.pid
 
-# 6. 运行日志与日志目录
+# 7. 日志文件
 *.log
 logs/
 **/logs/
 
-# 7. 自签证书、TLS 密钥与 Reality 密钥对
+# 8. 证书密钥、TLS 私钥与 Reality 密钥
 *.pem
 *.key
 *.crt
@@ -65,15 +78,24 @@ reality_keys.json
 **/reality_keys.json
 ss_secret.key
 **/ss_secret.key
+certs/
+**/certs/
 
-# 8. 系统与编辑器垃圾文件
+# 9. 系统与编辑器产生的文件
 .DS_Store
 Thumbs.db
 *.bak
+*.bak.*
+**/*.bak
+**/*.bak.*
 *.orig
 scratch_*
 
-# 9. 私人自用说明文档与自动化同步脚本 (包含真实凭据，严禁开源)
+# 10. 自用隐私文档与同步脚本
+*PRIVATE*.md
+*private*.md
+*_private.*
+*自用*.md
 TG_BOT_GUIDE_PRIVATE.md
 **/TG_BOT_GUIDE_PRIVATE.md
 sync.ps1
