@@ -43,6 +43,9 @@ const url = require('url');
 const zlib = require('zlib');
 const { spawn } = require('child_process');
 const os = require('os');
+const { hashPassword, verifyPassword, isLegacyHash, USERNAME_RE, esc: escHtml, isSameOriginRequest } = require('./src/security');
+// 前端 innerHTML 渲染用的转义函数（注入到管理页面脚本中，与 src/security.js 的 esc 同逻辑）
+const ESC_JS = String(function esc(value) { return String(value ?? '').replace(/[&<>"']/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]; }); });
 
 // ==========================================
 // 🚀 基础字节格式化工具函数
@@ -1034,7 +1037,7 @@ function patchSingboxWithECH(jsonStr, echPem, fp = 'chrome') {
 }
 
 const DEFAULT_SETTINGS = {
-    allowRegister: getEnv('DEFAULT_ALLOW_REGISTER', 'true') === 'true',
+    allowRegister: getEnv('DEFAULT_ALLOW_REGISTER', 'false') === 'true',
     defaultDays: parseInt(getEnv('DEFAULT_DAYS', '365'), 10),
     defaultTrafficGB: parseInt(getEnv('DEFAULT_TRAFFIC_GB', '100'), 10),
     ipRegisterCooldownSec: parseInt(getEnv('IP_REGISTER_COOLDOWN_SEC', '60'), 10), // 单 IP 注册冷却时间 (秒)
@@ -2038,7 +2041,23 @@ function generateUserNodes(user) {
 // 9. HTTP 路由分发与 Session 鉴权
 // ==========================================
 const adminSessions = new Set();
+const adminSessionCreatedAt = new Map(); // admin token -> 创建时间（TTL 清理）
 const userSessions = new Map(); // token -> uuid
+const sessionCreatedAt = new Map(); // user token -> 创建时间（TTL 清理）
+const ADMIN_SESSION_TTL = 7 * 86400 * 1000;  // 管理员会话 7 天
+const USER_SESSION_TTL = 30 * 86400 * 1000;  // 用户会话 30 天
+
+// 定期清理过期会话，防内存泄漏与长期有效 token
+setInterval(() => {
+    const now = Date.now();
+    for (const [t, at] of sessionCreatedAt) {
+        if (now - at > USER_SESSION_TTL) { userSessions.delete(t); sessionCreatedAt.delete(t); }
+    }
+    for (const [t, at] of adminSessionCreatedAt) {
+        if (now - at > ADMIN_SESSION_TTL) { adminSessions.delete(t); adminSessionCreatedAt.delete(t); }
+    }
+}, 60 * 60 * 1000).unref();
+
 // 🛡️ 防薅风控核心：clientIp -> Array<number> (最近24小时内所有成功注册的时间戳毫秒列表)
 const registerIpHistory = new Map();
 
@@ -2094,30 +2113,26 @@ function parseCookies(req) {
 }
 
 function generateAdminToken() {
-    const ts = Date.now().toString();
-    const sig = crypto.createHmac('sha256', ADMIN_PASSWORD).update(ts).digest('hex');
-    return `${ts}.${sig}`;
+    // 纯随机会话 token：不再用 ADMIN_PASSWORD 派生 HMAC，避免密钥复用与伪造
+    return crypto.randomBytes(24).toString('hex');
 }
 
 function verifyAdminToken(token) {
     if (!token || typeof token !== 'string') return false;
-    if (adminSessions.has(token)) return true;
-    const parts = token.split('.');
-    if (parts.length !== 2) return false;
-    const [tsStr, sig] = parts;
-    const ts = parseInt(tsStr, 10);
-    if (isNaN(ts) || Date.now() - ts > 7 * 86400 * 1000) return false;
-    const expectedSig = crypto.createHmac('sha256', ADMIN_PASSWORD).update(tsStr).digest('hex');
-    return sig === expectedSig;
+    if (!adminSessions.has(token)) return false;
+    const at = adminSessionCreatedAt.get(token);
+    if (!at) return true; // 兼容升级前已签发的旧会话
+    return Date.now() - at <= ADMIN_SESSION_TTL;
 }
 
 function checkAdminAuth(req) {
+    // 同源校验：阻断 CSRF（机器人 Cookie 分支带 Origin/Referer，与 Host 一致，正常通过）
+    if (!isSameOriginRequest(req)) return false;
     const cookies = parseCookies(req);
     if (cookies.admin_token && verifyAdminToken(cookies.admin_token)) return true;
-    const authHeader = req.headers['x-admin-token'];
-    if (authHeader && (authHeader === ADMIN_PASSWORD || verifyAdminToken(authHeader))) return true;
-    const q = url.parse(req.url, true).query;
-    if (q.token && q.token === ADMIN_PASSWORD) return true;
+    // 安全加固：已移除 x-admin-token 明文密码校验与 URL ?token= 明文密码校验
+    // （明文密码走 URL 会进日志/Referer；header 直接等于密码属于弱鉴权）。
+    // 管理 API 统一通过 /admin/api/login 获取 admin_token Cookie 后鉴权。
     return false;
 }
 
@@ -2675,11 +2690,14 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
             target = 'mixed';
         }
 
+        // CORS 收口：回显合法来源而非通配 *，订阅靠 UUID token 鉴权，避免任意站点无限制读取
+        const reqOrigin = (req.headers && req.headers.origin) ? String(req.headers.origin) : '';
         const commonHeaders = {
             'Profile-Update-Interval': '24',
             'Subscription-Userinfo': `upload=0; download=${user.trafficUsed}; total=${user.trafficLimit}; expire=${Math.floor(user.expireTime / 1000)}`,
             'Cache-Control': 'no-store, no-cache, must-revalidate',
-            'Access-Control-Allow-Origin': '*'
+            'Access-Control-Allow-Origin': reqOrigin || '*',
+            'Vary': 'Origin'
         };
 
         const safeName = encodeURIComponent(user.username || 'user');
@@ -2769,8 +2787,8 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
         readBody(data => {
             const username = (data.username || '').trim();
             const password = (data.password || '').trim();
-            if (!username || username.length < 3) return sendJson({ error: '用户名至少3位' }, 400);
-            if (!password || password.length < 6) return sendJson({ error: '密码至少6位' }, 400);
+            if (!USERNAME_RE.test(username)) return sendJson({ error: '用户名需为 3 至 48 位字母、数字、点、下划线或连字符' }, 400);
+            if (password.length < 10 || password.length > 256) return sendJson({ error: '密码长度需为 10 至 256 位' }, 400);
 
             for (const u of users.values()) {
                 if (u.username === username) return sendJson({ error: '用户名已被注册' }, 400);
@@ -2785,7 +2803,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
             const newUser = {
                 uuid,
                 username,
-                passwordHash: crypto.createHash('sha256').update(password).digest('hex'),
+                passwordHash: hashPassword(password),
                 trafficLimit: siteSettings.defaultTrafficGB * 1024 * 1024 * 1024,
                 trafficUsed: 0,
                 expireTime: Date.now() + siteSettings.defaultDays * 86400 * 1000,
@@ -2797,6 +2815,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
             console.log(`[Auth] 🆕 用户注册成功: ${username} (IP: ${clientIp}) | 1分钟防薅锁已生效`);
             const sessionToken = crypto.randomBytes(16).toString('hex');
             userSessions.set(sessionToken, uuid);
+            sessionCreatedAt.set(sessionToken, Date.now());
             res.setHeader('Set-Cookie', `user_token=${sessionToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`);
             sendJson({ success: true, message: '注册并登录成功', uuid, user: { username, uuid } });
         });
@@ -2807,12 +2826,17 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
         readBody(data => {
             const username = (data.username || '').trim();
             const password = (data.password || '').trim();
-            const pHash = crypto.createHash('sha256').update(password).digest('hex');
 
             for (const u of users.values()) {
-                if (u.username === username && u.passwordHash === pHash) {
+                if (u.username === username && verifyPassword(password, u.passwordHash)) {
+                    // 旧 SHA-256 哈希透明升级为 PBKDF2
+                    if (isLegacyHash(u.passwordHash)) {
+                        u.passwordHash = hashPassword(password);
+                        saveUsers();
+                    }
                     const sessionToken = crypto.randomBytes(16).toString('hex');
                     userSessions.set(sessionToken, u.uuid);
+                    sessionCreatedAt.set(sessionToken, Date.now());
                     res.setHeader('Set-Cookie', `user_token=${sessionToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`);
                     return sendJson({ success: true, user: { username: u.username, uuid: u.uuid } });
                 }
@@ -2823,6 +2847,8 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
     }
 
     if (pathname === '/api/logout') {
+        const cookies = parseCookies(req);
+        if (cookies.user_token) { userSessions.delete(cookies.user_token); sessionCreatedAt.delete(cookies.user_token); }
         res.setHeader('Set-Cookie', 'user_token=; Path=/; SameSite=Lax; Max-Age=0');
         res.writeHead(302, { Location: '/' });
         return res.end();
@@ -2835,6 +2861,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
             if (pwd === ADMIN_PASSWORD) {
                 const sToken = generateAdminToken();
                 adminSessions.add(sToken);
+                adminSessionCreatedAt.set(sToken, Date.now());
                 res.setHeader('Set-Cookie', `admin_token=${sToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800`);
                 return sendJson({ success: true, token: sToken });
             }
@@ -2844,6 +2871,9 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
     }
 
     if (pathname === '/admin/logout') {
+        // 同步删除服务端会话，避免登出后 token 仍然有效
+        const cookies = parseCookies(req);
+        if (cookies.admin_token) { adminSessions.delete(cookies.admin_token); adminSessionCreatedAt.delete(cookies.admin_token); }
         res.setHeader('Set-Cookie', 'admin_token=; Path=/; Max-Age=0');
         res.writeHead(302, { Location: '/admin' });
         return res.end();
@@ -3205,14 +3235,14 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
                 }
                 const uuid = (data.uuid && data.uuid.trim().length >= 32) ? data.uuid.trim() : crypto.randomUUID();
                 if (users.has(uuid)) return sendJson({ error: '该 UUID 已存在冲突' }, 400);
-                const pwd = (data.password && data.password.trim().length >= 6) ? data.password.trim() : '123456';
+                const pwd = (data.password && data.password.trim().length >= 6) ? data.password.trim() : crypto.randomBytes(12).toString('base64url');
                 const days = parseInt(data.days || siteSettings.defaultDays, 10);
                 const trafficGB = parseInt(data.trafficGB || siteSettings.defaultTrafficGB, 10);
 
                 const newUser = {
                     uuid,
                     username,
-                    passwordHash: crypto.createHash('sha256').update(pwd).digest('hex'),
+                    passwordHash: hashPassword(pwd),
                     trafficLimit: trafficGB * 1024 * 1024 * 1024,
                     trafficUsed: 0,
                     expireTime: Date.now() + days * 86400 * 1000,
@@ -3259,8 +3289,8 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
 
                 // 3. 修改密码
                 if (data.newPassword && data.newPassword.trim()) {
-                    if (data.newPassword.trim().length < 6) return sendJson({ error: '新密码至少6位' }, 400);
-                    user.passwordHash = crypto.createHash('sha256').update(data.newPassword.trim()).digest('hex');
+                    if (data.newPassword.trim().length < 10) return sendJson({ error: '新密码至少10位' }, 400);
+                    user.passwordHash = hashPassword(data.newPassword.trim());
                     console.log(`[Users] 🔑 管理员已重设用户 ${user.username} 密码`);
                 }
 
@@ -4231,6 +4261,8 @@ function renderHomepage(currentUser) {
         }
 
         async function showNodeModal() {
+            // 局部 HTML 转义，防订阅内容注入
+            function escN(v) { return String(v ?? '').replace(/[&<>"']/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]; }); }
             const el = document.getElementById('subUrlInput');
             if (!el) return;
             let fullUrl = el.value;
@@ -4280,8 +4312,8 @@ function renderHomepage(currentUser) {
                     const encLink = encodeURIComponent(link);
                     return '<div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; padding:10px 12px; display:flex; align-items:center; justify-content:space-between; gap:10px;">' +
                         '<div style="flex:1; min-width:0;">' +
-                            '<div style="font-weight:700; color:#0f172a; font-size:12px; margin-bottom:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + label + '</div>' +
-                            '<div style="font-family:Consolas, monospace; font-size:11px; color:#64748b; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + link + '</div>' +
+                            '<div style="font-weight:700; color:#0f172a; font-size:12px; margin-bottom:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + escN(label) + '</div>' +
+                            '<div style="font-family:Consolas, monospace; font-size:11px; color:#64748b; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + escN(link) + '</div>' +
                         '</div>' +
                         '<button class="btn btn-sm btn-primary" data-link="' + encLink + '" onclick="copyDecodedLink(this.dataset.link)">复制</button>' +
                     '</div>';
@@ -6031,7 +6063,7 @@ function renderAdminDashboardPage() {
                             guideBox.style.background = '#fef2f2';
                             guideBox.style.border = '1px solid #fecaca';
                             guideBox.style.color = '#991b1b';
-                            guideBox.innerHTML = '⚠️ <b>Argo 隧道连接遇到异常</b>: ' + (data.argoLastLog || '请检查 Token 是否有效或点击顶部「一键自愈」重新拉起') + '。';
+                            guideBox.innerHTML = '⚠️ <b>Argo 隧道连接遇到异常</b>: ' + esc(data.argoLastLog || '请检查 Token 是否有效或点击顶部「一键自愈」重新拉起') + '。';
                         } else {
                             guideBox.style.display = 'none';
                         }
@@ -6421,6 +6453,13 @@ function renderAdminDashboardPage() {
             }
         }
 
+        // HTML 转义：所有动态字段插入 innerHTML 前必须转义，防存储型 XSS
+        function esc(value) {
+            return String(value ?? '').replace(/[&<>"']/g, function (c) {
+                return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
+            });
+        }
+
         function renderUsersTableRows(list) {
             const tbody = document.getElementById('usersTbody');
             if (!list || list.length === 0) {
@@ -6428,6 +6467,9 @@ function renderAdminDashboardPage() {
                 return;
             }
             tbody.innerHTML = list.map(function(u) {
+                // 所有来自服务端的动态字段先转义，防用户名等字段注入 HTML/脚本
+                const safeUuid = esc(u.uuid);
+                const safeName = esc(u.username || '');
                 let statusDot = u.enabled ? (u.isExpired ? '⏰到期' : (u.isExhausted ? '⚠️超额' : '🟢正常')) : '🔴封禁';
                 let statusHtml = '<span class="tag tag-ok">🟢 正常</span>';
                 if (!u.enabled) statusHtml = '<span class="tag tag-ban">🔴 已封禁</span>';
@@ -6444,36 +6486,36 @@ function renderAdminDashboardPage() {
                 return '<tr>' +
                     // 1. 账号名称（点击直接打开弹窗编辑，手机/PC通用，极致顺手）
                     '<td class="col-mobile-user">' +
-                        '<div class="mobile-clickable-cell" data-uuid="' + u.uuid + '" onclick="openEditUserModal(this.dataset.uuid)" title="点击直接编辑该账号">' +
+                        '<div class="mobile-clickable-cell" data-uuid="' + safeUuid + '" onclick="openEditUserModal(this.dataset.uuid)" title="点击直接编辑该账号">' +
                             '<div style="font-weight:700; color:#2563eb; display:flex; align-items:center; justify-content:space-between;">' +
-                                '<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + (u.username || '') + '</span>' +
+                                '<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + safeName + '</span>' +
                                 '<span style="font-size:11px; opacity:0.75; margin-left:2px;">✏️</span>' +
                             '</div>' +
                             '<div class="mobile-sub-tag">' + statusDot + '</div>' +
                         '</div>' +
                     '</td>' +
                     // 2. UUID（手机端隐藏）
-                    '<td class="col-desktop"><span class="uuid-badge" onclick="copyText(this.innerText)" title="点击复制 UUID">' + u.uuid + '</span></td>' +
+                    '<td class="col-desktop"><span class="uuid-badge" onclick="copyText(this.innerText)" title="点击复制 UUID">' + safeUuid + '</span></td>' +
                     // 3. 已用流量
                     '<td class="col-mobile-traffic">' +
-                        '<div style="font-size:11px; color:#475569; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + (u.trafficUsedStr || '0 B') + ' / ' + (u.trafficLimitGB ? (u.trafficLimitGB + 'G') : (u.trafficLimitStr || '0 B')) + '</div>' +
+                        '<div style="font-size:11px; color:#475569; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + esc(u.trafficUsedStr || '0 B') + ' / ' + esc(u.trafficLimitGB ? (u.trafficLimitGB + 'G') : (u.trafficLimitStr || '0 B')) + '</div>' +
                         '<div class="progress-bar-wrap" style="margin-top:3px;"><div class="progress-bar-inner" style="width:' + pct + '%; background:' + barColor + ';"></div></div>' +
                     '</td>' +
                     // 4. 注册时间（手机端隐藏）
-                    '<td class="col-desktop" style="color:#475569; font-size:12px; white-space:nowrap;">' + (u.createdDateStr || '-') + '</td>' +
+                    '<td class="col-desktop" style="color:#475569; font-size:12px; white-space:nowrap;">' + esc(u.createdDateStr || '-') + '</td>' +
                     // 5. 到期时间（手机端隐藏）
-                    '<td class="col-desktop" style="color:#475569; font-size:12px; white-space:nowrap;">' + (u.expireDateStr || '-') + '</td>' +
+                    '<td class="col-desktop" style="color:#475569; font-size:12px; white-space:nowrap;">' + esc(u.expireDateStr || '-') + '</td>' +
                     // 6. 状态（手机端隐藏）
                     '<td class="col-desktop">' + statusHtml + '</td>' +
                     // 7. 在线
                     '<td class="col-mobile-online" style="text-align:center;">' + connBadge + '</td>' +
                     // 8. 运维按钮（手机端隐藏）
                     '<td class="col-desktop"><div style="display:flex; gap:4px; flex-wrap:nowrap;">' +
-                        '<button class="btn btn-sm" style="background:#eff6ff; color:#2563eb; border:1px solid #bfdbfe; font-weight:600;" data-uuid="' + u.uuid + '" data-name="' + (u.username || '') + '" onclick="copyUserSubLink(this.dataset.uuid, this.dataset.name)" title="一键复制该用户的专属订阅链接">🔗 订阅</button>' +
-                        '<button class="btn btn-sm btn-primary" data-uuid="' + u.uuid + '" onclick="openEditUserModal(this.dataset.uuid)">✏️ 设置</button>' +
-                        '<button class="btn btn-sm" data-uuid="' + u.uuid + '" onclick="toggleBan(this.dataset.uuid)">' + banBtnText + '</button>' +
-                        '<button class="btn btn-sm" data-uuid="' + u.uuid + '" onclick="renewUser(this.dataset.uuid)">⏳ +30天</button>' +
-                        '<button class="btn btn-sm btn-danger" data-uuid="' + u.uuid + '" data-name="' + (u.username || '') + '" onclick="deleteUser(this.dataset.uuid, this.dataset.name)">🗑️ 删除</button>' +
+                        '<button class="btn btn-sm" style="background:#eff6ff; color:#2563eb; border:1px solid #bfdbfe; font-weight:600;" data-uuid="' + safeUuid + '" data-name="' + safeName + '" onclick="copyUserSubLink(this.dataset.uuid, this.dataset.name)" title="一键复制该用户的专属订阅链接">🔗 订阅</button>' +
+                        '<button class="btn btn-sm btn-primary" data-uuid="' + safeUuid + '" onclick="openEditUserModal(this.dataset.uuid)">✏️ 设置</button>' +
+                        '<button class="btn btn-sm" data-uuid="' + safeUuid + '" onclick="toggleBan(this.dataset.uuid)">' + banBtnText + '</button>' +
+                        '<button class="btn btn-sm" data-uuid="' + safeUuid + '" onclick="renewUser(this.dataset.uuid)">⏳ +30天</button>' +
+                        '<button class="btn btn-sm btn-danger" data-uuid="' + safeUuid + '" data-name="' + safeName + '" onclick="deleteUser(this.dataset.uuid, this.dataset.name)">🗑️ 删除</button>' +
                     '</div></td>' +
                 '</tr>';
             }).join('');

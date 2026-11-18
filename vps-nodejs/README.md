@@ -129,7 +129,9 @@ IP_DAILY_REGISTER_LIMIT=3
 # 客户端默认订阅配额
 DEFAULT_DAYS=365
 DEFAULT_TRAFFIC_GB=100
-DEFAULT_ALLOW_REGISTER=true
+# 注册策略：默认关闭公开注册，仅通过 TG 群集机器人在群内开户（退群自动封禁）
+# 机器人可通过 /admin/api/settings 的 allowRegister 字段随时开关
+DEFAULT_ALLOW_REGISTER=false
 
 # 零信任订阅转换引擎 (local 为本地极速零外传脱敏引擎)
 SUBAPI=local
