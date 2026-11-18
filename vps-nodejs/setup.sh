@@ -237,6 +237,11 @@ if [ -f "${SCRIPT_DIR}/index.js" ]; then
     echo -e "${CYAN}检测到本地源码，正在从当前目录部署...${PLAIN}"
     cp -f "${SCRIPT_DIR}/index.js" "${INSTALL_DIR}/"
     cp -f "${SCRIPT_DIR}/package.json" "${INSTALL_DIR}/"
+    # index.js 依赖 src/security.js（密码哈希/转义/同源校验），必须一并部署
+    if [ -f "${SCRIPT_DIR}/src/security.js" ]; then
+        mkdir -p "${INSTALL_DIR}/src"
+        cp -f "${SCRIPT_DIR}/src/security.js" "${INSTALL_DIR}/src/"
+    fi
     [ -f "${SCRIPT_DIR}/start.sh" ] && cp -f "${SCRIPT_DIR}/start.sh" "${INSTALL_DIR}/"
     [ -f "${SCRIPT_DIR}/optimize_bbr.sh" ] && cp -f "${SCRIPT_DIR}/optimize_bbr.sh" "${INSTALL_DIR}/"
     if [ ! -f "${INSTALL_DIR}/.env" ]; then
@@ -251,6 +256,7 @@ else
     download_remote() {
         local fname="$1"
         local target="${INSTALL_DIR}/${fname}"
+        mkdir -p "$(dirname "${target}")"
         if command -v curl >/dev/null 2>&1; then
             if ! curl -fsSL --connect-timeout 8 -m 30 "${RAW_URL}/${fname}" -o "${target}"; then
                 curl -fsSL --connect-timeout 8 -m 30 "${GH_PROXY}/${fname}" -o "${target}"
@@ -263,6 +269,8 @@ else
     }
     download_remote "index.js"
     download_remote "package.json"
+    # index.js 依赖 src/security.js，必须一并下载，否则启动即崩
+    download_remote "src/security.js"
     download_remote "start.sh"
     download_remote "optimize_bbr.sh"
     if [ ! -f "${INSTALL_DIR}/.env" ]; then
