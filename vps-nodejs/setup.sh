@@ -237,10 +237,10 @@ if [ -f "${SCRIPT_DIR}/index.js" ]; then
     echo -e "${CYAN}检测到本地源码，正在从当前目录部署...${PLAIN}"
     cp -f "${SCRIPT_DIR}/index.js" "${INSTALL_DIR}/"
     cp -f "${SCRIPT_DIR}/package.json" "${INSTALL_DIR}/"
-    # index.js 依赖 src/security.js（密码哈希/转义/同源校验），必须一并部署
-    if [ -f "${SCRIPT_DIR}/src/security.js" ]; then
+    # index.js 依赖 src/ 下的模块（security.js 密码/转义/同源校验；sub_converter.js 六格式转换引擎；yaml-lite.js 零依赖 YAML），必须一并部署
+    if [ -d "${SCRIPT_DIR}/src" ]; then
         mkdir -p "${INSTALL_DIR}/src"
-        cp -f "${SCRIPT_DIR}/src/security.js" "${INSTALL_DIR}/src/"
+        cp -f "${SCRIPT_DIR}/src/"*.js "${INSTALL_DIR}/src/"
     fi
     [ -f "${SCRIPT_DIR}/start.sh" ] && cp -f "${SCRIPT_DIR}/start.sh" "${INSTALL_DIR}/"
     [ -f "${SCRIPT_DIR}/optimize_bbr.sh" ] && cp -f "${SCRIPT_DIR}/optimize_bbr.sh" "${INSTALL_DIR}/"
@@ -269,8 +269,10 @@ else
     }
     download_remote "index.js"
     download_remote "package.json"
-    # index.js 依赖 src/security.js，必须一并下载，否则启动即崩
+    # index.js 依赖 src/ 下 3 个模块，必须一并下载，否则启动即崩
     download_remote "src/security.js"
+    download_remote "src/sub_converter.js"
+    download_remote "src/yaml-lite.js"
     download_remote "start.sh"
     download_remote "optimize_bbr.sh"
     if [ ! -f "${INSTALL_DIR}/.env" ]; then

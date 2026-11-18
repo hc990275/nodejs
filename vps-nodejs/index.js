@@ -44,6 +44,8 @@ const zlib = require('zlib');
 const { spawn } = require('child_process');
 const os = require('os');
 const { hashPassword, verifyPassword, isLegacyHash, USERNAME_RE, esc: escHtml, isSameOriginRequest } = require('./src/security');
+// 现代订阅转换引擎（六格式）：从 liuyang 移植，零依赖，支持 ECH 规范处理
+const subConverter = require('./src/sub_converter');
 // 前端 innerHTML 渲染用的转义函数（注入到管理页面脚本中，与 src/security.js 的 esc 同逻辑）
 const ESC_JS = String(function esc(value) { return String(value ?? '').replace(/[&<>"']/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]; }); });
 
@@ -2690,22 +2692,26 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
         }
 
         const rawNodes = generateUserNodes(user);
-        const parsedNodes = rawNodes.map(parseVlessUri).filter(Boolean);
+        // 用现代转换引擎解析 VLESS URI 为标准节点（支持 ECH/WS/TLS 等完整字段）
+        let nodes;
+        try { nodes = subConverter.parseNodesFromContent(rawNodes.join('\n')); }
+        catch (e) { nodes = rawNodes.map(parseVlessUri).filter(Boolean).map(n => ({ ...n, type: 'vless', network: n.type, uuid: n.uuid, tls: n.tls, sni: n.sni, host: n.host, path: n.path, name: n.name, server: n.server, port: n.port })); }
+
         const ua = (req.headers['user-agent'] || '').toLowerCase();
         const queryTarget = (parsedUrl.query.target || '').toLowerCase();
 
-        // 智能探测客户端类型 (Clash / Singbox / Surge / Mixed)
-        let target = 'mixed';
-        if (queryTarget === 'clash' || parsedUrl.query.clash !== undefined || ua.includes('clash') || ua.includes('meta') || ua.includes('mihomo')) {
+        // 智能探测客户端类型（六格式 + 通用）
+        let target = 'base64';
+        if (queryTarget === 'loon' || parsedUrl.query.loon !== undefined || ua.includes('loon')) {
+            target = 'loon';
+        } else if (queryTarget === 'clash' || parsedUrl.query.clash !== undefined || ua.includes('clash') || ua.includes('meta') || ua.includes('mihomo') || ua.includes('stash')) {
             target = 'clash';
         } else if (queryTarget === 'singbox' || queryTarget === 'sb' || parsedUrl.query.singbox !== undefined || parsedUrl.query.sb !== undefined || ua.includes('singbox') || ua.includes('sing-box')) {
             target = 'singbox';
         } else if (queryTarget === 'surge' || parsedUrl.query.surge !== undefined || ua.includes('surge')) {
             target = 'surge';
-        } else if (queryTarget === 'qx' || queryTarget === 'quantumultx' || queryTarget === 'quantumult' || parsedUrl.query.qx !== undefined || ua.includes('quantumult%20x') || ua.includes('quantumult')) {
+        } else if (queryTarget === 'qx' || queryTarget === 'quantumultx' || queryTarget === 'quantumult' || parsedUrl.query.qx !== undefined || ua.includes('quantumult')) {
             target = 'quantumultx';
-        } else if (parsedUrl.query.b64 !== undefined || parsedUrl.query.base64 !== undefined) {
-            target = 'mixed';
         }
 
         // CORS 收口：回显合法来源而非通配 *，订阅靠 UUID token 鉴权，避免任意站点无限制读取
@@ -2721,48 +2727,37 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
         const safeName = encodeURIComponent(user.username || 'user');
         const asciiName = (user.username || 'user').replace(/[^a-zA-Z0-9_-]/g, '_');
 
-        const echPem = (siteSettings.enableECH !== false) ? await getCachedECH(siteSettings.echSni, siteSettings.echDns) : null;
-
+        // 用现代引擎生成六格式输出（本地零外传，不依赖公网 subconverter）
         if (target === 'clash') {
-            const clashContent = await convertSubWithZeroTrust(user, 'clash', rawNodes, siteSettings, () => generateClashConfig(parsedNodes, `VPS-${user.username}`), echPem);
-            res.writeHead(200, {
-                ...commonHeaders,
-                'Content-Type': 'application/x-yaml; charset=utf-8',
-                'Content-Disposition': `attachment; filename="clash_${asciiName}.yaml"; filename*=UTF-8''clash_${safeName}.yaml`
-            });
+            const clashContent = subConverter.generateClashYaml(nodes);
+            res.writeHead(200, { ...commonHeaders, 'Content-Type': 'application/x-yaml; charset=utf-8',
+                'Content-Disposition': `attachment; filename="clash_${asciiName}.yaml"; filename*=UTF-8''clash_${safeName}.yaml` });
             return res.end(clashContent);
         } else if (target === 'singbox') {
-            const sbContent = await convertSubWithZeroTrust(user, 'singbox', rawNodes, siteSettings, () => generateSingboxConfig(parsedNodes, `VPS-${user.username}`, echPem), echPem);
-            res.writeHead(200, {
-                ...commonHeaders,
-                'Content-Type': 'application/json; charset=utf-8',
-                'Content-Disposition': `attachment; filename="singbox_${asciiName}.json"; filename*=UTF-8''singbox_${safeName}.json`
-            });
+            const sbContent = subConverter.generateSingboxJson(nodes);
+            res.writeHead(200, { ...commonHeaders, 'Content-Type': 'application/json; charset=utf-8',
+                'Content-Disposition': `attachment; filename="singbox_${asciiName}.json"; filename*=UTF-8''singbox_${safeName}.json` });
             return res.end(sbContent);
         } else if (target === 'surge') {
-            const surgeContent = await convertSubWithZeroTrust(user, 'surge', rawNodes, siteSettings, () => generateSurgeConfig(parsedNodes, `VPS-${user.username}`), echPem);
-            res.writeHead(200, {
-                ...commonHeaders,
-                'Content-Type': 'text/plain; charset=utf-8',
-                'Content-Disposition': `attachment; filename="surge_${asciiName}.conf"; filename*=UTF-8''surge_${safeName}.conf`
-            });
+            const surgeContent = subConverter.generateSurgeConf(nodes);
+            res.writeHead(200, { ...commonHeaders, 'Content-Type': 'text/plain; charset=utf-8',
+                'Content-Disposition': `attachment; filename="surge_${asciiName}.conf"` });
             return res.end(surgeContent);
-        } else if (target === 'quantumultx' || target === 'qx') {
-            const qxContent = await convertSubWithZeroTrust(user, 'quantumultx', rawNodes, siteSettings, () => generateQuantumultXConfig(parsedNodes, `VPS-${user.username}`), echPem);
-            res.writeHead(200, {
-                ...commonHeaders,
-                'Content-Type': 'text/plain; charset=utf-8',
-                'Content-Disposition': `attachment; filename="quantumultx_${asciiName}.conf"; filename*=UTF-8''quantumultx_${safeName}.conf`
-            });
+        } else if (target === 'quantumultx') {
+            const qxContent = subConverter.generateQuantumultXConfig(nodes);
+            res.writeHead(200, { ...commonHeaders, 'Content-Type': 'text/plain; charset=utf-8',
+                'Content-Disposition': `attachment; filename="quantumultx_${asciiName}.conf"` });
             return res.end(qxContent);
+        } else if (target === 'loon') {
+            const loonContent = subConverter.generateLoonConfig(nodes);
+            res.writeHead(200, { ...commonHeaders, 'Content-Type': 'text/plain; charset=utf-8',
+                'Content-Disposition': `attachment; filename="loon_${asciiName}.conf"` });
+            return res.end(loonContent);
         } else {
-            // 通用 Base64 订阅
-            const base64Data = Buffer.from(rawNodes.join('\n'), 'utf-8').toString('base64');
-            res.writeHead(200, {
-                ...commonHeaders,
-                'Content-Type': 'text/plain; charset=utf-8',
-                'Content-Disposition': `attachment; filename="sub_${asciiName}.txt"; filename*=UTF-8''sub_${safeName}.txt`
-            });
+            // 通用 Base64：用引擎规范化输出（标准 VLESS URI，含 ECH 规范字段）
+            const base64Data = subConverter.generateBase64(nodes);
+            res.writeHead(200, { ...commonHeaders, 'Content-Type': 'text/plain; charset=utf-8',
+                'Content-Disposition': `attachment; filename="sub_${asciiName}.txt"; filename*=UTF-8''sub_${safeName}.txt` });
             return res.end(base64Data);
         }
     }
