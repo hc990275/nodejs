@@ -4325,18 +4325,22 @@ function renderAdminDashboardPage() {
         .search-box {
             display: flex;
             align-items: center;
-            gap: 6px;
+            gap: 8px;
             background: #ffffff;
-            border: 1px solid var(--border-color);
-            border-radius: 6px;
-            padding: 0 10px;
-            height: 32px;
+            border: 1px solid #cbd5e1;
+            border-radius: 8px;
+            padding: 8px 12px;
+            min-height: 44px;
+            box-sizing: border-box;
         }
         .search-box input {
             border: none;
             outline: none;
-            font-size: 12px;
-            width: 160px;
+            font-size: 14px;
+            width: 100%;
+            min-width: 0;
+            min-height: auto !important;
+            background: transparent;
         }
 
         /* 移动端深度自适应适配 (Element Plus Pro 移动端规范) */
@@ -4356,23 +4360,32 @@ function renderAdminDashboardPage() {
             }
             .sidebar-menu {
                 flex-direction: row;
-                overflow-x: auto;
-                padding: 6px 10px;
-                gap: 6px;
-                -webkit-overflow-scrolling: touch;
+                overflow-x: hidden;
+                padding: 6px 8px;
+                gap: 4px;
+                display: flex;
+                width: 100%;
             }
             .menu-item {
-                padding: 6px 12px;
-                font-size: 12px;
+                padding: 6px 4px;
+                font-size: 11px;
                 white-space: nowrap;
-                flex-shrink: 0;
+                flex: 1 1 0;
+                min-width: 0;
+                text-align: center;
+                justify-content: center;
+                overflow: hidden;
+                text-overflow: ellipsis;
             }
+            .menu-item#menu_status { display: none; } /* 手机端隐藏第4个探针tab，图2只显示3个 */
             .sidebar-footer { display: none; }
             header.top-header {
                 height: 48px;
                 padding: 0 14px;
             }
-            .header-breadcrumb { display: none; }
+            .header-title-box { display: none !important; }
+            .header-actions { width: 100%; }
+            .header-actions .btn { flex: 1; }
             .content-container {
                 padding: 12px 10px;
             }
@@ -4468,17 +4481,17 @@ function renderAdminDashboardPage() {
             .header-actions { gap: 6px; }
             .header-actions .status-badge { display: none; }
             .header-actions .btn { min-height: 44px; padding: 6px 9px; }
-            .table-wrap { overflow: visible; border: 0; }
-            .table-wrap table, .table-wrap tbody, .table-wrap tr, .table-wrap td { display: block; width: 100%; }
-            .table-wrap thead { display: none; }
-            .table-wrap tbody { display: grid; gap: 10px; }
-            .table-wrap tbody tr { border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-card); padding: 8px; }
-            .table-wrap tbody td { border: 0; padding: 8px 6px !important; }
-            .table-wrap tbody td.col-desktop { display: block !important; }
-            .table-wrap tbody td:nth-child(2)::before { content: 'UUID'; display: block; color: #64748b; font-size: 11px; margin-bottom: 5px; }
-            .table-wrap tbody td:nth-child(4)::before { content: '注册时间'; display: block; color: #64748b; font-size: 11px; margin-bottom: 4px; }
-            .table-wrap tbody td:nth-child(5)::before { content: '到期时间'; display: block; color: #64748b; font-size: 11px; margin-bottom: 4px; }
-            .table-wrap tbody td:last-child > div { flex-wrap: wrap !important; }
+            .table-wrap:not(.user-list-wrap) { overflow: visible; border: 0; }
+            .table-wrap:not(.user-list-wrap) table, .table-wrap:not(.user-list-wrap) tbody, .table-wrap:not(.user-list-wrap) tr, .table-wrap:not(.user-list-wrap) td { display: block; width: 100%; }
+            .table-wrap:not(.user-list-wrap) thead { display: none; }
+            .table-wrap:not(.user-list-wrap) tbody { display: grid; gap: 10px; }
+            .table-wrap:not(.user-list-wrap) tbody tr { border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-card); padding: 8px; }
+            .table-wrap:not(.user-list-wrap) tbody td { border: 0; padding: 8px 6px !important; }
+            .table-wrap:not(.user-list-wrap) tbody td.col-desktop { display: block !important; }
+            .table-wrap:not(.user-list-wrap) tbody td:nth-child(2)::before { content: 'UUID'; display: block; color: #64748b; font-size: 11px; margin-bottom: 5px; }
+            .table-wrap:not(.user-list-wrap) tbody td:nth-child(4)::before { content: '注册时间'; display: block; color: #64748b; font-size: 11px; margin-bottom: 4px; }
+            .table-wrap:not(.user-list-wrap) tbody td:nth-child(5)::before { content: '到期时间'; display: block; color: #64748b; font-size: 11px; margin-bottom: 4px; }
+            .table-wrap:not(.user-list-wrap) tbody td:last-child > div { flex-wrap: wrap !important; }
             .table-wrap tbody td:last-child .btn { min-height: 44px; }
             .pagination-bar { align-items: stretch; }
             .pagination-controls { flex-wrap: wrap; }
@@ -4490,36 +4503,8 @@ function renderAdminDashboardPage() {
     <style>
         .user-sort-bar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:0 0 12px; color:#64748b; font-size:13px; }
         .user-sort-bar .btn { min-height:44px; border-radius:8px; background:transparent; }
-        .compact-user-table { table-layout:auto !important; }
-        .compact-user-table thead { display:none !important; }
-        .compact-user-table tbody td { padding:0 !important; border:0 !important; }
-        .compact-user { border-bottom:1px solid #e2e8f0; }
-        .user-summary { display:flex; align-items:center; gap:10px; padding:8px 12px; }
-        .user-expand { appearance:none; border:0; background:transparent; color:inherit; display:flex; align-items:center; gap:12px; min-height:52px; padding:0; flex:1; min-width:0; text-align:left; cursor:pointer; }
-        .user-identity { display:grid; gap:4px; flex:1; min-width:0; }
-        .user-identity strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:15px; }
-        .user-status { color:#64748b; font-size:12px; }
-        .user-traffic { font-size:14px; font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap; }
-        .user-traffic small { display:block; color:#64748b; font-size:11px; margin-top:4px; }
-        .user-chevron { color:#64748b; font-size:20px; width:20px; text-align:center; }
-        .subscription-copy { min-height:44px; font-size:12px; padding:6px 10px; border:1px solid #e2e8f0; border-radius:8px; background:#f8fafc; color:#334155; cursor:pointer; }
-        .user-details { padding:4px 16px 16px; }
-        .user-details dl { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin:8px 0 14px; }
-        .user-details dt { color:#64748b; font-size:12px; margin-bottom:4px; }
-        .user-details dd { margin:0; font-size:13px; overflow-wrap:anywhere; }
-        .user-uuid { border:0; background:#f1f5f9; color:#475569; padding:10px; min-height:44px; border-radius:6px; width:100%; text-align:left; overflow-wrap:anywhere; cursor:pointer; }
-        .user-detail-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
-        .user-detail-actions .btn { min-height:44px; }
         .users-empty { text-align:center; padding:24px; color:#64748b; }
         @media(max-width:768px) {
-            .user-list-wrap { border:1px solid #e2e8f0; border-radius:10px; overflow:hidden !important; }
-            .user-list-wrap .compact-user-table { display:table; width:100% !important; min-width:0 !important; }
-            .user-list-wrap .compact-user-table tbody { display:table-row-group; }
-            .user-list-wrap .compact-user-table tr { display:table-row; border:0; padding:0; }
-            .user-list-wrap .compact-user-table td { display:table-cell; width:auto !important; padding:0 !important; }
-            .user-list-wrap .compact-user-table td::before { display:none !important; }
-            .user-summary { padding:8px 10px; gap:6px; }
-            .user-expand { gap:8px; }
             .user-list-wrap .pagination-controls { gap:4px !important; }
         }
     </style>
@@ -4619,15 +4604,6 @@ function renderAdminDashboardPage() {
                             <input type="text" id="userSearchInput" placeholder="输入用户名或 UUID 实时搜索..." oninput="filterUsers()" style="padding-right:24px;" />
                             <span id="clearUserSearchBtn" onclick="clearUserSearch()" style="position:absolute; right:8px; cursor:pointer; color:#94a3b8; font-size:12px; display:none;" title="清空搜索">✕</span>
                         </div>
-                        <select id="userSortSelect" onchange="changeUserSortSelect(this.value)" style="padding:4px 8px; font-size:12px; height:34px; border:1px solid #cbd5e1; border-radius:4px; background:#fff; color:#334155; cursor:pointer;" title="快速排序">
-                            <option value="default">↕️ 默认排列</option>
-                            <option value="onlineConns_desc">⚡ 在线 (从多到少 降序)</option>
-                            <option value="onlineConns_asc">⚡ 在线 (从少到多 升序)</option>
-                            <option value="createdTime_desc">📅 注册时间 (最新优先 降序)</option>
-                            <option value="createdTime_asc">📅 注册时间 (最早优先 升序)</option>
-                            <option value="trafficUsed_desc">📊 流量使用 (从大到小 降序)</option>
-                            <option value="trafficUsed_asc">📊 流量使用 (从小到大 升序)</option>
-                        </select>
                         <div class="panel-toolbar-btns">
                             <button class="btn btn-primary" onclick="openAddUserModal()">➕ 添加新用户</button>
                             <button class="btn" onclick="fetchUsers()">🔄 刷新</button>
@@ -4635,12 +4611,6 @@ function renderAdminDashboardPage() {
                     </div>
                 </div>
 
-                <div class="user-sort-bar" aria-label="用户排序">
-                    <span>排序</span>
-                    <button class="btn" onclick="toggleUserSort('trafficUsed')">流量 ⇅</button>
-                    <button class="btn" onclick="toggleUserSort('onlineConns')">在线 ⇅</button>
-                    <button class="btn" onclick="toggleUserSort('createdTime')">注册时间 ⇅</button>
-                </div>
                 <div class="table-wrap user-list-wrap">
                     <table class="compact-user-table">
                         <thead>
@@ -5145,7 +5115,7 @@ function renderAdminDashboardPage() {
         let userCurrentPage = 1;
         const userPageSize = 5;
         let filteredUsersList = [];
-        let userSortKey = 'default';
+        let userSortKey = 'onlineConns';
         let userSortOrder = 'desc';
 
         function toggleUserSort(field) {
@@ -5247,7 +5217,7 @@ function renderAdminDashboardPage() {
             const currentPageUsers = filteredUsersList.slice(startIndex, endIndex);
 
             // 1. 渲染表格主体行
-            renderUsersTableRows(currentPageUsers);
+            renderLegacyUsersTableRows(currentPageUsers);
 
             // 2. 渲染分页底部统计信息
             const infoEl = document.getElementById('usersPaginationInfo');
@@ -5362,17 +5332,17 @@ function renderAdminDashboardPage() {
                 return;
             }
             tbody.innerHTML = list.map(function(u) {
-                let statusDot = u.enabled ? (u.isExpired ? '⏰到期' : (u.isExhausted ? '⚠️超额' : '🟢正常')) : '🔴封禁';
-                let statusHtml = '<span class="tag tag-ok">🟢 正常</span>';
-                if (!u.enabled) statusHtml = '<span class="tag tag-ban">🔴 已封禁</span>';
-                else if (u.isExpired) statusHtml = '<span class="tag tag-warn">⏰ 已到期</span>';
-                else if (u.isExhausted) statusHtml = '<span class="tag tag-warn">⚠️ 流量超额</span>';
+                let statusDot = u.enabled ? (u.isExpired ? '到期' : (u.isExhausted ? '超额' : '正常')) : '封禁';
+                let statusColor = u.enabled ? (u.isExpired || u.isExhausted ? '#d97706' : '#16a34a') : '#dc2626';
+                let statusHtml = '<span class="tag tag-ok">● 正常</span>';
+                if (!u.enabled) statusHtml = '<span class="tag tag-ban">● 已封禁</span>';
+                else if (u.isExpired) statusHtml = '<span class="tag tag-warn">● 已到期</span>';
+                else if (u.isExhausted) statusHtml = '<span class="tag tag-warn">● 流量超额</span>';
 
                 const pct = Math.min(100, Math.round(((u.trafficUsed || 0) / (u.trafficLimit || 1)) * 100));
-                const barColor = pct > 90 ? '#dc2626' : (pct > 70 ? '#d97706' : '#2563eb');
                 const connBadge = (u.onlineConns > 0)
-                    ? ('<span style="display:inline-block; padding:2px 7px; border-radius:10px; background:#dcfce7; color:#15803d; font-size:12px; font-weight:700;">🟢 ' + u.onlineConns + '</span>')
-                    : '<span style="color:#94a3b8; font-size:12px;">0</span>';
+                    ? ('<span style="display:inline-flex; align-items:center; gap:5px; padding:4px 12px; border-radius:999px; background:#dcfce7; color:#15803d; font-size:15px; font-weight:700;"><span style="width:12px;height:12px;border-radius:50%;background:#4d9f2e;display:inline-block;"></span>' + u.onlineConns + '</span>')
+                    : '<span style="color:#94a3b8; font-size:14px;">0</span>';
                 const banBtnText = u.enabled ? '🚫 封禁' : '🔓 解封';
 
                 return '<tr>' +
@@ -5383,15 +5353,15 @@ function renderAdminDashboardPage() {
                                 '<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + (u.username || '') + '</span>' +
                                 '<span style="font-size:11px; opacity:0.75; margin-left:2px;">✏️</span>' +
                             '</div>' +
-                            '<div class="mobile-sub-tag">' + statusDot + '</div>' +
+                            '<div class="mobile-sub-tag" style="color:' + statusColor + ';">● ' + statusDot + '</div>' +
                         '</div>' +
                     '</td>' +
                     // 2. UUID（手机端隐藏）
                     '<td class="col-desktop"><span class="uuid-badge" onclick="copyText(this.innerText)" title="点击复制 UUID">' + u.uuid + '</span></td>' +
                     // 3. 已用流量
                     '<td class="col-mobile-traffic">' +
-                        '<div style="font-size:11px; color:#475569; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + (u.trafficUsedStr || '0 B') + ' / ' + (u.trafficLimitGB ? (u.trafficLimitGB + 'G') : (u.trafficLimitStr || '0 B')) + '</div>' +
-                        '<div class="progress-bar-wrap" style="margin-top:3px;"><div class="progress-bar-inner" style="width:' + pct + '%; background:' + barColor + ';"></div></div>' +
+                        '<div style="font-size:15px; color:#334155; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + (u.trafficUsedStr || '0 B') + ' / ' + (u.trafficLimitGB ? (u.trafficLimitGB + 'G') : (u.trafficLimitStr || '0 B')) + '</div>' +
+                        '<div class="progress-bar-wrap" style="margin-top:5px;"><div class="progress-bar-inner" style="width:' + pct + '%; background:#cbd5e1;"></div></div>' +
                     '</td>' +
                     // 4. 注册时间（手机端隐藏）
                     '<td class="col-desktop" style="color:#475569; font-size:12px; white-space:nowrap;">' + (u.createdDateStr || '-') + '</td>' +
@@ -5650,6 +5620,7 @@ function renderAdminDashboardPage() {
         }
 
         // 初始化
+        syncUserSortUI();
         fetchStatus();
         fetchUsers();
     </script>
