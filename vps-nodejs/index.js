@@ -931,6 +931,28 @@ async function getCachedECH(sni = 'cloudflare-ech.com', dnsUrl = 'https://dns.al
     return null;
 }
 
+// 把节点里的 ECH DNS 查询表达式预解析成 PEM（复用 getCachedECH 的缓存），
+// 使 sub_converter 的 compatibility 放行 ECH 节点（否则会被误判为不兼容而过滤）。
+async function prepareNodesEch(nodes) {
+    const out = nodes.map(n => ({ ...n }));
+    const tasks = [];
+    for (const n of out) {
+        if (!n.echConfigList || typeof n.echConfigList !== 'string') continue;
+        if (!/^(?:[a-zA-Z0-9.-]+\+)?(?:https|udp|h2c):\/\//.test(n.echConfigList)) continue; // 只处理 DNS 查询表达式
+        const expr = subConverter.parseEch(n.echConfigList);
+        if (!expr || !expr.resolver) continue;
+        const queryName = expr.queryName || n.sni || 'cloudflare-ech.com';
+        // 用站点配置的 DoH 端点解析（已知可用），queryName 取表达式里的查询域名
+        tasks.push((async () => {
+            const pem = await getCachedECH(queryName, siteSettings.echDns || 'https://dns.alidns.com/dns-query');
+            if (pem) { n.echConfigList = pem; n.echEnabled = true; }
+            else { n.echResolutionFailed = true; n.echConfigList = ''; n.echEnabled = false; }
+        })());
+    }
+    if (tasks.length) await Promise.allSettled(tasks);
+    return out;
+}
+
 function patchClashWithECH(yamlStr, echSni = 'cloudflare-ech.com', echDns = 'https://dns.alidns.com/dns-query', fp = 'chrome', targetHost = '') {
     try {
         let content = yamlStr;
@@ -2696,6 +2718,10 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
         let nodes;
         try { nodes = subConverter.parseNodesFromContent(rawNodes.join('\n')); }
         catch (e) { nodes = rawNodes.map(parseVlessUri).filter(Boolean).map(n => ({ ...n, type: 'vless', network: n.type, uuid: n.uuid, tls: n.tls, sni: n.sni, host: n.host, path: n.path, name: n.name, server: n.server, port: n.port })); }
+        // 预解析 ECH DNS 查询表达式为 PEM，避免 ECH 节点被兼容性诊断误过滤
+        if (nodes.length && siteSettings.enableECH !== false) {
+            try { nodes = await prepareNodesEch(nodes); } catch (e) {}
+        }
 
         const ua = (req.headers['user-agent'] || '').toLowerCase();
         const queryTarget = (parsedUrl.query.target || '').toLowerCase();
