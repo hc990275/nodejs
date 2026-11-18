@@ -1220,6 +1220,11 @@ function resolvePublicHost() {
     return siteSettings.subDomain || siteSettings.argoDomain || detectedPublicIp || getEnv('SERVER_IP', '') || '';
 }
 
+// 直连节点专用 host：必须是公网 IPv4（域名经 CF 只暴露 443，不会转发到面板端口）
+function resolveDirectIp() {
+    return getEnv('SERVER_IP', '') || detectedPublicIp || (net.isIP(siteSettings.subDomain) ? siteSettings.subDomain : '') || '';
+}
+
 function generateUserNodes(user) {
     const list = [];
     const host = resolvePublicHost();
@@ -1238,9 +1243,10 @@ function generateUserNodes(user) {
         ? `&fp=${fp}&ech=${echVal}&echConfigList=${echVal}`
         : `&fp=${fp}`;
 
-    // 1. 卡塔原生端口直连节点 (直连宿主机分配的随机端口，最稳无套路)
+    // 1. 卡塔原生端口直连节点 (直连宿主机公网 IP + 面板端口，必须走 IP 不能用域名)
+    const directIp = resolveDirectIp() || host;
     const directTag = `【卡塔·原生直连·${PORT}】-VLESS-WS`;
-    list.push(`vless://${user.uuid}@${host}:${PORT}?encryption=none&security=none&type=ws&host=${encodeURIComponent(host)}&path=%2F#${encodeURIComponent(directTag)}`);
+    list.push(`vless://${user.uuid}@${directIp}:${PORT}?encryption=none&security=none&type=ws&host=${encodeURIComponent(directIp)}&path=%2F#${encodeURIComponent(directTag)}`);
 
     // 1.1 若配置了 Cloudflare Argo 隧道域名，额外下发专属 443 端口隧道直连节点
     if (siteSettings.argoDomain) {
@@ -2138,7 +2144,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
         readBody(data => {
             const pwd = typeof data.password === 'string' ? data.password.trim() : '';
             const confirm = typeof data.confirm === 'string' ? data.confirm.trim() : '';
-            if (pwd.length < 10 || pwd.length > 256) return sendJson({ error: '密码长度须为 10–256 位' }, 400);
+            if (!pwd) return sendJson({ error: '密码不能为空' }, 400);
             if (pwd !== confirm) return sendJson({ error: '两次输入的密码不一致' }, 400);
             ADMIN_PASSWORD = pwd;
             passwordSetupRequired = false;
@@ -2211,7 +2217,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
                 const envUpdates = {};
 
                 // 1. 密码热修改与回写 .env
-                if (data.newAdminPassword && data.newAdminPassword.length >= 12 && data.newAdminPassword.length <= 256) {
+                if (typeof data.newAdminPassword === 'string' && data.newAdminPassword.trim()) {
                     ADMIN_PASSWORD = data.newAdminPassword.trim();
                     envUpdates.ADMIN_PASSWORD = ADMIN_PASSWORD;
                     adminSessions.clear();
@@ -3675,7 +3681,7 @@ function renderAdminLoginPage(setupMode = false) {
         <form id="adminLoginForm" onsubmit="event.preventDefault(); doSetupPassword();">
             <div class="form-group">
                 <label class="form-label" for="pwd">首次设置管理员密码</label>
-                <input type="password" id="pwd" class="input-control" placeholder="设置管理员密码（10–256 位）" autofocus autocomplete="new-password" />
+                <input type="password" id="pwd" class="input-control" placeholder="设置管理员密码" autofocus autocomplete="new-password" />
             </div>
             <div class="form-group">
                 <label class="form-label" for="pwd2">确认管理员密码</label>
@@ -3704,8 +3710,8 @@ function renderAdminLoginPage(setupMode = false) {
             const errDiv = document.getElementById('errMsg');
             const btn = document.getElementById('btnSubmit');
             const pwd = p.value.trim(), confirm = p2.value.trim();
-            if (pwd.length < 10) {
-                errDiv.style.display = 'flex'; errDiv.innerText = '⚠️ 密码至少 10 位'; p.focus(); return;
+            if (!pwd) {
+                errDiv.style.display = 'flex'; errDiv.innerText = '⚠️ 请输入密码'; p.focus(); return;
             }
             if (pwd !== confirm) {
                 errDiv.style.display = 'flex'; errDiv.innerText = '⚠️ 两次密码不一致'; p2.select(); return;
@@ -4836,7 +4842,7 @@ function renderAdminDashboardPage() {
                     <div style="font-weight:700; color:#dc2626; font-size:13px; margin-bottom:10px;">🔐 后台管理员密码热修改 (直接原子落盘 .env)</div>
                     <div class="form-row" style="max-width:400px;">
                         <label>新管理员密码 (留空则保持当前不变)</label>
-                    <input type="password" id="cfg_newAdminPassword" placeholder="输入新密码（至少 12 位）" autocomplete="new-password" />
+                    <input type="password" id="cfg_newAdminPassword" placeholder="输入新密码" autocomplete="new-password" />
                         <span style="font-size:11px; color:#64748b; margin-top:4px; display:block;">保存后立即更新内存并原子写入 .env，下次登录生效。</span>
                     </div>
                 </div>
