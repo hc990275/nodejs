@@ -754,6 +754,12 @@ async function autoDetectServerGeo() {
                         serverGeo.flag = getFlagEmoji(serverGeo.countryCode);
                         // 优先使用 API 原生返回的中文国家名，其次使用 Node.js 原生 Intl.DisplayNames 兜底
                         serverGeo.country = json.country || getRegionChineseName(serverGeo.countryCode) || '海外';
+                        // 台湾特殊处理：ip-api 的 zh-CN 对 TW 返回繁体「中華民國」、国旗 🇹🇼，
+                        // 统一规范为「中国台湾」+ 五星红旗 🇨🇳（与线上台湾鸡保持一致）
+                        if (serverGeo.countryCode === 'TW') {
+                            serverGeo.country = '中国台湾';
+                            serverGeo.flag = '🇨🇳';
+                        }
                         serverGeo.city = json.city || '';
                         serverGeo.isp = json.isp || '';
                         console.log(`[GeoIP] 🌐 自动探测服务器公网身份: ${serverGeo.flag} ${serverGeo.country}·${serverGeo.city} (IP: ${serverGeo.ip})`);
