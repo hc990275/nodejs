@@ -12,13 +12,15 @@ kata-nodejs/
 ├── package.json      # 启动与测试脚本（必须）
 ├── .env.example      # 配置模板（部署时复制为 .env）
 ├── src/
-│   ├── security.js   # 密码哈希、会话、限速（必须）
-│   └── protocol.js   # WebSocket/VLESS 协议解析（必须）
+│   ├── security.js      # 密码哈希、会话、限速（必须）
+│   ├── protocol.js      # WebSocket/VLESS 协议解析（必须）
+│   ├── sub_converter.js # 现代订阅转换引擎：6 格式 + ECH 规范（必须）
+│   └── yaml-lite.js     # 零依赖 YAML 序列化，供 sub_converter 生成 Clash 配置（必须）
 ├── test/             # 回归测试，仅本地运行，不必上传
 └── data/             # 运行时生成，保存用户与设置
 ```
 
-注意：`src/` 两个模块必须一起上传，只传 `index.js` 会报 `Cannot find module './src/security'`。
+注意：`src/` 四个模块必须一起上传，只传 `index.js` 会报 `Cannot find module './src/security'` 或 `Cannot find module './src/sub_converter'`。
 
 ## 2. 环境要求
 
@@ -107,7 +109,18 @@ npm start         # 启动
 
 格式：`/sub?token=用户UUID`
 
-可附加参数切换格式：`&target=clash`、`&target=singbox`、`&target=surge`、`&target=qx`（是否可用取决于客户端版本）。UUID 是访问凭据，不要公开分享。
+可附加参数切换格式（不带参数时按客户端 UA 自动识别，识别不了落到通用 Base64）：
+
+| target | 格式 | 适用客户端 |
+| :--- | :--- | :--- |
+| `base64`（默认） | 通用 VLESS URI（标准 ECH 字段） | v2rayN / v2rayNG / Shadowrocket / Hiddify / Karing |
+| `clash` | Mihomo / Clash Meta YAML | Clash Verge Rev / Clash Party / FlClash / CMFA / Stash / OpenClash |
+| `singbox` | sing-box JSON | sing-box 官方 / Throne / GUI.for.SingBox |
+| `surge` | Surge 配置 | Surge（Mac/iOS）/ Surfboard |
+| `qx` / `quantumultx` | Quantumult X 配置 | Quantumult X |
+| `loon` | Loon 配置 | Loon（iOS/tvOS） |
+
+该订阅转换引擎从 liuyang 导航站移植，ECH 字段已按各客户端官方规范处理（Base64 用 `ech`、Clash 用 `ech-opts`、sing-box 用 `tls.ech` 无 enabled 字段；Surge/QX/Loon 不支持 ECH 则降级为普通 TLS）。UUID 是访问凭据，不要公开分享。
 
 ## 9. 更新与备份
 
@@ -125,7 +138,7 @@ node --check index.js
 npm test
 ```
 
-- 模块找不到：补传 `src/security.js`、`src/protocol.js`，检查大小写与目录层级。
+- 模块找不到：补传 `src/` 下四个模块（`security.js`、`protocol.js`、`sub_converter.js`、`yaml-lite.js`），检查大小写与目录层级。
 - 页面打不开：确认业务端口、容器监听、防火墙、域名回源端口一致。
 - 无法登录或提示 429：核对管理员密码，等待限速窗口结束；若开启 `NODE_ENV=production`，必须用 HTTPS 登录。
 - 订阅不可用：检查用户是否被封禁/到期/超额，再检查域名、TLS、WebSocket 回源和客户端能力。

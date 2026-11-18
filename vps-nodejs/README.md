@@ -33,6 +33,25 @@
 
 ---
 
+## Ⅱ.5 订阅输出格式与客户端自适应
+
+订阅地址：`/sub?token=用户UUID`。**不带参数时按客户端 UA 自动识别输出格式**，识别不了则落到通用 Base64（所有客户端都支持，安全降级）。也可手动指定 `&target=<格式>`：
+
+| target | 格式 | 适用客户端 |
+| :--- | :--- | :--- |
+| `base64`（默认） | 通用 VLESS URI（标准 ECH 字段） | v2rayN / v2rayNG / Shadowrocket / Hiddify / Karing |
+| `clash` | Mihomo / Clash Meta YAML | Clash Verge Rev / Clash Party / FlClash / CMFA / Stash / OpenClash |
+| `singbox` | sing-box JSON | sing-box 官方 / Throne / GUI.for.SingBox |
+| `surge` | Surge 配置 | Surge（Mac/iOS）/ Surfboard |
+| `qx` / `quantumultx` | Quantumult X 配置 | Quantumult X |
+| `loon` | Loon 配置 | Loon（iOS/tvOS） |
+
+订阅转换由 `src/sub_converter.js`（从 liuyang 移植的现代引擎，零依赖）完成，ECH 字段按各客户端官方规范处理：Base64 用 `ech`、Clash 用 `ech-opts`、sing-box 用 `tls.ech`（无 enabled 字段）；Surge/QX/Loon 不支持 ECH 则降级为普通 TLS。带 ECH 的节点会在生成前用 `getCachedECH` 把 DNS 查询表达式解析成 PEM，确保不被兼容性诊断误过滤。
+
+> **部署必传文件**：`index.js`、`package.json`、`src/security.js`、`src/sub_converter.js`、`src/yaml-lite.js`。缺少 `src/` 下任一模块会导致 `Cannot find module` 启动失败。一键安装脚本（`setup.sh`）已自动下载全部文件。
+
+---
+
 ## Ⅲ. 海外 VPS 极速一键部署指南
 
 得益于海外 VPS 原生畅通的全球网络，无需任何镜像代理，秒级直接从 GitHub 官方源拉取安装。

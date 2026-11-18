@@ -22,6 +22,8 @@ const path = require('path');
 const url = require('url');
 const { spawn } = require('child_process');
 const { hashPassword, verifyPassword, safeUser, createRateLimiter, MAX_BODY_BYTES } = require('./src/security');
+// 现代订阅转换引擎（六格式）：从 liuyang 移植，零依赖，支持 ECH 规范处理
+const subConverter = require('./src/sub_converter');
 const { createWsBinaryFrame: createSafeWsBinaryFrame, WsFrameDecoder: SafeWsFrameDecoder, parseVlessHeader: parseSafeVlessHeader } = require('./src/protocol');
 
 // ==========================================
@@ -600,6 +602,27 @@ async function getCachedECH(sni = 'cloudflare-ech.com', dnsUrl = 'https://dns.al
         if (cached && cached.pem) return cached.pem;
     }
     return null;
+}
+
+// 把节点里的 ECH DNS 查询表达式预解析成 PEM（复用 getCachedECH 的缓存），
+// 使 sub_converter 的 compatibility 放行 ECH 节点（否则会被误判为不兼容而过滤）。
+async function prepareNodesEch(nodes) {
+    const out = nodes.map(n => ({ ...n }));
+    const tasks = [];
+    for (const n of out) {
+        if (!n.echConfigList || typeof n.echConfigList !== 'string') continue;
+        if (!/^(?:[a-zA-Z0-9.-]+\+)?(?:https|udp|h2c):\/\//.test(n.echConfigList)) continue;
+        const expr = subConverter.parseEch(n.echConfigList);
+        if (!expr || !expr.resolver) continue;
+        const queryName = expr.queryName || n.sni || 'cloudflare-ech.com';
+        tasks.push((async () => {
+            const pem = await getCachedECH(queryName, siteSettings.echDns || 'https://dns.alidns.com/dns-query');
+            if (pem) { n.echConfigList = pem; n.echEnabled = true; }
+            else { n.echResolutionFailed = true; n.echConfigList = ''; n.echEnabled = false; }
+        })());
+    }
+    if (tasks.length) await Promise.allSettled(tasks);
+    return out;
 }
 
 function patchClashWithECH(yamlStr, echSni = 'cloudflare-ech.com', echDns = 'https://dns.alidns.com/dns-query', fp = 'chrome', targetHost = '') {
@@ -1981,22 +2004,28 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
         }
 
         const rawNodes = generateUserNodes(user);
-        const parsedNodes = rawNodes.map(parseVlessUri).filter(Boolean);
+        // 用现代转换引擎解析 VLESS URI 为标准节点，并预解析 ECH 查询表达式为 PEM
+        let nodes;
+        try { nodes = subConverter.parseNodesFromContent(rawNodes.join('\n')); }
+        catch (e) { nodes = rawNodes.map(parseVlessUri).filter(Boolean).map(n => ({ ...n, type: 'vless', network: n.type, uuid: n.uuid, tls: n.tls, sni: n.sni, host: n.host, path: n.path, name: n.name, server: n.server, port: n.port })); }
+        if (nodes.length && siteSettings.enableECH !== false) {
+            try { nodes = await prepareNodesEch(nodes); } catch (e) {}
+        }
+
         const ua = (req.headers['user-agent'] || '').toLowerCase();
         const queryTarget = (parsedUrl.query.target || '').toLowerCase();
 
-        // 智能探测客户端类型 (Clash / Singbox / Surge / Mixed)
-        let target = 'mixed';
-        if (queryTarget === 'clash' || parsedUrl.query.clash !== undefined || ua.includes('clash') || ua.includes('meta') || ua.includes('mihomo')) {
+        let target = 'base64';
+        if (queryTarget === 'loon' || parsedUrl.query.loon !== undefined || ua.includes('loon')) {
+            target = 'loon';
+        } else if (queryTarget === 'clash' || parsedUrl.query.clash !== undefined || ua.includes('clash') || ua.includes('meta') || ua.includes('mihomo') || ua.includes('stash')) {
             target = 'clash';
         } else if (queryTarget === 'singbox' || queryTarget === 'sb' || parsedUrl.query.singbox !== undefined || parsedUrl.query.sb !== undefined || ua.includes('singbox') || ua.includes('sing-box')) {
             target = 'singbox';
         } else if (queryTarget === 'surge' || parsedUrl.query.surge !== undefined || ua.includes('surge')) {
             target = 'surge';
-        } else if (queryTarget === 'qx' || queryTarget === 'quantumultx' || queryTarget === 'quantumult' || parsedUrl.query.qx !== undefined || ua.includes('quantumult%20x') || ua.includes('quantumult')) {
+        } else if (queryTarget === 'qx' || queryTarget === 'quantumultx' || queryTarget === 'quantumult' || parsedUrl.query.qx !== undefined || ua.includes('quantumult')) {
             target = 'quantumultx';
-        } else if (parsedUrl.query.b64 !== undefined || parsedUrl.query.base64 !== undefined) {
-            target = 'mixed';
         }
 
         const commonHeaders = {
@@ -2009,48 +2038,35 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
         const safeName = encodeURIComponent(user.username || 'user');
         const asciiName = (user.username || 'user').replace(/[^a-zA-Z0-9_-]/g, '_');
 
-        const echPem = (siteSettings.enableECH !== false) ? await getCachedECH(siteSettings.echSni, siteSettings.echDns) : null;
-
         if (target === 'clash') {
-            const clashContent = await convertSubWithZeroTrust(user, 'clash', rawNodes, siteSettings, () => generateClashConfig(parsedNodes, `Kata-${user.username}`), echPem);
-            res.writeHead(200, {
-                ...commonHeaders,
-                'Content-Type': 'application/x-yaml; charset=utf-8',
-                'Content-Disposition': `attachment; filename="clash_${asciiName}.yaml"; filename*=UTF-8''clash_${safeName}.yaml`
-            });
-            return res.end(clashContent);
+            const c = subConverter.generateClashYaml(nodes);
+            res.writeHead(200, { ...commonHeaders, 'Content-Type': 'application/x-yaml; charset=utf-8',
+                'Content-Disposition': `attachment; filename="clash_${asciiName}.yaml"; filename*=UTF-8''clash_${safeName}.yaml` });
+            return res.end(c);
         } else if (target === 'singbox') {
-            const sbContent = await convertSubWithZeroTrust(user, 'singbox', rawNodes, siteSettings, () => generateSingboxConfig(parsedNodes, `Kata-${user.username}`, echPem), echPem);
-            res.writeHead(200, {
-                ...commonHeaders,
-                'Content-Type': 'application/json; charset=utf-8',
-                'Content-Disposition': `attachment; filename="singbox_${asciiName}.json"; filename*=UTF-8''singbox_${safeName}.json`
-            });
-            return res.end(sbContent);
+            const c = subConverter.generateSingboxJson(nodes);
+            res.writeHead(200, { ...commonHeaders, 'Content-Type': 'application/json; charset=utf-8',
+                'Content-Disposition': `attachment; filename="singbox_${asciiName}.json"; filename*=UTF-8''singbox_${safeName}.json` });
+            return res.end(c);
         } else if (target === 'surge') {
-            const surgeContent = await convertSubWithZeroTrust(user, 'surge', rawNodes, siteSettings, () => generateSurgeConfig(parsedNodes, `Kata-${user.username}`), echPem);
-            res.writeHead(200, {
-                ...commonHeaders,
-                'Content-Type': 'text/plain; charset=utf-8',
-                'Content-Disposition': `attachment; filename="surge_${asciiName}.conf"; filename*=UTF-8''surge_${safeName}.conf`
-            });
-            return res.end(surgeContent);
-        } else if (target === 'quantumultx' || target === 'qx') {
-            const qxContent = await convertSubWithZeroTrust(user, 'quantumultx', rawNodes, siteSettings, () => generateQuantumultXConfig(parsedNodes, `Kata-${user.username}`), echPem);
-            res.writeHead(200, {
-                ...commonHeaders,
-                'Content-Type': 'text/plain; charset=utf-8',
-                'Content-Disposition': `attachment; filename="quantumultx_${asciiName}.conf"; filename*=UTF-8''quantumultx_${safeName}.conf`
-            });
-            return res.end(qxContent);
+            const c = subConverter.generateSurgeConf(nodes);
+            res.writeHead(200, { ...commonHeaders, 'Content-Type': 'text/plain; charset=utf-8',
+                'Content-Disposition': `attachment; filename="surge_${asciiName}.conf"` });
+            return res.end(c);
+        } else if (target === 'quantumultx') {
+            const c = subConverter.generateQuantumultXConfig(nodes);
+            res.writeHead(200, { ...commonHeaders, 'Content-Type': 'text/plain; charset=utf-8',
+                'Content-Disposition': `attachment; filename="quantumultx_${asciiName}.conf"` });
+            return res.end(c);
+        } else if (target === 'loon') {
+            const c = subConverter.generateLoonConfig(nodes);
+            res.writeHead(200, { ...commonHeaders, 'Content-Type': 'text/plain; charset=utf-8',
+                'Content-Disposition': `attachment; filename="loon_${asciiName}.conf"` });
+            return res.end(c);
         } else {
-            // 通用 Base64 订阅
-            const base64Data = Buffer.from(rawNodes.join('\n'), 'utf-8').toString('base64');
-            res.writeHead(200, {
-                ...commonHeaders,
-                'Content-Type': 'text/plain; charset=utf-8',
-                'Content-Disposition': `attachment; filename="sub_${asciiName}.txt"; filename*=UTF-8''sub_${safeName}.txt`
-            });
+            const base64Data = subConverter.generateBase64(nodes);
+            res.writeHead(200, { ...commonHeaders, 'Content-Type': 'text/plain; charset=utf-8',
+                'Content-Disposition': `attachment; filename="sub_${asciiName}.txt"; filename*=UTF-8''sub_${safeName}.txt` });
             return res.end(base64Data);
         }
     }
