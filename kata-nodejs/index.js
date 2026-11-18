@@ -742,6 +742,22 @@ const DEFAULT_SETTINGS = {
     enableOptCM: true,
     autoSyncWetest: true,
 
+    // 🚀 自定义批量优选域名池 (支持纯域名、域名#备注、域名:端口#备注、域名:端口)
+    // 默认开启并内置一批优选域名；管理员可在后台随时增删或关闭
+    enableCustomDomains: true,
+    customDomainsText: [
+        'www.visa.comshopify.com',
+        'www.shopify.com',
+        'www.digitalocean.com',
+        'icook.tw',
+        'icook.hk',
+        'ip.sb',
+        'forum.gamer.com.tw',
+        'saas.sin.fan',
+        'www.web.com',
+        'www.visa.com.sg'
+    ].join('\n'),
+
     // 各运营商覆盖首选 IP
     optOfficialIp: '',
     optCTIp: '104.25.18.145',
@@ -1215,6 +1231,39 @@ setInterval(() => { saveUsers(); }, 30000);
 // ==========================================
 // 8. 订阅链接生成引擎 (Base64 / 节点格式)
 // ==========================================
+// 解析自定义优选域名行：纯域名 / 域名#备注 / 域名:端口#备注 / 域名:端口
+function parseCustomDomainLine(line) {
+    let trimmed = (line || '').trim();
+    if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith(';')) return null;
+
+    let remark = '';
+    const hashIdx = trimmed.indexOf('#');
+    if (hashIdx !== -1) {
+        remark = trimmed.substring(hashIdx + 1).trim();
+        trimmed = trimmed.substring(0, hashIdx).trim();
+    }
+    if (!trimmed) return null;
+
+    let host = trimmed;
+    let port = 443;
+    const colonIdx = trimmed.lastIndexOf(':');
+    if (colonIdx !== -1 && !trimmed.endsWith(']')) {
+        const portStr = trimmed.substring(colonIdx + 1).trim();
+        const p = parseInt(portStr, 10);
+        if (!isNaN(p) && p > 0 && p <= 65535) {
+            port = p;
+            host = trimmed.substring(0, colonIdx).trim();
+        }
+    }
+    if (!host) return null;
+
+    return {
+        host,
+        port,
+        remark: remark || (port === 443 ? host : `${host}:${port}`)
+    };
+}
+
 // 统一公网 host 解析：优先 SUB_DOMAIN(或隧道域名) → 探测到的公网 IPv4 → 空
 function resolvePublicHost() {
     return siteSettings.subDomain || siteSettings.argoDomain || detectedPublicIp || getEnv('SERVER_IP', '') || '';
@@ -1294,6 +1343,18 @@ function generateUserNodes(user) {
             const ip = (idx === 0 && siteSettings.optCMIp) ? siteSettings.optCMIp : n.ip;
             const tag = `【CF·移动优选·${idx + 1}·${n.colo || 'HKG'}·${n.rtt || 48}ms】-VLESS-WS`;
             list.push(`vless://${user.uuid}@${ip}:443?encryption=none&security=tls&sni=${encodeURIComponent(effectiveSni)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F${tlsExtra}#${encodeURIComponent(tag)}`);
+        });
+    }
+
+    // 6. 🚀 自定义批量优选域名池 (纯域名、域名#备注、域名:端口#备注、域名:端口)
+    if (siteSettings.enableCustomDomains && siteSettings.customDomainsText) {
+        const lines = siteSettings.customDomainsText.split(/\r?\n/);
+        lines.forEach(line => {
+            const item = parseCustomDomainLine(line);
+            if (item) {
+                const tag = `【自定义优选·${item.remark}】-VLESS-WS`;
+                list.push(`vless://${user.uuid}@${item.host}:${item.port}?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F${tlsExtra}#${encodeURIComponent(tag)}`);
+            }
         });
     }
 
@@ -2299,6 +2360,8 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
 
                 // 4. 三网优选开关
                 if (data.enableOptOfficial !== undefined) siteSettings.enableOptOfficial = Boolean(data.enableOptOfficial);
+                if (data.enableCustomDomains !== undefined) siteSettings.enableCustomDomains = Boolean(data.enableCustomDomains);
+                if (data.customDomainsText !== undefined) siteSettings.customDomainsText = String(data.customDomainsText).trim();
                 if (data.enableOptCT !== undefined) siteSettings.enableOptCT = Boolean(data.enableOptCT);
                 if (data.enableOptCU !== undefined) siteSettings.enableOptCU = Boolean(data.enableOptCU);
                 if (data.enableOptCM !== undefined) siteSettings.enableOptCM = Boolean(data.enableOptCM);
@@ -4667,6 +4730,18 @@ function renderAdminDashboardPage() {
                     </label>
                 </div>
 
+                <!-- 🚀 批量自定义优选域名池 -->
+                <div style="background:#f5f3ff; border:1px solid #ddd6fe; border-radius:6px; padding:12px 16px; margin-bottom:16px;">
+                    <div style="font-weight:700; color:#6d28d9; font-size:14px; margin-bottom:8px;">🚀 批量自定义优选域名池 (Custom Optimal Domains)</div>
+                    <label style="display:flex; align-items:center; gap:8px; font-weight:600; cursor:pointer; margin-bottom:10px;">
+                        <input type="checkbox" id="cfg_enableCustomDomains" /> <span style="color:#6d28d9;">启用域名下发</span>
+                    </label>
+                    <div class="form-row" style="margin-bottom:0;">
+                        <label>优选域名列表（每行一个，支持：纯域名 / 域名#备注 / 域名:端口#备注 / 域名:端口）</label>
+                        <textarea id="cfg_customDomainsText" rows="6" placeholder="支持批量添加，每行一个，支持以下格式：&#10;1. 纯域名：cf.090227.xyz&#10;2. 域名#备注：cf.090227.xyz#香港优选CDN&#10;3. 域名:端口#备注：cf.090227.xyz:8443#香港高防8443&#10;4. 域名:端口：cf.090227.xyz:2053" style="font-family:Consolas, Monaco, monospace; font-size:13px; line-height:1.5;"></textarea>
+                    </div>
+                </div>
+
                 <!-- 电信 -->
                 <div class="carrier-card" style="border-left:4px solid #2563eb;">
                     <div class="carrier-card-header">
@@ -5086,6 +5161,8 @@ function renderAdminDashboardPage() {
                     document.getElementById('cfg_argoDomain').value = currentSettings.argoDomain || '';
 
                     document.getElementById('cfg_autoSyncWetest').checked = currentSettings.autoSyncWetest !== false;
+                    if (document.getElementById('cfg_enableCustomDomains')) document.getElementById('cfg_enableCustomDomains').checked = currentSettings.enableCustomDomains === true;
+                    if (document.getElementById('cfg_customDomainsText')) document.getElementById('cfg_customDomainsText').value = currentSettings.customDomainsText || '';
                     document.getElementById('cfg_enableOptOfficial').checked = currentSettings.enableOptOfficial !== false;
                     document.getElementById('cfg_enableOptCT').checked = currentSettings.enableOptCT !== false;
                     document.getElementById('cfg_enableOptCU').checked = currentSettings.enableOptCU !== false;
@@ -5578,6 +5655,8 @@ function renderAdminDashboardPage() {
         async function saveCdnSettings() {
             const payload = {
                 autoSyncWetest: document.getElementById('cfg_autoSyncWetest').checked,
+                enableCustomDomains: document.getElementById('cfg_enableCustomDomains').checked,
+                customDomainsText: document.getElementById('cfg_customDomainsText').value.trim(),
                 enableOptOfficial: document.getElementById('cfg_enableOptOfficial').checked,
                 enableOptCT: document.getElementById('cfg_enableOptCT').checked,
                 enableOptCU: document.getElementById('cfg_enableOptCU').checked,
