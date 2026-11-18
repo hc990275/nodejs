@@ -1071,8 +1071,20 @@ const DEFAULT_SETTINGS = {
     autoSyncWetest: true,
 
     // 🚀 自定义批量优选域名池 (支持纯域名、域名#备注、域名:端口#备注、域名:端口)
-    enableCustomDomains: false,
-    customDomainsText: '',
+    // 默认开启并内置一批优选域名；管理员可在后台随时增删或关闭
+    enableCustomDomains: true,
+    customDomainsText: [
+        'www.visa.comshopify.com',
+        'www.shopify.com',
+        'www.digitalocean.com',
+        'icook.tw',
+        'icook.hk',
+        'ip.sb',
+        'forum.gamer.com.tw',
+        'saas.sin.fan',
+        'www.web.com',
+        'www.visa.com.sg'
+    ].join('\n'),
 
     // 🚀 CM佬 Cloudflare 三网优选订阅器 (cf.090227.xyz)
     enableOptCMApi: true,
