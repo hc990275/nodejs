@@ -297,8 +297,13 @@ function reloadEnvHot() {
 
         if (newEnv.ADMIN_PASSWORD && newEnv.ADMIN_PASSWORD !== ADMIN_PASSWORD) {
             ADMIN_PASSWORD = newEnv.ADMIN_PASSWORD;
+            passwordSetupRequired = false;
             console.log('[Env] 🔑 管理员密码已即时热更新！');
         }
+        if (newEnv.DEFAULT_ALLOW_REGISTER !== undefined) siteSettings.allowRegister = newEnv.DEFAULT_ALLOW_REGISTER.trim() === 'true';
+        if (newEnv.DEFAULT_DAYS !== undefined) siteSettings.defaultDays = parseInt(newEnv.DEFAULT_DAYS, 10) || siteSettings.defaultDays;
+        if (newEnv.DEFAULT_TRAFFIC_GB !== undefined) siteSettings.defaultTrafficGB = parseInt(newEnv.DEFAULT_TRAFFIC_GB, 10) || siteSettings.defaultTrafficGB;
+        if (newEnv.WETEST_API_URL !== undefined) siteSettings.wetestApiUrl = newEnv.WETEST_API_URL.trim();
 
         if (newEnv.ARGO_TOKEN !== undefined && newEnv.ARGO_TOKEN !== siteSettings.argoToken) {
             siteSettings.argoToken = newEnv.ARGO_TOKEN.trim();
@@ -373,12 +378,93 @@ function getEnv(key, defVal = '') {
     return defVal;
 }
 
-// 端口自动探测（优先读取翼龙面板环境变量 SERVER_PORT）
-const PORT = parseInt(process.env.SERVER_PORT || process.env.PORT || initialEnv.SERVER_PORT || initialEnv.PORT || '20255', 10);
-if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) throw new Error('无效监听端口');
+// 公网 IPv4 自动探测：不写死 IP，启动时异步拉取，失败时留空（由访问者 Host / 隧道域名兜底）
+let detectedPublicIp = '';
+function detectPublicIp() {
+    const sources = [
+        'https://api.ipify.org',
+        'https://ipv4.icanhazip.com',
+        'https://ifconfig.me/ip'
+    ];
+    let done = false;
+    sources.forEach(src => {
+        if (done) return;
+        try {
+            const lib = src.startsWith('https') ? require('https') : http;
+            const req = lib.get(src, { timeout: 4000 }, res => {
+                let data = '';
+                res.on('data', c => { data += c; });
+                res.on('end', () => {
+                    const ip = data.trim();
+                    if (!done && net.isIPv4(ip)) {
+                        done = true;
+                        detectedPublicIp = ip;
+                        console.log('[Net] 🌐 自动探测公网 IPv4:', ip);
+                    }
+                });
+            });
+            req.on('error', () => {});
+            req.on('timeout', () => req.destroy());
+        } catch (_) {}
+    });
+}
+detectPublicIp();
+
+// 端口自动探测：适配翼龙面板（KataBump/Lunes）纯 Node.js 环境
+// 依次从显式配置 → process.env → /proc/1/environ → 命令行 → 模糊匹配中探测面板分配端口
+function resolvePanelPort() {
+    const rawEnv = (process.env.SERVER_PORT || process.env.PORT || initialEnv.SERVER_PORT || initialEnv.PORT || '').trim();
+    if (rawEnv && parseInt(rawEnv, 10) > 0) return parseInt(rawEnv, 10);
+    const portKeys = /^(?:SERVER_PORT|SERVERPORT|PORT|ALLOCATION_PORT|P_SERVER_PORT|ALLOCATION|APP_PORT|NODE_PORT|CONTAINER_PORT|SERVICE_PORT|WEB_PORT|LISTENING_PORT|KATABUMP_PORT)$/i;
+    for (const [key, val] of Object.entries(process.env)) {
+        if (!val || typeof val !== 'string' || !key.match(portKeys)) continue;
+        const p = parseInt(val.trim(), 10);
+        if (p > 0 && p <= 65535) return p;
+    }
+    for (const procPath of ['/proc/1/environ', '/proc/self/environ']) {
+        try {
+            if (!fs.existsSync(procPath)) continue;
+            const raw = fs.readFileSync(procPath, 'utf8');
+            for (const entry of raw.split('\u0000')) {
+                const eq = entry.indexOf('=');
+                if (eq === -1) continue;
+                const k = entry.slice(0, eq).trim();
+                const v = entry.slice(eq + 1).trim();
+                if (k.match(portKeys)) {
+                    const p = parseInt(v, 10);
+                    if (p > 0 && p <= 65535) return p;
+                }
+            }
+        } catch (_) {}
+    }
+    for (let i = 2; i < process.argv.length; i++) {
+        const arg = (process.argv[i] || '').trim();
+        if (/^--port=/.test(arg) || /^-p=/.test(arg)) {
+            const p = parseInt(arg.split('=')[1], 10);
+            if (p >= 1024 && p <= 65535) return p;
+        }
+        const p = parseInt(arg, 10);
+        if (p >= 1024 && p <= 65535) return p;
+    }
+    for (const [key, val] of Object.entries(process.env)) {
+        if (!val || typeof val !== 'string') continue;
+        const upper = key.toUpperCase();
+        if (upper.includes('PORT') && !upper.includes('PATH') && !upper.includes('SUPPORT')) {
+            const p = parseInt(val.trim(), 10);
+            if (p >= 1024 && p <= 65535 && ![8001, 10011, 10012, 10013, 10014].includes(p)) return p;
+        }
+    }
+    return null;
+}
+const detectedPort = resolvePanelPort();
+const PORT = detectedPort;
+if (!Number.isInteger(PORT)) {
+    console.warn('[Startup] ⚠️ 未自动探测到面板端口，服务挂起等待端口配置；不监听假端口。');
+}
 let ADMIN_PASSWORD = getEnv('ADMIN_PASSWORD', '');
-if (!ADMIN_PASSWORD) {
-    console.warn('[Security] ⚠️ 未在 .env 中检测到 ADMIN_PASSWORD，严格遵循 Fail-Closed 铁律锁定后台！');
+let passwordSetupRequired = !ADMIN_PASSWORD; // 未在 .env 预置密码时，首次进入后台强制设置
+if (passwordSetupRequired) {
+    console.warn('[Security] ⚠️ 未在 .env 检测到 ADMIN_PASSWORD：将要求管理员首次进入后台时设置密码（设置前禁止进入）。');
 }
 
 // ==========================================
@@ -614,7 +700,6 @@ function patchSingboxWithECH(jsonStr, echPem, fp = 'chrome') {
                         enabled: true,
                         fingerprint: fp
                     };
-                    out.tls.alpn = ["h2", "http/1.1"];
                     if (echPem) {
                         out.tls.ech = {
                             enabled: true,
@@ -638,7 +723,8 @@ const DEFAULT_SETTINGS = {
     ipDailyRegisterLimit: parseInt(getEnv('IP_DAILY_REGISTER_LIMIT', '3'), 10),     // 单 IP 24小时注册配额上限 (个)
     subApi: getEnv('SUBAPI', 'local'), // 订阅转换服务: local(本地原生零外传引擎) 或 https://api.v1.mk 等公网Subconverter
     subConfig: getEnv('SUBCONFIG', 'https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/config/ACL4SSR_Online.ini'),
-    subDomain: getEnv('SUB_DOMAIN', ''),
+    // SUB_DOMAIN 自动：隧道域名优先，否则留空由 detectedPublicIp 兜底（见 resolvePublicHost）
+    subDomain: getEnv('SUB_DOMAIN', '') || getEnv('ARGO_DOMAIN', ''),
     argoToken: getEnv('ARGO_TOKEN', ''),
     argoDomain: getEnv('ARGO_DOMAIN', ''),
 
@@ -649,6 +735,7 @@ const DEFAULT_SETTINGS = {
     clientFingerprint: getEnv('CLIENT_FINGERPRINT', 'chrome'),
 
     // 微测网三网优选独立开关 (彻底无 AWS)
+    wetestApiUrl: getEnv('WETEST_API_URL', ''),
     enableOptOfficial: true,
     enableOptCT: true,
     enableOptCU: true,
@@ -838,7 +925,7 @@ function normalizeWetestItemList(rawList) {
 
 async function fetchWetestCleanIps() {
     console.log('[Wetest] 开始从微测网全量动态拉取三网 Cloudflare 优选 IP (不含 AWS)...');
-    const cfUrl = getEnv('WETEST_API_URL', '').trim();
+    const cfUrl = (siteSettings.wetestApiUrl || getEnv('WETEST_API_URL', '')).trim();
     if (!cfUrl) return { success: false, error: '尚未配置 WETEST_API_URL；保留当前节点池' };
     try {
         const cfRes = await fetchJsonUrl(cfUrl, 10000);
@@ -1128,9 +1215,14 @@ setInterval(() => { saveUsers(); }, 30000);
 // ==========================================
 // 8. 订阅链接生成引擎 (Base64 / 节点格式)
 // ==========================================
+// 统一公网 host 解析：优先 SUB_DOMAIN(或隧道域名) → 探测到的公网 IPv4 → 空
+function resolvePublicHost() {
+    return siteSettings.subDomain || siteSettings.argoDomain || detectedPublicIp || getEnv('SERVER_IP', '') || '';
+}
+
 function generateUserNodes(user) {
     const list = [];
-    const host = siteSettings.subDomain || initialEnv.SERVER_IP || 'example.com';
+    const host = resolvePublicHost();
     // 端口回溯域名优先作为 CDN 优选与端口回溯的承载域名；若未配置回溯域名则回退至 argo 域名或 host
     const hasBacktrackDomain = siteSettings.subDomain && !/^[0-9.]+$/.test(siteSettings.subDomain) && !siteSettings.subDomain.includes(':');
     const domain = hasBacktrackDomain ? siteSettings.subDomain : (siteSettings.argoDomain || host);
@@ -1143,7 +1235,7 @@ function generateUserNodes(user) {
 
     // 完美补齐 v2rayN 界面所需字段: Fingerprint, Alpn 以及 EchConfigList
     const tlsExtra = (siteSettings.enableECH !== false)
-        ? `&fp=${fp}&alpn=h2,http/1.1&ech=${echVal}&echConfigList=${echVal}`
+        ? `&fp=${fp}&ech=${echVal}&echConfigList=${echVal}`
         : `&fp=${fp}`;
 
     // 1. 卡塔原生端口直连节点 (直连宿主机分配的随机端口，最稳无套路)
@@ -1397,7 +1489,7 @@ function parseVlessUri(uri) {
 function generateClashConfig(parsedNodes, subName = 'Kata-Tunnel') {
     const validNodes = parsedNodes.filter(n => n !== null);
     const nodeNames = validNodes.map(n => n.name);
-    const domain = siteSettings.argoDomain || siteSettings.subDomain || 'example.com';
+    const domain = resolvePublicHost();
 
     let proxiesYaml = validNodes.map(n => {
         let block = `  - name: "${n.name}"
@@ -1418,9 +1510,6 @@ function generateClashConfig(parsedNodes, subName = 'Kata-Tunnel') {
         if (n.tls) {
             block += `
     client-fingerprint: "${n.fp || siteSettings.clientFingerprint || 'chrome'}"`;
-            block += `
-    alpn:
-      - http/1.1`;
             if (siteSettings.enableECH !== false) {
                 block += `
     ech-opts:`;
@@ -1570,7 +1659,6 @@ function generateSingboxConfig(parsedNodes, subName = 'Kata-Tunnel', echPem = nu
                 enabled: true,
                 fingerprint: n.fp || siteSettings.clientFingerprint || 'chrome'
             };
-            tlsConfig.alpn = ["h2", "http/1.1"];
             if (siteSettings.enableECH !== false && echPem) {
                 tlsConfig.ech = {
                     enabled: true,
@@ -1769,11 +1857,11 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
     try {
         const httpLib = subApi.startsWith('https') ? https : http;
         // 1. 零信任虚拟占位脱敏 (铁律：绝不向公网Subconverter发送真实UUID与真实域名)
-        const currentTargetHost = settings.argoDomain || settings.subDomain || 'example.com';
+        const currentTargetHost = resolvePublicHost();
         const maskedNodes = rawNodes.map(uri => {
             return uri
                 .replace(user.uuid, '00000000-0000-4000-8000-000000000000')
-                .replace(currentTargetHost, 'example.com');
+                .replace(currentTargetHost, 'placeholder.example.com');
         });
         const maskedBase64 = Buffer.from(maskedNodes.join('\n      '), 'utf-8').toString('base64');
         const subConfig = encodeURIComponent(settings.subConfig || 'https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/config/ACL4SSR_Online.ini');
@@ -2043,6 +2131,27 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
         return;
     }
 
+    // 首次设置管理员密码：仅在 .env 未预置密码时开放；设置后永久关闭此入口并回写 .env
+    if (pathname === '/admin/api/setup-password' && method === 'POST') {
+        if (!isSameOriginRequest(req)) return sendJson({ error: '请求来源无效' }, 403);
+        if (!passwordSetupRequired) return sendJson({ error: '管理员密码已设置，无需重复设置' }, 409);
+        readBody(data => {
+            const pwd = typeof data.password === 'string' ? data.password.trim() : '';
+            const confirm = typeof data.confirm === 'string' ? data.confirm.trim() : '';
+            if (pwd.length < 10 || pwd.length > 256) return sendJson({ error: '密码长度须为 10–256 位' }, 400);
+            if (pwd !== confirm) return sendJson({ error: '两次输入的密码不一致' }, 400);
+            ADMIN_PASSWORD = pwd;
+            passwordSetupRequired = false;
+            updateEnvFile({ ADMIN_PASSWORD: pwd });
+            const sToken = crypto.randomBytes(16).toString('hex');
+            adminSessions.set(sToken, Date.now() + 8 * 60 * 60 * 1000);
+            res.setHeader('Set-Cookie', `admin_token=${sToken}; ${cookieOptions(28800)}`);
+            sendJson({ success: true });
+            console.log('[Security] 🔐 管理员首次密码已设置并持久化到 .env');
+        });
+        return;
+    }
+
     if (pathname === '/admin/logout' && method === 'POST') {
         if (!isSameOriginRequest(req)) return sendJson({ error: '请求来源无效' }, 403);
         const cookies = parseCookies(req);
@@ -2078,7 +2187,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
                 memoryHeap: formatBytes(mem.heapUsed),
                 onlineConnections: totalOnlineConns,
                 port: PORT,
-                domain: siteSettings.subDomain || initialEnv.SERVER_IP || 'example.com',
+                domain: resolvePublicHost(),
                 settings: publicSettings(),
                 usersCount: users.size
             });
@@ -2110,9 +2219,18 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
                 }
 
                 // 2. 运营配置
-                if (data.allowRegister !== undefined) siteSettings.allowRegister = Boolean(data.allowRegister);
-                if (data.defaultDays !== undefined) siteSettings.defaultDays = parseInt(data.defaultDays, 10);
-                if (data.defaultTrafficGB !== undefined) siteSettings.defaultTrafficGB = parseInt(data.defaultTrafficGB, 10);
+                if (data.allowRegister !== undefined) {
+                    siteSettings.allowRegister = Boolean(data.allowRegister);
+                    envUpdates.DEFAULT_ALLOW_REGISTER = String(siteSettings.allowRegister);
+                }
+                if (data.defaultDays !== undefined) {
+                    siteSettings.defaultDays = parseInt(data.defaultDays, 10);
+                    envUpdates.DEFAULT_DAYS = siteSettings.defaultDays;
+                }
+                if (data.defaultTrafficGB !== undefined) {
+                    siteSettings.defaultTrafficGB = parseInt(data.defaultTrafficGB, 10);
+                    envUpdates.DEFAULT_TRAFFIC_GB = siteSettings.defaultTrafficGB;
+                }
                 if (data.ipRegisterCooldownSec !== undefined) {
                     siteSettings.ipRegisterCooldownSec = Math.max(0, parseInt(data.ipRegisterCooldownSec, 10) || 0);
                     envUpdates.IP_REGISTER_COOLDOWN_SEC = siteSettings.ipRegisterCooldownSec;
@@ -2151,11 +2269,22 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
                     siteSettings.subDomain = data.subDomain.trim();
                     envUpdates.SUB_DOMAIN = siteSettings.subDomain;
                 }
+                if (data.wetestApiUrl !== undefined) {
+                    siteSettings.wetestApiUrl = data.wetestApiUrl.trim();
+                    envUpdates.WETEST_API_URL = siteSettings.wetestApiUrl;
+                }
 
                 // 3. Cloudflare Argo 隧道配置
                 if (typeof data.argoToken === 'string' && data.argoToken.trim()) {
-                    siteSettings.argoToken = data.argoToken.trim();
+                    const nextToken = data.argoToken.trim();
+                    const tokenChanged = nextToken !== siteSettings.argoToken;
+                    siteSettings.argoToken = nextToken;
                     envUpdates.ARGO_TOKEN = siteSettings.argoToken;
+                    // 后台保存即刻拉起/重载隧道，不依赖 fs.watch（容器里可能不触发）
+                    if (tokenChanged) {
+                        startArgoTunnel(siteSettings.argoToken);
+                        console.log('[Env] ⚡ 后台保存隧道 Token，已直接拉起/重载 cloudflared 进程');
+                    }
                 }
                 if (data.argoDomain !== undefined) {
                     siteSettings.argoDomain = data.argoDomain.trim();
@@ -2403,7 +2532,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
     if (pathname === '/admin') {
         const isAdmin = checkAdminAuth(req);
         if (!isAdmin) {
-            return sendHtml(renderAdminLoginPage());
+            return sendHtml(renderAdminLoginPage(passwordSetupRequired));
         }
         return sendHtml(renderAdminDashboardPage());
     }
@@ -3396,7 +3525,7 @@ function renderCarrierRows(carrierName, badgeClass, list, overrideIp) {
 
 // ──────────────── 管理后台页面渲染 ────────────────
 // ──────────────── 管理后台页面渲染 ────────────────
-function renderAdminLoginPage() {
+function renderAdminLoginPage(setupMode = false) {
     return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -3542,6 +3671,20 @@ function renderAdminLoginPage() {
 
         <div id="errMsg" class="error-alert"></div>
 
+        ${setupMode ? `
+        <form id="adminLoginForm" onsubmit="event.preventDefault(); doSetupPassword();">
+            <div class="form-group">
+                <label class="form-label" for="pwd">首次设置管理员密码</label>
+                <input type="password" id="pwd" class="input-control" placeholder="设置管理员密码（10–256 位）" autofocus autocomplete="new-password" />
+            </div>
+            <div class="form-group">
+                <label class="form-label" for="pwd2">确认管理员密码</label>
+                <input type="password" id="pwd2" class="input-control" placeholder="再次输入密码" autocomplete="new-password" />
+            </div>
+            <button type="submit" id="btnSubmit" class="submit-btn">设置密码并进入</button>
+        </form>
+        <div class="card-footer"><span>首次部署：设置密码后将自动保存到 .env，未设置前无法进入后台</span></div>
+        ` : `
         <form id="adminLoginForm" onsubmit="event.preventDefault(); doAdminLogin();">
             <div class="form-group">
                 <label class="form-label" for="pwd">管理员认证密钥 (ADMIN_PASSWORD)</label>
@@ -3549,13 +3692,39 @@ function renderAdminLoginPage() {
             </div>
             <button type="submit" id="btnSubmit" class="submit-btn">登 录 控 制 台</button>
         </form>
-
-        <div class="card-footer">
-            <span>翼龙面板单端口专享 · 敲击回车直接登录</span>
-        </div>
+        <div class="card-footer"><span>翼龙面板单端口专享 · 敲击回车直接登录</span></div>
+        `}
     </div>
 
     <script>
+        const SETUP_MODE = ${setupMode};
+        async function doSetupPassword() {
+            const p = document.getElementById('pwd');
+            const p2 = document.getElementById('pwd2');
+            const errDiv = document.getElementById('errMsg');
+            const btn = document.getElementById('btnSubmit');
+            const pwd = p.value.trim(), confirm = p2.value.trim();
+            if (pwd.length < 10) {
+                errDiv.style.display = 'flex'; errDiv.innerText = '⚠️ 密码至少 10 位'; p.focus(); return;
+            }
+            if (pwd !== confirm) {
+                errDiv.style.display = 'flex'; errDiv.innerText = '⚠️ 两次密码不一致'; p2.select(); return;
+            }
+            errDiv.style.display = 'none'; btn.disabled = true; btn.innerText = '正在设置...';
+            try {
+                const res = await fetch('/admin/api/setup-password', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password: pwd, confirm })
+                });
+                const data = await res.json();
+                if (res.ok) { location.href = '/admin'; }
+                else { errDiv.style.display = 'flex'; errDiv.innerText = '❌ ' + (data.error || '设置失败'); }
+            } catch (e) {
+                errDiv.style.display = 'flex'; errDiv.innerText = '❌ 网络异常';
+            } finally { btn.disabled = false; btn.innerText = '设置密码并进入'; }
+        }
+
         async function doAdminLogin() {
             const pwdInput = document.getElementById('pwd');
             const p = pwdInput.value.trim();
@@ -3603,10 +3772,14 @@ function renderAdminLoginPage() {
                 pwdInput.addEventListener('keydown', (e) => {
                     if (e.key === 'Enter' || e.keyCode === 13) {
                         e.preventDefault();
-                        doAdminLogin();
+                        if (SETUP_MODE) doSetupPassword(); else doAdminLogin();
                     }
                 });
             }
+            const pwd2 = document.getElementById('pwd2');
+            if (pwd2) pwd2.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.keyCode === 13) { e.preventDefault(); doSetupPassword(); }
+            });
         });
     </script>
 </body>
@@ -5487,6 +5660,9 @@ function renderAdminDashboardPage() {
 // ==========================================
 // 13. 启动 HTTP 监听
 // ==========================================
+if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
+    console.error('[Startup] ⚠️ 未自动探测到面板分配端口，服务挂起等待端口配置；不监听假端口。');
+} else {
 server.listen(PORT, '0.0.0.0', () => {
     // ⚡ 本地多端口桥接兼容引擎：
     // 在容器本地额外激活 8001 和 8080 监听，完全复用主服务逻辑。
@@ -5514,6 +5690,7 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`🛡️ 内存使用: ${formatBytes(process.memoryUsage().rss)} (规格 308MB)`);
     console.log(`========================================================\n`);
 });
+}
 
 let shuttingDown = false;
 function gracefulShutdown(signal) {

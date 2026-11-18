@@ -1018,7 +1018,6 @@ function patchSingboxWithECH(jsonStr, echPem, fp = 'chrome') {
                         enabled: true,
                         fingerprint: fp
                     };
-                    out.tls.alpn = ["h2", "http/1.1"];
                     if (echPem) {
                         out.tls.ech = {
                             enabled: true,
@@ -1946,8 +1945,8 @@ function generateUserNodes(user) {
     const echDns = siteSettings.echDns || 'https://dns.alidns.com/dns-query';
     const echParam = encodeURIComponent(`${echSni}+${echDns}`);
     const tlsExtra = enableECH
-        ? `&fp=${fp}&alpn=h2,http/1.1&ech=${echParam}&echConfigList=${echParam}`
-        : `&fp=${fp}&alpn=h2,http/1.1`;
+        ? `&fp=${fp}&ech=${echParam}&echConfigList=${echParam}`
+        : `&fp=${fp}`;
 
     // 1. VPS 原生端口直连节点 (默认关闭防被墙，按需在后台开启)
     if (siteSettings.enableDirectNode === true) {
@@ -2227,10 +2226,6 @@ function generateClashConfig(parsedNodes, subName = 'VPS-Tunnel') {
         if (n.tls) {
             block += `
     client-fingerprint: "${n.fp || siteSettings.clientFingerprint || 'chrome'}"`;
-            block += `
-    alpn:
-      - h2
-      - http/1.1`;
             if (siteSettings.enableECH !== false) {
                 block += `
     ech-opts:`;
@@ -2391,7 +2386,6 @@ function generateSingboxConfig(parsedNodes, subName = 'VPS-Tunnel', echPem = nul
                 enabled: true,
                 fingerprint: n.fp || siteSettings.clientFingerprint || 'chrome'
             };
-            tlsConfig.alpn = ["h2", "http/1.1"];
             if (siteSettings.enableECH !== false && echPem) {
                 tlsConfig.ech = {
                     enabled: true,
