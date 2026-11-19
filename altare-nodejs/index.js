@@ -474,6 +474,8 @@ function detectPublicIp() {
                         done = true;
                         detectedPublicIp = ip;
                         console.log('[Net] 🌐 自动探测公网 IPv4:', ip);
+                        // 拿到公网 IP 后立刻触发归属地探测（不再依赖定时器轮询）
+                        if (typeof doDetectGeo === 'function') doDetectGeo();
                     }
                 });
             });
@@ -513,10 +515,11 @@ function doDetectGeo() {
     const ip = detectedPublicIp || getEnv('SERVER_IP', '');
     if (!ip || !net.isIPv4(ip)) { console.log('[Geo] ⏭️ 无公网 IPv4，跳过归属地探测'); return; }
     const sources = [
-        `https://ip-api.com/json/${ip}?fields=status,countryCode,country`,
-        `https://ipinfo.io/${ip}/json`
+        `https://ipinfo.io/${ip}/json`,
+        `https://ip-api.com/json/${ip}?fields=status,countryCode,country`
     ];
     let done = false;
+    console.log(`[Geo] 🔎 正在查询 ${ip} 的归属地...`);
     sources.forEach(src => {
         if (done) return;
         try {
@@ -537,9 +540,9 @@ function doDetectGeo() {
                     } catch (_) {}
                 });
             });
-            req.on('error', () => {});
-            req.on('timeout', () => req.destroy());
-        } catch (_) {}
+            req.on('error', e => { console.log('[Geo] ⚠️ 源请求失败:', src.split('/')[2], e.code || ''); });
+            req.on('timeout', () => { console.log('[Geo] ⚠️ 源超时:', src.split('/')[2]); req.destroy(); });
+        } catch (e) { console.log('[Geo] ⚠️ 源异常:', e.message); }
     });
 }
 detectGeo();
