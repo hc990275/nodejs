@@ -5532,11 +5532,11 @@ function renderAdminDashboardPage() {
             }
             tbody.innerHTML = list.map(function(u) {
                 const safeUuid = esc(u.uuid);
-                const safeName = escsafeName;
-                const safeTrafficUsed = escsafeTrafficUsed;
-                const safeTrafficLimit = escsafeTrafficLimit;
-                const safeCreated = escsafeCreated;
-                const safeExpire = escsafeExpire;
+                const safeName = esc(u.username || '');
+                const safeTrafficUsed = esc(u.trafficUsedStr || '0 B');
+                const safeTrafficLimit = esc(u.trafficLimitStr || '0 B');
+                const safeCreated = esc(u.createdDateStr || '-');
+                const safeExpire = esc(u.expireDateStr || '-');
                 const safeOnline = esc(u.onlineConns || 0);
                 let statusDot = u.enabled ? (u.isExpired ? '到期' : (u.isExhausted ? '超额' : '正常')) : '封禁';
                 let statusColor = u.enabled ? (u.isExpired || u.isExhausted ? '#d97706' : '#16a34a') : '#dc2626';
