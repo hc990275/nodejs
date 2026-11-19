@@ -86,7 +86,7 @@ function updateEnvFile(updates) {
     }
 
     const tmpFile = ENV_FILE + '.tmp.' + Date.now();
-    fs.writeFileSync(tmpFile, newLines.join('\n'), 'utf-8');
+    fs.writeFileSync(tmpFile, newLines.join('\n'), { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
     fs.renameSync(tmpFile, ENV_FILE);
     console.log(`[Env] .env 配置文件已原子更新:`, Object.keys(updates).join(', '));
 }
@@ -474,8 +474,7 @@ function detectPublicIp() {
                         done = true;
                         detectedPublicIp = ip;
                         console.log('[Net] 🌐 自动探测公网 IPv4:', ip);
-                        // 拿到公网 IP 后立刻触发归属地探测（不再依赖定时器轮询）
-                        if (typeof doDetectGeo === 'function') doDetectGeo();
+                        if (!detectedGeo && !net.isIPv4(configuredIp)) detectGeoByIp(ip);
                     }
                 });
             });
@@ -484,75 +483,52 @@ function detectPublicIp() {
         } catch (_) {}
     });
 }
+
+// 优先使用面板机房地区（例如 mn-uln），未提供机房地区时才查询公网 IP。
+function countryLabel(value) {
+    if (typeof value !== 'string' || !/^[A-Z]{2}$/i.test(value)) return '';
+    const code = value.toUpperCase();
+    const names = new Intl.DisplayNames(['zh-CN'], { type: 'region', fallback: 'none' });
+    const name = names.of(code);
+    if (!name) return '';
+    const flag = String.fromCodePoint(...Array.from(code, letter => 0x1F1E6 + letter.charCodeAt(0) - 65));
+    return `${flag}${name}`;
+}
+
+const panelLocation = getEnv('P_SERVER_LOCATION').trim();
+const panelCountry = /^([a-z]{2})(?:-[a-z0-9-]+)?$/i.exec(panelLocation)?.[1];
+let detectedGeo = countryLabel(panelCountry);
+const configuredIp = getEnv('SERVER_IP').trim();
+
+function detectGeoByIp(ip) {
+    const req = require('node:https').get(`https://ipinfo.io/${ip}/json`, { signal: AbortSignal.timeout(6000) }, res => {
+        if (res.statusCode !== 200) return res.resume();
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('error', () => {});
+        res.on('data', chunk => {
+            body += chunk;
+            if (body.length > 8192) res.destroy();
+        });
+        res.on('end', () => {
+            try {
+                detectedGeo = countryLabel(JSON.parse(body).country);
+            } catch (_) { /* 保留未知地区 */ }
+        });
+    });
+    req.on('error', () => {});
+}
+
+if (!detectedGeo && net.isIPv4(configuredIp)) detectGeoByIp(configuredIp);
 detectPublicIp();
 
-// 公网 IP 归属地探测（国家码 + 国旗 + 中文名），用于节点标签区分多台机器。
-// 多个免费源互为备份，结果缓存在内存；失败时回退为空，不影响节点生成。
-let detectedGeo = null; // { code, flag, name }
-const COUNTRY_FLAGS = {
-    CN:'🇨🇳', HK:'🇭🇰', TW:'🇹🇼', MO:'🇲🇴', SG:'🇸🇬', JP:'🇯🇵', KR:'🇰🇷', MN:'🇲🇳',
-    US:'🇺🇸', CA:'🇨🇦', GB:'🇬🇧', DE:'🇩🇪', FR:'🇫🇷', NL:'🇳🇱', RU:'🇷🇺', AU:'🇦🇺',
-    IN:'🇮🇳', VN:'🇻🇳', TH:'🇹🇭', MY:'🇲🇾', ID:'🇮🇩', PH:'🇵🇭', BR:'🇧🇷', TR:'🇹🇷'
-};
-const COUNTRY_NAMES = {
-    CN:'中国', HK:'中国香港', TW:'中国台湾', MO:'中国澳门', SG:'新加坡', JP:'日本', KR:'韩国', MN:'蒙古',
-    US:'美国', CA:'加拿大', GB:'英国', DE:'德国', FR:'法国', NL:'荷兰', RU:'俄罗斯', AU:'澳大利亚',
-    IN:'印度', VN:'越南', TH:'泰国', MY:'马来西亚', ID:'印度尼西亚', PH:'菲律宾', BR:'巴西', TR:'土耳其'
-};
-function detectGeo() {
-    // detectPublicIp 是异步的，启动时 detectedPublicIp 可能还没就绪。
-    // 最多等 3 秒（每 200ms 检查一次），直到拿到公网 IP 再查归属地。
-    let waited = 0;
-    const waitForIp = setInterval(() => {
-        waited += 200;
-        if ((detectedPublicIp && net.isIPv4(detectedPublicIp)) || getEnv('SERVER_IP', '') || waited >= 3000) {
-            clearInterval(waitForIp);
-            doDetectGeo();
-        }
-    }, 200);
-}
-function doDetectGeo() {
-    const ip = detectedPublicIp || getEnv('SERVER_IP', '');
-    if (!ip || !net.isIPv4(ip)) { console.log('[Geo] ⏭️ 无公网 IPv4，跳过归属地探测'); return; }
-    const sources = [
-        `https://ipinfo.io/${ip}/json`,
-        `https://ip-api.com/json/${ip}?fields=status,countryCode,country`
-    ];
-    let done = false;
-    console.log(`[Geo] 🔎 正在查询 ${ip} 的归属地...`);
-    sources.forEach(src => {
-        if (done) return;
-        try {
-            const u = new URL(src);
-            const lib = u.protocol === 'https:' ? require('https') : http;
-            const req = lib.get(src, { timeout: 6000 }, res => {
-                let data = '';
-                res.on('data', c => { data += c; });
-                res.on('end', () => {
-                    if (done) return;
-                    try {
-                        const o = JSON.parse(data);
-                        const code = String(o.countryCode || (o.country || '')).toUpperCase().slice(0, 2);
-                        if (code && /^[A-Z]{2}$/.test(code)) {
-                            detectedGeo = { code, flag: COUNTRY_FLAGS[code] || '🌐', name: COUNTRY_NAMES[code] || o.country || code };
-                            done = true;
-                            console.log(`[Geo] 📍 机器归属地: ${detectedGeo.flag} ${detectedGeo.name} (${code})`);
-                        }
-                    } catch (_) {}
-                });
-            });
-            req.on('error', e => { console.log('[Geo] ⚠️ 源请求失败:', src.split('/')[2], e.code || ''); });
-            req.on('timeout', () => { console.log('[Geo] ⚠️ 源超时:', src.split('/')[2]); req.destroy(); });
-        } catch (e) { console.log('[Geo] ⚠️ 源异常:', e.message); }
-    });
-}
-detectGeo();
-
-// 机器标识：地区 + 面板端口，用于节点标签区分同一订阅下的多台机器
 function machineTag() {
-    const geo = detectedGeo;
-    const region = geo ? `${geo.flag}${geo.name}` : '🌐未知地区';
-    return `${region}·${PORT}`;
+    return [detectedGeo || '🌐未知地区', PORT].filter(Boolean).join('·');
+}
+
+function escapeHtml(value) {
+    const entities = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+    return String(value ?? '').replace(/[&<>"']/g, char => entities[char]);
 }
 
 // 端口自动探测：适配翼龙面板（Altare/Lunes）纯 Node.js 环境
@@ -2363,6 +2339,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
     // ──────────────── 3. 管理员鉴权 API ────────────────
     if (pathname === '/admin/api/login' && method === 'POST') {
         if (!isSameOriginRequest(req)) return sendJson({ error: '请求来源无效' }, 403);
+        if (passwordSetupRequired) return sendJson({ error: '请先设置管理员密码' }, 409);
         const rateKey = `admin:${getClientIp(req) || 'unknown'}`;
         if (adminLoginLimiter.blocked(rateKey)) return sendJson({ error: '尝试次数过多，请稍后再试' }, 429);
         readBody(data => {
@@ -2380,18 +2357,36 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
         return;
     }
 
-    // 首次设置管理员密码：仅在 .env 未预置密码时开放；设置后永久关闭此入口并回写 .env
+    // 仅部署者可以完成首次设置。落盘成功后才启用登录，避免并发请求覆盖密码。
     if (pathname === '/admin/api/setup-password' && method === 'POST') {
         if (!isSameOriginRequest(req)) return sendJson({ error: '请求来源无效' }, 403);
         if (!passwordSetupRequired) return sendJson({ error: '管理员密码已设置，无需重复设置' }, 409);
         readBody(data => {
+            if (!passwordSetupRequired) return sendJson({ error: '管理员密码已设置，无需重复设置' }, 409);
+            const expected = (process.env.ADMIN_SETUP_TOKEN || parseEnvFile(ENV_FILE).ADMIN_SETUP_TOKEN || '').trim();
+            if (expected.length < 20) return sendJson({ error: '请先在部署配置中设置至少 20 位的随机初始化口令' }, 503);
+            const rateKey = `admin-setup:${getClientIp(req) || 'unknown'}`;
+            if (adminLoginLimiter.blocked(rateKey)) return sendJson({ error: '尝试次数过多，请稍后再试' }, 429);
+            const supplied = typeof data?.setupToken === 'string' ? data.setupToken.trim() : '';
+            const digest = value => crypto.createHash('sha256').update(value).digest();
+            if (!crypto.timingSafeEqual(digest(supplied), digest(expected))) {
+                adminLoginLimiter.fail(rateKey);
+                return sendJson({ error: '初始化口令无效' }, 403);
+            }
             const pwd = typeof data.password === 'string' ? data.password.trim() : '';
             const confirm = typeof data.confirm === 'string' ? data.confirm.trim() : '';
-            if (!pwd) return sendJson({ error: '密码不能为空' }, 400);
+            if (pwd.length < 10 || pwd.length > 256 || /[\r\n\0]/.test(pwd)) {
+                return sendJson({ error: '密码须为 10 至 256 位，且不能包含换行或空字符' }, 400);
+            }
             if (pwd !== confirm) return sendJson({ error: '两次输入的密码不一致' }, 400);
+            try {
+                updateEnvFile({ ADMIN_PASSWORD: pwd, ADMIN_SETUP_TOKEN: '' });
+            } catch (_) {
+                return sendJson({ error: '无法保存密码，请检查 .env 写入权限后重试' }, 500);
+            }
             ADMIN_PASSWORD = pwd;
             passwordSetupRequired = false;
-            updateEnvFile({ ADMIN_PASSWORD: pwd });
+            adminLoginLimiter.clear(rateKey);
             const sToken = crypto.randomBytes(16).toString('hex');
             adminSessions.set(sToken, Date.now() + 8 * 60 * 60 * 1000);
             res.setHeader('Set-Cookie', `admin_token=${sToken}; ${cookieOptions(28800)}`);
@@ -2847,7 +2842,7 @@ function renderHomepage(currentUser) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>Altare Tunnel · 三网节点与订阅控制台</title>
+    <title>${escapeHtml(machineTag())} · Altare Tunnel</title>
     <style>
         :root {
             --primary: #2563eb;
@@ -3268,8 +3263,8 @@ function renderHomepage(currentUser) {
             <div class="nav-brand">
                 <div class="brand-icon">⚡</div>
                 <div class="brand-text">
-                    <h1>微测网 · 三网 CDN 动态优选极速枢纽</h1>
-                    <p>原生极简 Node.js 微核 · 0依赖 · 毫秒级三网调度</p>
+                    <h1>Altare Tunnel · ${escapeHtml(machineTag())}</h1>
+                    <p>三网节点与订阅控制台</p>
                 </div>
             </div>
             <div class="nav-right">
@@ -3789,7 +3784,7 @@ function renderAdminLoginPage(setupMode = false) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Altare-Tunnel 管理中枢登录</title>
+    <title>${escapeHtml(machineTag())} · Altare-Tunnel 登录</title>
     <style>
         :root {
             --el-primary: #2563eb;
@@ -3932,8 +3927,12 @@ function renderAdminLoginPage(setupMode = false) {
         ${setupMode ? `
         <form id="adminLoginForm" onsubmit="event.preventDefault(); doSetupPassword();">
             <div class="form-group">
+                <label class="form-label" for="setupToken">初始化口令</label>
+                <input type="password" id="setupToken" class="input-control" autocomplete="off" required />
+            </div>
+            <div class="form-group">
                 <label class="form-label" for="pwd">首次设置管理员密码</label>
-                <input type="password" id="pwd" class="input-control" placeholder="设置管理员密码" autofocus autocomplete="new-password" />
+                <input type="password" id="pwd" class="input-control" placeholder="设置管理员密码" autocomplete="new-password" minlength="10" maxlength="256" required />
             </div>
             <div class="form-group">
                 <label class="form-label" for="pwd2">确认管理员密码</label>
@@ -3941,7 +3940,7 @@ function renderAdminLoginPage(setupMode = false) {
             </div>
             <button type="submit" id="btnSubmit" class="submit-btn">设置密码并进入</button>
         </form>
-        <div class="card-footer"><span>首次部署：设置密码后将自动保存到 .env，未设置前无法进入后台</span></div>
+        <div class="card-footer"><span>输入部署时配置的初始化口令。设置成功后即可进入后台。</span></div>
         ` : `
         <form id="adminLoginForm" onsubmit="event.preventDefault(); doAdminLogin();">
             <div class="form-group">
@@ -3961,6 +3960,7 @@ function renderAdminLoginPage(setupMode = false) {
             const p2 = document.getElementById('pwd2');
             const errDiv = document.getElementById('errMsg');
             const btn = document.getElementById('btnSubmit');
+            const setupToken = document.getElementById('setupToken').value.trim();
             const pwd = p.value.trim(), confirm = p2.value.trim();
             if (!pwd) {
                 errDiv.style.display = 'flex'; errDiv.innerText = '⚠️ 请输入密码'; p.focus(); return;
@@ -3973,7 +3973,7 @@ function renderAdminLoginPage(setupMode = false) {
                 const res = await fetch('/admin/api/setup-password', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ password: pwd, confirm })
+                    body: JSON.stringify({ setupToken, password: pwd, confirm })
                 });
                 const data = await res.json();
                 if (res.ok) { location.href = '/admin'; }
@@ -4050,7 +4050,7 @@ function renderAdminDashboardPage() {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Altare-Tunnel 运维管理中枢 (Pro Admin)</title>
+    <title>${escapeHtml(machineTag())} · Altare-Tunnel 后台</title>
     <style>
         :root {
             --primary: #2563eb;
@@ -5372,16 +5372,21 @@ function renderAdminDashboardPage() {
         async function fetchUsers() {
             try {
                 const res = await fetch('/admin/api/users');
-                const data = await res.json();
-                if (res.ok) {
-                    cachedUsersList = data.users || [];
-                    cachedUsersMap.clear();
-                    cachedUsersList.forEach(u => cachedUsersMap.set(u.uuid, u));
-                    document.getElementById('kpi_user_count').innerText = cachedUsersList.length;
-                    filterUsers();
+                if (res.status === 401) {
+                    showToast('登录已失效，请刷新页面后重新登录', 'error');
+                    return;
                 }
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const data = await res.json();
+                if (!Array.isArray(data.users)) throw new Error('无效的用户列表');
+                cachedUsersList = data.users;
+                cachedUsersMap.clear();
+                cachedUsersList.forEach(u => cachedUsersMap.set(u.uuid, u));
+                document.getElementById('kpi_user_count').innerText = cachedUsersList.length;
+                filterUsers();
             } catch (err) {
                 console.error(err);
+                showToast('用户列表加载失败，请点击刷新重试', 'error');
             }
         }
 
