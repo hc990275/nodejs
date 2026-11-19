@@ -1,0 +1,12 @@
+.env
+env
+data/*
+!data/.gitkeep
+cloudflared
+node_modules/
+.npm/
+.npm-global/
+.tmp/
+*.bak
+*.backup
+__pycache__/
