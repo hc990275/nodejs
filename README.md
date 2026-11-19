@@ -1,5 +1,19 @@
 # Kata-Node & Lunes Host 融合部署架构 (Sing-Box)
 
+## 仓库子项目索引
+
+| 目录 | 类型 | 说明 |
+| :--- | :--- | :--- |
+| `kata-nodejs/` | 容器类项目 | Kata-Tunnel：零依赖 VLESS-WS 隧道 + 三网优选 + 订阅转换 + Web 后台，面向 Kata/Lunes 翼龙面板容器 |
+| `altare-nodejs/` | 容器类项目 | Altare-Tunnel：零依赖 VLESS-WS 隧道、订阅转换和地区标题后台；通用安装、配置及平台 API 用法见 `altare-nodejs/README.md`。个人部署档案不进入源码仓库 |
+| `vps-nodejs/` | 服务器脚本 | VPS-Tunnel / VPS 环境一键安装与隧道脚本 |
+| `linux/` | 服务器脚本 | 全 Linux 发行版机场系统安装脚本（见下方一键命令） |
+| `node/` | 工具 | Node.js 相关工具 |
+
+> 容器类项目通过面板 Files API 上传文件 + 改启动命令 + 开机运行，不是本机守护进程。
+
+---
+
 > 🚀 **【最新推荐】极速云专线 - 全 Linux 发行版商业机场系统**
 >
 > 具备交互式配置向导、多协议矩阵（Hy2/TUIC/Reality/TCP/SS/Socks5）、OpenRC/systemd 双守护与 Element UI 控制台，一键安装命令：
