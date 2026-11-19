@@ -524,7 +524,8 @@ function doDetectGeo() {
         if (done) return;
         try {
             const u = new URL(src);
-            const req = (u.protocol === 'https:' ? https : http).get(src, { timeout: 6000 }, res => {
+            const lib = u.protocol === 'https:' ? require('https') : http;
+            const req = lib.get(src, { timeout: 6000 }, res => {
                 let data = '';
                 res.on('data', c => { data += c; });
                 res.on('end', () => {
