@@ -1484,8 +1484,21 @@ function isSameOriginRequest(req) {
     if (!origin) return true;
     try {
         const parsed = new URL(origin);
+        const originHost = parsed.host.toLowerCase().split(':')[0];
+        // 直连 Host、反代透传 Host，以及配置中的公网域名/隧道域名均视为同源。
+        // 经 Cloudflare / 反向代理回源时，req.headers.host 会被改写，
+        // 仅比对 Host 会误杀合法请求，因此把已配置的对外域名加入信任列表。
+        const trusted = new Set();
         const host = req.headers.host;
-        return Boolean(host && parsed.host.toLowerCase() === host.toLowerCase());
+        if (host) trusted.add(host.toLowerCase().split(':')[0]);
+        const xfHost = req.headers['x-forwarded-host'];
+        if (xfHost) trusted.add(String(xfHost).toLowerCase().split(':')[0]);
+        for (const c of [siteSettings.subDomain, siteSettings.argoDomain]) {
+            if (!c) continue;
+            try { trusted.add(new URL(c.includes('://') ? c : 'https://' + c).hostname.toLowerCase()); }
+            catch (_) { trusted.add(String(c).toLowerCase().split(':')[0]); }
+        }
+        return trusted.has(originHost);
     } catch (_) {
         return false;
     }
