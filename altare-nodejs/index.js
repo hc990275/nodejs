@@ -498,6 +498,18 @@ const COUNTRY_NAMES = {
     IN:'印度', VN:'越南', TH:'泰国', MY:'马来西亚', ID:'印度尼西亚', PH:'菲律宾', BR:'巴西', TR:'土耳其'
 };
 function detectGeo() {
+    // detectPublicIp 是异步的，启动时 detectedPublicIp 可能还没就绪。
+    // 最多等 3 秒（每 200ms 检查一次），直到拿到公网 IP 再查归属地。
+    let waited = 0;
+    const waitForIp = setInterval(() => {
+        waited += 200;
+        if ((detectedPublicIp && net.isIPv4(detectedPublicIp)) || getEnv('SERVER_IP', '') || waited >= 3000) {
+            clearInterval(waitForIp);
+            doDetectGeo();
+        }
+    }, 200);
+}
+function doDetectGeo() {
     const ip = detectedPublicIp || getEnv('SERVER_IP', '');
     if (!ip || !net.isIPv4(ip)) { console.log('[Geo] ⏭️ 无公网 IPv4，跳过归属地探测'); return; }
     const sources = [
