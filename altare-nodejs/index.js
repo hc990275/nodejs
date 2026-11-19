@@ -890,6 +890,12 @@ if (fs.existsSync(SETTINGS_FILE)) {
     try {
         const loaded = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8'));
         siteSettings = Object.assign({}, DEFAULT_SETTINGS, loaded);
+        // settings.json 里可能残留空的 argoToken（历史保存写入），
+        // 若 .env 中存在有效 token，则以 .env 为准，避免空值覆盖导致隧道不启动。
+        if ((!siteSettings.argoToken || !siteSettings.argoToken.trim()) &&
+            DEFAULT_SETTINGS.argoToken && DEFAULT_SETTINGS.argoToken.trim()) {
+            siteSettings.argoToken = DEFAULT_SETTINGS.argoToken;
+        }
     } catch (e) {
         console.error('[Settings] 读取 settings.json 异常，使用默认配置:', e.message);
     }
