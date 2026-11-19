@@ -1554,7 +1554,9 @@ function publicSettings() {
 }
 
 function cookieOptions(maxAge) {
-    return `Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`;
+    // 会话 Cookie 必须为 Secure：本服务对外只应经 HTTPS（Cloudflare / Altare 边缘）暴露，
+    // 避免直连 HTTP 时 admin_token / user_token 明文传输被窃取。
+    return `Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=${maxAge}`;
 }
 
 function isSameOriginRequest(req) {
@@ -1563,14 +1565,12 @@ function isSameOriginRequest(req) {
     try {
         const parsed = new URL(origin);
         const originHost = parsed.host.toLowerCase().split(':')[0];
-        // 直连 Host、反代透传 Host，以及配置中的公网域名/隧道域名均视为同源。
-        // 经 Cloudflare / 反向代理回源时，req.headers.host 会被改写，
-        // 仅比对 Host 会误杀合法请求，因此把已配置的对外域名加入信任列表。
+        // 只信任两类来源：请求的 Host（浏览器不可伪造），以及服务端已配置的
+        // 对外域名（SUB_DOMAIN / ARGO_DOMAIN）。严禁采信 X-Forwarded-Host 等
+        // 客户端可任意设置的请求头，否则攻击者可用自洽的 Origin+XFF 绕过同源校验。
         const trusted = new Set();
         const host = req.headers.host;
         if (host) trusted.add(host.toLowerCase().split(':')[0]);
-        const xfHost = req.headers['x-forwarded-host'];
-        if (xfHost) trusted.add(String(xfHost).toLowerCase().split(':')[0]);
         for (const c of [siteSettings.subDomain, siteSettings.argoDomain]) {
             if (!c) continue;
             try { trusted.add(new URL(c.includes('://') ? c : 'https://' + c).hostname.toLowerCase()); }
@@ -2350,6 +2350,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
 
 
         if (pathname === '/admin/api/status') {
+            if (!isSameOriginRequest(req)) return sendJson({ error: '请求来源无效' }, 403);
             const mem = process.memoryUsage();
             let totalOnlineConns = 0;
             activeConnections.forEach(set => totalOnlineConns += set.size);
@@ -2519,10 +2520,15 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
             readBody(data => {
                 const username = (data.username || '').trim();
                 if (!username) return sendJson({ error: '用户名不能为空' }, 400);
+                // 与自助注册保持一致的字符白名单，防止 HTML/属性注入
+                if (!/^[\p{L}\p{N}_.-]{3,48}$/u.test(username)) return sendJson({ error: '用户名需为 3 至 48 位字母、数字、点、下划线或连字符' }, 400);
                 for (const u of users.values()) {
                     if (u.username === username) return sendJson({ error: '该用户名已存在' }, 400);
                 }
-                const uuid = (data.uuid && data.uuid.trim().length >= 32) ? data.uuid.trim() : crypto.randomUUID();
+                const rawUuid = data.uuid && data.uuid.trim() ? data.uuid.trim() : '';
+                // 自定义 UUID 仅允许 URL 安全字符，杜绝 < > " 等注入字符
+                if (rawUuid && !/^[A-Za-z0-9_-]{10,64}$/.test(rawUuid)) return sendJson({ error: 'UUID 只能包含字母、数字、下划线或连字符（10-64 位）' }, 400);
+                const uuid = (rawUuid && rawUuid.length >= 32) ? rawUuid : crypto.randomUUID();
                 if (users.has(uuid)) return sendJson({ error: '该 UUID 已存在冲突' }, 400);
                 const pwd = typeof data.password === 'string' && data.password.length >= 10 ? data.password : crypto.randomBytes(18).toString('base64url');
                 const days = parseInt(data.days || siteSettings.defaultDays, 10);
@@ -2557,7 +2563,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
                 // 1. 修改 UUID
                 if (data.newUuid && data.newUuid.trim() && data.newUuid.trim() !== originalUuid) {
                     const candidate = data.newUuid.trim();
-                    if (candidate.length < 10) return sendJson({ error: 'UUID 长度过短' }, 400);
+                    if (!/^[A-Za-z0-9_-]{10,64}$/.test(candidate)) return sendJson({ error: 'UUID 只能包含字母、数字、下划线或连字符（10-64 位）' }, 400);
                     if (users.has(candidate)) return sendJson({ error: '新 UUID 已存在冲突' }, 400);
                     disconnectUser(originalUuid, '管理员更新了UUID');
                     users.delete(originalUuid);
@@ -2569,6 +2575,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
                 // 2. 修改用户名
                 if (data.username && data.username.trim()) {
                     const newName = data.username.trim();
+                    if (!/^[\p{L}\p{N}_.-]{3,48}$/u.test(newName)) return sendJson({ error: '用户名需为 3 至 48 位字母、数字、点、下划线或连字符' }, 400);
                     for (const [uid, u] of users.entries()) {
                         if (uid !== targetUuid && u.username === newName) {
                             return sendJson({ error: '该用户名已被占用' }, 400);
@@ -5524,6 +5531,13 @@ function renderAdminDashboardPage() {
                 return;
             }
             tbody.innerHTML = list.map(function(u) {
+                const safeUuid = esc(u.uuid);
+                const safeName = escsafeName;
+                const safeTrafficUsed = escsafeTrafficUsed;
+                const safeTrafficLimit = escsafeTrafficLimit;
+                const safeCreated = escsafeCreated;
+                const safeExpire = escsafeExpire;
+                const safeOnline = esc(u.onlineConns || 0);
                 let statusDot = u.enabled ? (u.isExpired ? '到期' : (u.isExhausted ? '超额' : '正常')) : '封禁';
                 let statusColor = u.enabled ? (u.isExpired || u.isExhausted ? '#d97706' : '#16a34a') : '#dc2626';
                 let statusHtml = '<span class="tag tag-ok">● 正常</span>';
@@ -5533,42 +5547,42 @@ function renderAdminDashboardPage() {
 
                 const pct = Math.min(100, Math.round(((u.trafficUsed || 0) / (u.trafficLimit || 1)) * 100));
                 const connBadge = (u.onlineConns > 0)
-                    ? ('<span style="display:inline-flex; align-items:center; gap:5px; padding:4px 12px; border-radius:999px; background:#dcfce7; color:#15803d; font-size:15px; font-weight:700;"><span style="width:12px;height:12px;border-radius:50%;background:#4d9f2e;display:inline-block;"></span>' + u.onlineConns + '</span>')
+                    ? ('<span style="display:inline-flex; align-items:center; gap:5px; padding:4px 12px; border-radius:999px; background:#dcfce7; color:#15803d; font-size:15px; font-weight:700;"><span style="width:12px;height:12px;border-radius:50%;background:#4d9f2e;display:inline-block;"></span>' + safeOnline + '</span>')
                     : '<span style="color:#94a3b8; font-size:14px;">0</span>';
                 const banBtnText = u.enabled ? '🚫 封禁' : '🔓 解封';
 
                 return '<tr>' +
                     // 1. 账号名称（点击直接打开弹窗编辑，手机/PC通用，极致顺手）
                     '<td class="col-mobile-user">' +
-                        '<div class="mobile-clickable-cell" data-uuid="' + u.uuid + '" onclick="openEditUserModal(this.dataset.uuid)" title="点击直接编辑该账号">' +
+                        '<div class="mobile-clickable-cell" data-uuid="' + safeUuid + '" onclick="openEditUserModal(this.dataset.uuid)" title="点击直接编辑该账号">' +
                             '<div style="font-weight:700; color:#2563eb; display:flex; align-items:center; justify-content:space-between;">' +
-                                '<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + (u.username || '') + '</span>' +
+                                '<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + safeName + '</span>' +
                                 '<span style="font-size:11px; opacity:0.75; margin-left:2px;">✏️</span>' +
                             '</div>' +
                             '<div class="mobile-sub-tag" style="color:' + statusColor + ';">● ' + statusDot + '</div>' +
                         '</div>' +
                     '</td>' +
                     // 2. UUID（手机端隐藏）
-                    '<td class="col-desktop"><span class="uuid-badge" onclick="copyText(this.innerText)" title="点击复制 UUID">' + u.uuid + '</span></td>' +
+                    '<td class="col-desktop"><span class="uuid-badge" onclick="copyText(this.innerText)" title="点击复制 UUID">' + safeUuid + '</span></td>' +
                     // 3. 已用流量
                     '<td class="col-mobile-traffic">' +
-                        '<div style="font-size:15px; color:#334155; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + (u.trafficUsedStr || '0 B') + ' / ' + (u.trafficLimitGB ? (u.trafficLimitGB + 'G') : (u.trafficLimitStr || '0 B')) + '</div>' +
+                        '<div style="font-size:15px; color:#334155; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + safeTrafficUsed + ' / ' + (u.trafficLimitGB ? esc(u.trafficLimitGB) + 'G' : safeTrafficLimit) + '</div>' +
                         '<div class="progress-bar-wrap" style="margin-top:5px;"><div class="progress-bar-inner" style="width:' + pct + '%; background:#cbd5e1;"></div></div>' +
                     '</td>' +
                     // 4. 注册时间（手机端隐藏）
-                    '<td class="col-desktop" style="color:#475569; font-size:12px; white-space:nowrap;">' + (u.createdDateStr || '-') + '</td>' +
+                    '<td class="col-desktop" style="color:#475569; font-size:12px; white-space:nowrap;">' + safeCreated + '</td>' +
                     // 5. 到期时间（手机端隐藏）
-                    '<td class="col-desktop" style="color:#475569; font-size:12px; white-space:nowrap;">' + (u.expireDateStr || '-') + '</td>' +
+                    '<td class="col-desktop" style="color:#475569; font-size:12px; white-space:nowrap;">' + safeExpire + '</td>' +
                     // 6. 状态（手机端隐藏）
                     '<td class="col-desktop">' + statusHtml + '</td>' +
                     // 7. 在线
                     '<td class="col-mobile-online" style="text-align:center;">' + connBadge + '</td>' +
                     // 8. 运维按钮（手机端隐藏）
                     '<td class="col-desktop"><div style="display:flex; gap:4px; flex-wrap:nowrap;">' +
-                        '<button class="btn btn-sm btn-primary" data-uuid="' + u.uuid + '" onclick="openEditUserModal(this.dataset.uuid)">✏️ 设置</button>' +
-                        '<button class="btn btn-sm" data-uuid="' + u.uuid + '" onclick="toggleBan(this.dataset.uuid)">' + banBtnText + '</button>' +
-                        '<button class="btn btn-sm" data-uuid="' + u.uuid + '" onclick="renewUser(this.dataset.uuid)">⏳ +30天</button>' +
-                        '<button class="btn btn-sm btn-danger" data-uuid="' + u.uuid + '" data-name="' + (u.username || '') + '" onclick="deleteUser(this.dataset.uuid, this.dataset.name)">🗑️ 删除</button>' +
+                        '<button class="btn btn-sm btn-primary" data-uuid="' + safeUuid + '" onclick="openEditUserModal(this.dataset.uuid)">✏️ 设置</button>' +
+                        '<button class="btn btn-sm" data-uuid="' + safeUuid + '" onclick="toggleBan(this.dataset.uuid)">' + banBtnText + '</button>' +
+                        '<button class="btn btn-sm" data-uuid="' + safeUuid + '" onclick="renewUser(this.dataset.uuid)">⏳ +30天</button>' +
+                        '<button class="btn btn-sm btn-danger" data-uuid="' + safeUuid + '" data-name="' + safeName + '" onclick="deleteUser(this.dataset.uuid, this.dataset.name)">🗑️ 删除</button>' +
                     '</div></td>' +
                 '</tr>';
             }).join('');
