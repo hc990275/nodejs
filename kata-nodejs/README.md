@@ -12,6 +12,7 @@ kata-nodejs/
 ├── package.json      # 启动与测试脚本（必须）
 ├── .env.example      # 配置模板（部署时复制为 .env）
 ├── src/
+│   ├── argo-supervisor.js # 隧道进程监管与就绪探测（必须）
 │   ├── security.js      # 密码哈希、会话、限速（必须）
 │   ├── protocol.js      # WebSocket/VLESS 协议解析（必须）
 │   ├── sub_converter.js # 现代订阅转换引擎：6 格式 + ECH 规范（必须）
@@ -20,7 +21,7 @@ kata-nodejs/
 └── data/             # 运行时生成，保存用户与设置
 ```
 
-注意：`src/` 四个模块必须一起上传，只传 `index.js` 会报 `Cannot find module './src/security'` 或 `Cannot find module './src/sub_converter'`。
+注意：`src/` 五个模块必须一起上传，只传 `index.js` 会报 `Cannot find module './src/security'` 或 `Cannot find module './src/sub_converter'`。
 
 ## 2. 环境要求
 
@@ -60,8 +61,8 @@ npm start         # 启动
 
 两种任选其一：
 
-- **方式 A（部署前写死）**：在 `.env` 里设置 `ADMIN_PASSWORD=你的强密码`（至少 10 位，建议 20 位以上）。启动后直接用它登录后台。
-- **方式 B（首次进后台设置）**：`.env` 里 `ADMIN_PASSWORD` 留空。首次打开 `/admin` 会进入"首次设置管理员密码"页面，输入密码并确认（至少 10 位），设置后自动写入 `.env` 并进入后台。未设置密码前无法进入后台。
+- 已在 `.env` 或运行环境预置 `ADMIN_PASSWORD` 时，使用现有密码从 HTTPS 后台登录。
+- 首次部署可将 `ADMIN_PASSWORD` 留空或省略。在 `.env` 填入 `ADMIN_SETUP_TOKEN`，使用 `openssl rand -hex 24` 生成随机口令。如果反代改写回源的 `Host`，请先把对外域名填入 `SUB_DOMAIN` 或 `ARGO_DOMAIN`。通过 HTTPS 打开 `/admin`，输入初始化口令并设置 10 至 256 位的管理员密码。保存成功后密码写入 `.env`，文件中的初始化口令清空，首次设置入口关闭。
 
 ## 6. 配置项说明（.env）
 
@@ -138,9 +139,15 @@ node --check index.js
 npm test
 ```
 
-- 模块找不到：补传 `src/` 下四个模块（`security.js`、`protocol.js`、`sub_converter.js`、`yaml-lite.js`），检查大小写与目录层级。
+- 模块找不到：补传 `src/` 下五个模块（`security.js`、`protocol.js`、`sub_converter.js`、`yaml-lite.js`、`argo-supervisor.js`），检查大小写与目录层级。
 - 页面打不开：确认业务端口、容器监听、防火墙、域名回源端口一致。
 - 无法登录或提示 429：核对管理员密码，等待限速窗口结束；若开启 `NODE_ENV=production`，必须用 HTTPS 登录。
 - 订阅不可用：检查用户是否被封禁/到期/超额，再检查域名、TLS、WebSocket 回源和客户端能力。
 - 隧道不通：确认 `ARGO_TOKEN` 与 `ARGO_DOMAIN` 都已填写并保存；Token 才触发隧道拉起。
 - 面板提示"停止 60 秒后再重启"：视为启动失败，先读控制台错误，修复后再启动。
+
+### 隧道启动、停止与自愈
+
+后台 Token 输入框留空会保留已有值。提交不同的 Token 会等旧连接进程退出，再启动新进程。将 `.env` 中的 `ARGO_TOKEN` 显式置空可停止隧道。运行时环境变量用于没有该配置项的部署。
+
+程序通过 cloudflared 的回环 `/ready` 接口检测边缘连通性。退出会按 3 到 60 秒退避重试，连续就绪失败且启动宽限期已过会重启当前连接进程。公开域名和实际回源还需独立验收。

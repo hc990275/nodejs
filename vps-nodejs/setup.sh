@@ -270,6 +270,7 @@ else
     download_remote "index.js"
     download_remote "package.json"
     # index.js 依赖 src/ 下 3 个模块，必须一并下载，否则启动即崩
+    download_remote "src/argo-supervisor.js"
     download_remote "src/security.js"
     download_remote "src/sub_converter.js"
     download_remote "src/yaml-lite.js"
@@ -651,18 +652,8 @@ start_pre() {
     export NODE_OPTIONS="--max-old-space-size=${HEAP_MB} --expose-gc ${EXTRA_V8}"
     echo "[OpenRC] ⚡ 动态硬件探测完成: 总内存=$(( TOTAL_MEM_BYTES / 1024 / 1024 ))MB | 自动分配堆上限=${HEAP_MB}MB | 线程池=${POOL_SIZE} | Go配额=${GOMEM_LIMIT} (--expose-gc 已激活)" >> "${output_log}"
 
-    # 彻底清理非 OpenRC 启动的历史残留 node 与 cloudflared，防止 EADDRINUSE 与 CPU 死循环
-    pkill -9 -f "cloudflared tunnel" 2>/dev/null || true
-    if [ -f "${pidfile}" ]; then
-        PID_OLD=$(cat "${pidfile}" 2>/dev/null)
-        [ -n "$PID_OLD" ] && kill -9 "$PID_OLD" 2>/dev/null || true
-    fi
 }
 
-stop_post() {
-    pkill -9 -f "cloudflared tunnel" 2>/dev/null || true
-    pkill -9 -f "node index.js" 2>/dev/null || true
-}
 EOF
     chmod +x /etc/init.d/vps-tunnel
     rc-update add vps-tunnel default 2>/dev/null || true

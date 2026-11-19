@@ -14,6 +14,7 @@ altare-nodejs/
 ├── package.json      # 启动与测试脚本（必须）
 ├── .env.example      # 配置模板（部署时复制为 .env）
 ├── src/
+│   ├── argo-supervisor.js # 隧道进程监管与就绪探测（必须）
 │   ├── security.js      # 密码哈希、会话、限速（必须）
 │   ├── protocol.js      # WebSocket/VLESS 协议解析（必须）
 │   ├── sub_converter.js # 现代订阅转换引擎：6 格式 + ECH 规范（必须）
@@ -22,7 +23,7 @@ altare-nodejs/
 └── data/             # 运行时生成，保存用户与设置
 ```
 
-注意：`src/` 四个模块必须一起上传，只传 `index.js` 会报 `Cannot find module './src/security'` 或 `Cannot find module './src/sub_converter'`。
+注意：`src/` 五个模块必须一起上传，只传 `index.js` 会报 `Cannot find module './src/security'` 或 `Cannot find module './src/sub_converter'`。
 
 ## 2. 环境要求
 
@@ -140,7 +141,7 @@ node --check index.js
 npm test
 ```
 
-- 模块找不到：补传 `src/` 下四个模块（`security.js`、`protocol.js`、`sub_converter.js`、`yaml-lite.js`），检查大小写与目录层级。
+- 模块找不到：补传 `src/` 下五个模块（`security.js`、`protocol.js`、`sub_converter.js`、`yaml-lite.js`、`argo-supervisor.js`），检查大小写与目录层级。
 - 页面打不开：确认业务端口、容器监听、防火墙、域名回源端口一致。
 - 无法登录或提示 429：确认使用 HTTPS，核对管理员密码并等待限速窗口结束。
 - 订阅不可用：检查用户是否被封禁/到期/超额，再检查域名、TLS、WebSocket 回源和客户端能力。
@@ -158,3 +159,9 @@ npm test
 
 - 优先读取 Altare 注入的 `P_SERVER_LOCATION`。缺少机房地区时，按公网 IPv4 查询 ipinfo.io，失败时显示「未知地区」。
 - 首页页头、浏览器标题和订阅节点名都显示国家或地区及面板端口。
+
+### 隧道启动、停止与自愈
+
+后台 Token 输入框留空会保留已有值。提交不同的 Token 会等旧连接进程退出，再启动新进程。将 `.env` 中的 `ARGO_TOKEN` 显式置空可停止隧道。运行时环境变量用于没有该配置项的部署。
+
+程序通过 cloudflared 的回环 `/ready` 接口检测边缘连通性。退出会按 3 到 60 秒退避重试，连续就绪失败且启动宽限期已过会重启当前连接进程。公开域名和实际回源还需独立验收。

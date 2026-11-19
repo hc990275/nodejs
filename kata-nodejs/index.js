@@ -21,6 +21,7 @@ const fs = require('fs');
 const path = require('path');
 const url = require('url');
 const { spawn } = require('child_process');
+const { createArgoSupervisor, effectiveToken } = require('./src/argo-supervisor');
 const { hashPassword, verifyPassword, safeUser, createRateLimiter, MAX_BODY_BYTES } = require('./src/security');
 // 现代订阅转换引擎（六格式）：从 liuyang 移植，零依赖，支持 ECH 规范处理
 const subConverter = require('./src/sub_converter');
@@ -86,7 +87,7 @@ function updateEnvFile(updates) {
     }
 
     const tmpFile = ENV_FILE + '.tmp.' + Date.now();
-    fs.writeFileSync(tmpFile, newLines.join('\n'), 'utf-8');
+    fs.writeFileSync(tmpFile, newLines.join('\n'), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
     fs.renameSync(tmpFile, ENV_FILE);
     console.log(`[Env] .env 配置文件已原子更新:`, Object.keys(updates).join(', '));
 }
@@ -100,8 +101,7 @@ function updateEnvFile(updates) {
 // 1. 本地已有合法程序 -> 绝不重复下载，0毫秒直接启动；
 // 2. 换服务器/新环境无程序 -> 自动探测 CPU/OS 架构，静默下载高速二进制并赋权运行；
 // 3. 进程异常退出 -> 自动拉起自愈，无缝保障隧道高可用。
-let argoProcess = null;
-let argoStatus = 'stopped'; // 'connected', 'running', 'downloading', 'stopped', 'error'
+let argoStatus = 'stopped';
 let argoLastLog = '';
 let isArgoDownloading = false;
 
@@ -194,94 +194,41 @@ async function autoFetchCloudflared(destPath) {
     }
 }
 
-async function startArgoTunnel(token) {
-    if (!token || token.trim() === '') {
-        stopArgoTunnel();
-        return;
-    }
-    stopArgoTunnel();
+const normalizeArgoToken = value => typeof value === 'string' ? value.trim() : '';
 
-    const binPath = path.join(BASE_DIR, 'cloudflared');
-
-    // 智能检测机制：检查本地是否有完整合法的程序 (大于 10MB)
-    let needDownload = true;
-    if (fs.existsSync(binPath)) {
-        try {
-            const stat = fs.statSync(binPath);
-            if (stat.size > 10 * 1024 * 1024) {
-                needDownload = false;
-                console.log(`[Argo] ✅ 检测到本地已存在合法的 cloudflared 程序 (${formatBytes(stat.size)})，直接启动，绝不重复下载！`);
-            } else {
-                console.log(`[Argo] ⚠️ 本地文件大小异常 (${stat.size} 字节)，将重新拉取`);
-            }
-        } catch (e) {}
-    }
-
-    if (needDownload) {
-        try {
-            await autoFetchCloudflared(binPath);
-        } catch (err) {
-            console.error(`[Argo] ❌ 自动下载程序失败: ${err.message}`);
-            argoStatus = 'error';
-            return;
-        }
-    }
-
+async function launchArgo(token, stillWanted) {
+    let binPath = path.join(BASE_DIR, 'cloudflared');
+    let needsDownload = true;
     try {
-        fs.chmodSync(binPath, 0o755);
-    } catch (e) {}
-
-    console.log('[Argo] 🚀 正在拉起 Cloudflare Argo 隧道守护进程...');
-    argoStatus = 'starting';
-
-    try {
-        argoProcess = spawn(binPath, ['tunnel', '--no-autoupdate', 'run', '--token', token.trim()], {
-            cwd: BASE_DIR,
-            stdio: ['ignore', 'pipe', 'pipe']
-        });
-
-        argoProcess.stdout.on('data', chunk => {
-            const str = chunk.toString();
-            argoLastLog = str.trim();
-            console.log(`[Argo STDOUT] ${argoLastLog}`);
-        });
-
-        argoProcess.stderr.on('data', chunk => {
-            const str = chunk.toString();
-            argoLastLog = str.trim();
-            if (str.includes('Registered tunnel connection') || (str.includes('Connection') && str.includes('registered'))) {
-                argoStatus = 'connected';
-                console.log(`[Argo] 🟢 隧道已成功握手接入 Cloudflare 全球边缘网络！443端口直通与三网优选已全面激活！`);
-            }
-            console.log(`[Argo LOG] ${argoLastLog}`);
-        });
-
-        argoProcess.on('exit', (code, signal) => {
-            console.log(`[Argo] 进程退出: code=${code}, signal=${signal}`);
-            argoStatus = 'stopped';
-            argoProcess = null;
-        });
-
-        argoProcess.on('error', err => {
-            console.error(`[Argo] 进程异常: ${err.message}`);
-            argoStatus = 'error';
-            argoProcess = null;
-        });
-    } catch (err) {
-        console.error(`[Argo] 进程启动抛出异常: ${err.message}`);
-        argoStatus = 'error';
-    }
+        needsDownload = fs.statSync(binPath).size <= 10 * 1024 * 1024;
+    } catch (_) { /* Look for an installed binary or download it. */ }
+    if (needsDownload) await autoFetchCloudflared(binPath);
+    if (!stillWanted()) return null;
+    fs.accessSync(binPath, fs.constants.X_OK);
+    const env = { ...process.env, TUNNEL_TOKEN: token, TUNNEL_GRACE_PERIOD: '3s' };
+    const child = spawn(binPath, ['tunnel', '--no-autoupdate', '--metrics', '127.0.0.1:0', 'run'], {
+        cwd: BASE_DIR, stdio: ['ignore', 'pipe', 'pipe'], env
+    });
+    return new Promise((resolve, reject) => {
+        child.once('error', reject);
+        child.once('spawn', () => resolve(child));
+    });
 }
 
-function stopArgoTunnel() {
-    if (argoProcess) {
-        console.log('[Argo] 🛑 停止现有 Argo 隧道守护进程...');
-        try {
-            argoProcess.kill('SIGTERM');
-        } catch (e) {}
-        argoProcess = null;
-        argoStatus = 'stopped';
+const argoSupervisor = createArgoSupervisor({
+    launch: launchArgo,
+    onState(state) {
+        if (state !== argoStatus) console.log('[Argo] 状态:', state);
+        argoStatus = state;
+    },
+    onLog(line) {
+        argoLastLog = line;
+        console.log('[Argo]', line);
     }
+});
+
+function startArgoTunnel(token) {
+    argoSupervisor.configure(normalizeArgoToken(token));
 }
 
 // 优先读取 .env
@@ -292,7 +239,6 @@ const initialEnv = parseEnvFile(ENV_FILE);
 // ==========================================
 let envWatchDebounce = null;
 function reloadEnvHot() {
-    if (!fs.existsSync(ENV_FILE)) return;
     try {
         const newEnv = parseEnvFile(ENV_FILE);
         console.log('[Env] ⚡ 监听到外部 .env 文件变动，正在执行内存双向热重载...');
@@ -307,10 +253,11 @@ function reloadEnvHot() {
         if (newEnv.DEFAULT_TRAFFIC_GB !== undefined) siteSettings.defaultTrafficGB = parseInt(newEnv.DEFAULT_TRAFFIC_GB, 10) || siteSettings.defaultTrafficGB;
         if (newEnv.WETEST_API_URL !== undefined) siteSettings.wetestApiUrl = newEnv.WETEST_API_URL.trim();
 
-        if (newEnv.ARGO_TOKEN !== undefined && newEnv.ARGO_TOKEN !== siteSettings.argoToken) {
-            siteSettings.argoToken = newEnv.ARGO_TOKEN.trim();
-            startArgoTunnel(siteSettings.argoToken);
-            console.log('[Env] ⚡ Argo Token 已热更新，隧道进程已自动重载！');
+        const nextToken = effectiveToken(newEnv, process.env, normalizeArgoToken);
+        if (nextToken !== siteSettings.argoToken) {
+            siteSettings.argoToken = nextToken;
+            startArgoTunnel(nextToken);
+            console.log('[Env] Argo Token 已变更:', nextToken ? '更换隧道进程' : '停止隧道');
         }
 
         if (newEnv.ARGO_DOMAIN !== undefined && newEnv.ARGO_DOMAIN !== siteSettings.argoDomain) {
@@ -361,17 +308,15 @@ function reloadEnvHot() {
     }
 }
 
-if (fs.existsSync(ENV_FILE)) {
-    try {
-        fs.watch(ENV_FILE, (eventType) => {
-            if (eventType === 'change' || eventType === 'rename') {
-                if (envWatchDebounce) clearTimeout(envWatchDebounce);
-                envWatchDebounce = setTimeout(() => {
-                    reloadEnvHot();
-                }, 500);
-            }
-        });
-    } catch (e) {}
+// 监听父目录，原子替换或首次写入 .env 后仍能继续收取事件。
+try {
+    fs.watch(BASE_DIR, { persistent: false }, (_event, filename) => {
+        if (filename && filename !== path.basename(ENV_FILE)) return;
+        clearTimeout(envWatchDebounce);
+        envWatchDebounce = setTimeout(reloadEnvHot, 500);
+    });
+} catch (err) {
+    console.error('[Env] 无法监听配置:', err.code || 'unknown');
 }
 
 function getEnv(key, defVal = '') {
@@ -402,6 +347,7 @@ function detectPublicIp() {
                         done = true;
                         detectedPublicIp = ip;
                         console.log('[Net] 🌐 自动探测公网 IPv4:', ip);
+                        if (!detectedGeo && !net.isIPv4(configuredIp)) detectGeoByIp(ip);
                     }
                 });
             });
@@ -410,7 +356,53 @@ function detectPublicIp() {
         } catch (_) {}
     });
 }
+
+// 优先使用面板机房地区（例如 mn-uln），未提供机房地区时才查询公网 IP。
+function countryLabel(value) {
+    if (typeof value !== 'string' || !/^[A-Z]{2}$/i.test(value)) return '';
+    const code = value.toUpperCase();
+    const names = new Intl.DisplayNames(['zh-CN'], { type: 'region', fallback: 'none' });
+    const name = names.of(code);
+    if (!name) return '';
+    const flag = String.fromCodePoint(...Array.from(code, letter => 0x1F1E6 + letter.charCodeAt(0) - 65));
+    return `${flag}${name}`;
+}
+
+const panelLocation = getEnv('P_SERVER_LOCATION').trim();
+const panelCountry = /^([a-z]{2})(?:-[a-z0-9-]+)?$/i.exec(panelLocation)?.[1];
+let detectedGeo = countryLabel(panelCountry);
+const configuredIp = getEnv('SERVER_IP').trim();
+
+function detectGeoByIp(ip) {
+    const req = require('node:https').get(`https://ipinfo.io/${ip}/json`, { signal: AbortSignal.timeout(6000) }, res => {
+        if (res.statusCode !== 200) return res.resume();
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('error', () => {});
+        res.on('data', chunk => {
+            body += chunk;
+            if (body.length > 8192) res.destroy();
+        });
+        res.on('end', () => {
+            try {
+                detectedGeo = countryLabel(JSON.parse(body).country);
+            } catch (_) { /* 保留未知地区 */ }
+        });
+    });
+    req.on('error', () => {});
+}
+
+if (!detectedGeo && net.isIPv4(configuredIp)) detectGeoByIp(configuredIp);
 detectPublicIp();
+
+function machineTag() {
+    return [detectedGeo || '🌐未知地区', PORT].filter(Boolean).join('·');
+}
+
+function escapeHtml(value) {
+    const entities = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+    return String(value ?? '').replace(/[&<>"']/g, char => entities[char]);
+}
 
 // 端口自动探测：适配翼龙面板（KataBump/Lunes）纯 Node.js 环境
 // 依次从显式配置 → process.env → /proc/1/environ → 命令行 → 模糊匹配中探测面板分配端口
@@ -463,7 +455,7 @@ const PORT = detectedPort;
 if (!Number.isInteger(PORT)) {
     console.warn('[Startup] ⚠️ 未自动探测到面板端口，服务挂起等待端口配置；不监听假端口。');
 }
-let ADMIN_PASSWORD = getEnv('ADMIN_PASSWORD', '');
+let ADMIN_PASSWORD = initialEnv.ADMIN_PASSWORD || getEnv('ADMIN_PASSWORD', '');
 let passwordSetupRequired = !ADMIN_PASSWORD; // 未在 .env 预置密码时，首次进入后台强制设置
 if (passwordSetupRequired) {
     console.warn('[Security] ⚠️ 未在 .env 检测到 ADMIN_PASSWORD：将要求管理员首次进入后台时设置密码（设置前禁止进入）。');
@@ -748,7 +740,7 @@ const DEFAULT_SETTINGS = {
     subConfig: getEnv('SUBCONFIG', 'https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/config/ACL4SSR_Online.ini'),
     // SUB_DOMAIN 自动：隧道域名优先，否则留空由 detectedPublicIp 兜底（见 resolvePublicHost）
     subDomain: getEnv('SUB_DOMAIN', '') || getEnv('ARGO_DOMAIN', ''),
-    argoToken: getEnv('ARGO_TOKEN', ''),
+    argoToken: effectiveToken(initialEnv, process.env, normalizeArgoToken),
     argoDomain: getEnv('ARGO_DOMAIN', ''),
 
     // 🚀 ECH 全局安全防探测与客户端混淆指纹
@@ -823,10 +815,17 @@ if (fs.existsSync(SETTINGS_FILE)) {
     }
 }
 
+// 隧道凭据只来自部署环境或 .env，旧 settings.json 中的副本不得覆盖。
+siteSettings.argoToken = DEFAULT_SETTINGS.argoToken;
+for (const [envKey, field] of [['SUB_DOMAIN', 'subDomain'], ['ARGO_DOMAIN', 'argoDomain']]) {
+    if (Object.hasOwn(initialEnv, envKey)) siteSettings[field] = initialEnv[envKey];
+}
+
 function saveSettings() {
     try {
         const tmp = SETTINGS_FILE + '.tmp.' + Date.now();
-        fs.writeFileSync(tmp, JSON.stringify(siteSettings, null, 2), 'utf-8');
+        const { argoToken, ...settingsToSave } = siteSettings;
+        fs.writeFileSync(tmp, JSON.stringify(settingsToSave, null, 2), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
         fs.renameSync(tmp, SETTINGS_FILE);
     } catch (e) {
         console.error('[Settings] 保存 settings.json 失败:', e.message);
@@ -1317,25 +1316,25 @@ function generateUserNodes(user) {
 
     // 1. 卡塔原生端口直连节点 (直连宿主机公网 IP + 面板端口，必须走 IP 不能用域名)
     const directIp = resolveDirectIp() || host;
-    const directTag = `【卡塔·原生直连·${PORT}】-VLESS-WS`;
+    const directTag = `【${machineTag()}·原生直连·Kata】-VLESS-WS`;
     list.push(`vless://${user.uuid}@${directIp}:${PORT}?encryption=none&security=none&type=ws&host=${encodeURIComponent(directIp)}&path=%2F#${encodeURIComponent(directTag)}`);
 
     // 1.1 若配置了 Cloudflare Argo 隧道域名，额外下发专属 443 端口隧道直连节点
     if (siteSettings.argoDomain) {
-        const argoTag = `【CF·Argo隧道直连·443】-VLESS-WS`;
+        const argoTag = `【${machineTag()}·CF·Argo隧道直连·443】-VLESS-WS`;
         list.push(`vless://${user.uuid}@${siteSettings.argoDomain}:443?encryption=none&security=tls&sni=${encodeURIComponent(siteSettings.argoDomain)}&type=ws&host=${encodeURIComponent(siteSettings.argoDomain)}&path=%2F${tlsExtra}#${encodeURIComponent(argoTag)}`);
     }
 
     // 1.2 若配置了端口回溯域名，下发专属 443 端口回溯直连节点
     if (hasBacktrackDomain) {
-        const btTag = `【CF·端口回溯主节点·443】-VLESS-WS`;
+        const btTag = `【${machineTag()}·CF·端口回溯主节点·443】-VLESS-WS`;
         list.push(`vless://${user.uuid}@${siteSettings.subDomain}:443?encryption=none&security=tls&sni=${encodeURIComponent(siteSettings.subDomain)}&type=ws&host=${encodeURIComponent(siteSettings.subDomain)}&path=%2F${tlsExtra}#${encodeURIComponent(btTag)}`);
     }
 
     // 2. CF 官方 Anycast
     if (siteSettings.enableOptOfficial !== false) {
         const anyIp = siteSettings.optOfficialIp || (siteSettings.cfNodes.official[0] && siteSettings.cfNodes.official[0].ip) || domain;
-        const tag = `【CF·Anycast·443】-VLESS-WS`;
+        const tag = `【${machineTag()}·CF·Anycast·443】-VLESS-WS`;
         list.push(`vless://${user.uuid}@${anyIp}:443?encryption=none&security=tls&sni=${encodeURIComponent(effectiveSni)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F${tlsExtra}#${encodeURIComponent(tag)}`);
     }
 
@@ -1344,7 +1343,7 @@ function generateUserNodes(user) {
         const ctList = siteSettings.cfNodes.ct || [];
         ctList.forEach((n, idx) => {
             const ip = (idx === 0 && siteSettings.optCTIp) ? siteSettings.optCTIp : n.ip;
-            const tag = `【CF·电信优选·${idx + 1}·${n.colo || 'FRA'}·${n.rtt || 160}ms】-VLESS-WS`;
+            const tag = `【${machineTag()}·CF·电信优选·${idx + 1}·${n.colo || 'FRA'}·${n.rtt || 160}ms】-VLESS-WS`;
             list.push(`vless://${user.uuid}@${ip}:443?encryption=none&security=tls&sni=${encodeURIComponent(effectiveSni)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F${tlsExtra}#${encodeURIComponent(tag)}`);
         });
     }
@@ -1354,7 +1353,7 @@ function generateUserNodes(user) {
         const cuList = siteSettings.cfNodes.cu || [];
         cuList.forEach((n, idx) => {
             const ip = (idx === 0 && siteSettings.optCUIp) ? siteSettings.optCUIp : n.ip;
-            const tag = `【CF·联通优选·${idx + 1}·${n.colo || 'SJC'}·${n.rtt || 130}ms】-VLESS-WS`;
+            const tag = `【${machineTag()}·CF·联通优选·${idx + 1}·${n.colo || 'SJC'}·${n.rtt || 130}ms】-VLESS-WS`;
             list.push(`vless://${user.uuid}@${ip}:443?encryption=none&security=tls&sni=${encodeURIComponent(effectiveSni)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F${tlsExtra}#${encodeURIComponent(tag)}`);
         });
     }
@@ -1364,7 +1363,7 @@ function generateUserNodes(user) {
         const cmList = siteSettings.cfNodes.cm || [];
         cmList.forEach((n, idx) => {
             const ip = (idx === 0 && siteSettings.optCMIp) ? siteSettings.optCMIp : n.ip;
-            const tag = `【CF·移动优选·${idx + 1}·${n.colo || 'HKG'}·${n.rtt || 48}ms】-VLESS-WS`;
+            const tag = `【${machineTag()}·CF·移动优选·${idx + 1}·${n.colo || 'HKG'}·${n.rtt || 48}ms】-VLESS-WS`;
             list.push(`vless://${user.uuid}@${ip}:443?encryption=none&security=tls&sni=${encodeURIComponent(effectiveSni)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F${tlsExtra}#${encodeURIComponent(tag)}`);
         });
     }
@@ -1375,7 +1374,7 @@ function generateUserNodes(user) {
         lines.forEach(line => {
             const item = parseCustomDomainLine(line);
             if (item) {
-                const tag = `【自定义优选·${item.remark}】-VLESS-WS`;
+                const tag = `【${machineTag()}·自定义优选·${item.remark}】-VLESS-WS`;
                 list.push(`vless://${user.uuid}@${item.host}:${item.port}?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F${tlsExtra}#${encodeURIComponent(tag)}`);
             }
         });
@@ -1485,15 +1484,17 @@ function isSameOriginRequest(req) {
     try {
         const parsed = new URL(origin);
         const originHost = parsed.host.toLowerCase().split(':')[0];
-        // 直连 Host、反代透传 Host，以及配置中的公网域名/隧道域名均视为同源。
-        // 经 Cloudflare / 反向代理回源时，req.headers.host 会被改写，
-        // 仅比对 Host 会误杀合法请求，因此把已配置的对外域名加入信任列表。
+        // 只信任两类来源：请求的 Host（浏览器不可伪造），以及服务端已配置的
+        // 对外域名（SUB_DOMAIN / ARGO_DOMAIN）。严禁采信 X-Forwarded-Host 等
+        // 客户端可任意设置的请求头，否则攻击者可用自洽的 Origin+XFF 绕过同源校验。
         const trusted = new Set();
         const host = req.headers.host;
         if (host) trusted.add(host.toLowerCase().split(':')[0]);
-        const xfHost = req.headers['x-forwarded-host'];
-        if (xfHost) trusted.add(String(xfHost).toLowerCase().split(':')[0]);
-        for (const c of [siteSettings.subDomain, siteSettings.argoDomain]) {
+        // 对外域名同时取 settings.json 与 .env（DEFAULT_SETTINGS）：
+        // settings.json 可能残留空 subDomain 覆盖 .env，导致反代回源 Host 与
+        // Origin 不一致而误杀登录。补入 .env 中的值，避免重启后再次 403。
+        for (const c of [siteSettings.subDomain, siteSettings.argoDomain,
+                         DEFAULT_SETTINGS.subDomain, DEFAULT_SETTINGS.argoDomain]) {
             if (!c) continue;
             try { trusted.add(new URL(c.includes('://') ? c : 'https://' + c).hostname.toLowerCase()); }
             catch (_) { trusted.add(String(c).toLowerCase().split(':')[0]); }
@@ -2210,6 +2211,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
     // ──────────────── 3. 管理员鉴权 API ────────────────
     if (pathname === '/admin/api/login' && method === 'POST') {
         if (!isSameOriginRequest(req)) return sendJson({ error: '请求来源无效' }, 403);
+        if (passwordSetupRequired) return sendJson({ error: '请先设置管理员密码' }, 409);
         const rateKey = `admin:${getClientIp(req) || 'unknown'}`;
         if (adminLoginLimiter.blocked(rateKey)) return sendJson({ error: '尝试次数过多，请稍后再试' }, 429);
         readBody(data => {
@@ -2227,18 +2229,36 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
         return;
     }
 
-    // 首次设置管理员密码：仅在 .env 未预置密码时开放；设置后永久关闭此入口并回写 .env
+    // 仅部署者可以完成首次设置。落盘成功后才启用登录，避免并发请求覆盖密码。
     if (pathname === '/admin/api/setup-password' && method === 'POST') {
         if (!isSameOriginRequest(req)) return sendJson({ error: '请求来源无效' }, 403);
         if (!passwordSetupRequired) return sendJson({ error: '管理员密码已设置，无需重复设置' }, 409);
         readBody(data => {
+            if (!passwordSetupRequired) return sendJson({ error: '管理员密码已设置，无需重复设置' }, 409);
+            const expected = (process.env.ADMIN_SETUP_TOKEN || parseEnvFile(ENV_FILE).ADMIN_SETUP_TOKEN || '').trim();
+            if (expected.length < 20) return sendJson({ error: '请先在部署配置中设置至少 20 位的随机初始化口令' }, 503);
+            const rateKey = `admin-setup:${getClientIp(req) || 'unknown'}`;
+            if (adminLoginLimiter.blocked(rateKey)) return sendJson({ error: '尝试次数过多，请稍后再试' }, 429);
+            const supplied = typeof data?.setupToken === 'string' ? data.setupToken.trim() : '';
+            const digest = value => crypto.createHash('sha256').update(value).digest();
+            if (!crypto.timingSafeEqual(digest(supplied), digest(expected))) {
+                adminLoginLimiter.fail(rateKey);
+                return sendJson({ error: '初始化口令无效' }, 403);
+            }
             const pwd = typeof data.password === 'string' ? data.password.trim() : '';
-            const confirm = typeof data.confirm === 'string' ? data.confirm.trim() : '';
-            if (!pwd) return sendJson({ error: '密码不能为空' }, 400);
+            const confirm = typeof data?.confirm === 'string' ? data.confirm.trim() : '';
+            if (pwd.length < 10 || pwd.length > 256 || /[\r\n\0]/.test(pwd)) {
+                return sendJson({ error: '密码须为 10 至 256 位，且不能包含换行或空字符' }, 400);
+            }
             if (pwd !== confirm) return sendJson({ error: '两次输入的密码不一致' }, 400);
+            try {
+                updateEnvFile({ ADMIN_PASSWORD: pwd, ADMIN_SETUP_TOKEN: '' });
+            } catch (_) {
+                return sendJson({ error: '无法保存密码，请检查 .env 写入权限后重试' }, 500);
+            }
             ADMIN_PASSWORD = pwd;
             passwordSetupRequired = false;
-            updateEnvFile({ ADMIN_PASSWORD: pwd });
+            adminLoginLimiter.clear(rateKey);
             const sToken = crypto.randomBytes(16).toString('hex');
             adminSessions.set(sToken, Date.now() + 8 * 60 * 60 * 1000);
             res.setHeader('Set-Cookie', `admin_token=${sToken}; ${cookieOptions(28800)}`);
@@ -2265,7 +2285,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
             sendJson({ success: true, message: '核心微服务正在安全自愈重启中，平台守护将即刻载入最新代码...' });
             setTimeout(() => {
                 console.log('[Kernel] 🔄 管理员下发重启指令，进程即将退出由翼龙平台守护自动恢复...');
-                process.exit(1);
+                gracefulShutdown('admin restart');
             }, 300);
             return;
         }
@@ -2370,17 +2390,10 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
                     envUpdates.WETEST_API_URL = siteSettings.wetestApiUrl;
                 }
 
-                // 3. Cloudflare Argo 隧道配置
-                if (typeof data.argoToken === 'string' && data.argoToken.trim()) {
-                    const nextToken = data.argoToken.trim();
-                    const tokenChanged = nextToken !== siteSettings.argoToken;
-                    siteSettings.argoToken = nextToken;
-                    envUpdates.ARGO_TOKEN = siteSettings.argoToken;
-                    // 后台保存即刻拉起/重载隧道，不依赖 fs.watch（容器里可能不触发）
-                    if (tokenChanged) {
-                        startArgoTunnel(siteSettings.argoToken);
-                        console.log('[Env] ⚡ 后台保存隧道 Token，已直接拉起/重载 cloudflared 进程');
-                    }
+                // 表单留空保持原值。显式清除只通过 .env 或明确的控制操作。
+                const nextToken = normalizeArgoToken(data.argoToken);
+                if (nextToken && nextToken !== siteSettings.argoToken) {
+                    envUpdates.ARGO_TOKEN = nextToken;
                 }
                 if (data.argoDomain !== undefined) {
                     siteSettings.argoDomain = data.argoDomain.trim();
@@ -2403,6 +2416,10 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
 
                 if (Object.keys(envUpdates).length > 0) {
                     updateEnvFile(envUpdates);
+                    if (Object.hasOwn(envUpdates, 'ARGO_TOKEN')) {
+                        siteSettings.argoToken = envUpdates.ARGO_TOKEN;
+                        startArgoTunnel(siteSettings.argoToken);
+                    }
                 }
 
                 saveSettings();
@@ -2687,7 +2704,7 @@ function renderHomepage(currentUser) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>Kata Tunnel · 三网节点与订阅控制台</title>
+    <title>${escapeHtml(machineTag())} · Kata Tunnel</title>
     <style>
         :root {
             --primary: #2563eb;
@@ -3108,13 +3125,13 @@ function renderHomepage(currentUser) {
             <div class="nav-brand">
                 <div class="brand-icon">⚡</div>
                 <div class="brand-text">
-                    <h1>微测网 · 三网 CDN 动态优选极速枢纽</h1>
+                    <h1>Kata Tunnel · ${escapeHtml(machineTag())}</h1>
                     <p>原生极简 Node.js 微核 · 0依赖 · 毫秒级三网调度</p>
                 </div>
             </div>
             <div class="nav-right">
                 ${currentUser ? `
-                    <span style="font-size:13px; color:var(--text-sub);">👤 <strong>${currentUser.username}</strong></span>
+                    <span style="font-size:13px; color:var(--text-sub);">👤 <strong>${escapeHtml(currentUser.username)}</strong></span>
                     <button type="button" class="btn btn-sm" onclick="logoutUser()">退出登录</button>
                 ` : `
                     <button class="btn btn-sm btn-primary" onclick="openModal('loginModal')">登录控制台</button>
@@ -3629,7 +3646,7 @@ function renderAdminLoginPage(setupMode = false) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Kata-Tunnel 管理中枢登录</title>
+    <title>${escapeHtml(machineTag())} · Kata-Tunnel 登录</title>
     <style>
         :root {
             --el-primary: #2563eb;
@@ -3772,8 +3789,12 @@ function renderAdminLoginPage(setupMode = false) {
         ${setupMode ? `
         <form id="adminLoginForm" onsubmit="event.preventDefault(); doSetupPassword();">
             <div class="form-group">
+                <label class="form-label" for="setupToken">初始化口令</label>
+                <input type="password" id="setupToken" class="input-control" autocomplete="off" required />
+            </div>
+            <div class="form-group">
                 <label class="form-label" for="pwd">首次设置管理员密码</label>
-                <input type="password" id="pwd" class="input-control" placeholder="设置管理员密码" autofocus autocomplete="new-password" />
+                <input type="password" id="pwd" class="input-control" placeholder="设置管理员密码" autocomplete="new-password" minlength="10" maxlength="256" required />
             </div>
             <div class="form-group">
                 <label class="form-label" for="pwd2">确认管理员密码</label>
@@ -3781,7 +3802,7 @@ function renderAdminLoginPage(setupMode = false) {
             </div>
             <button type="submit" id="btnSubmit" class="submit-btn">设置密码并进入</button>
         </form>
-        <div class="card-footer"><span>首次部署：设置密码后将自动保存到 .env，未设置前无法进入后台</span></div>
+        <div class="card-footer"><span>输入部署时配置的初始化口令。设置成功后即可进入后台。</span></div>
         ` : `
         <form id="adminLoginForm" onsubmit="event.preventDefault(); doAdminLogin();">
             <div class="form-group">
@@ -3801,6 +3822,7 @@ function renderAdminLoginPage(setupMode = false) {
             const p2 = document.getElementById('pwd2');
             const errDiv = document.getElementById('errMsg');
             const btn = document.getElementById('btnSubmit');
+            const setupToken = document.getElementById('setupToken').value.trim();
             const pwd = p.value.trim(), confirm = p2.value.trim();
             if (!pwd) {
                 errDiv.style.display = 'flex'; errDiv.innerText = '⚠️ 请输入密码'; p.focus(); return;
@@ -3813,7 +3835,7 @@ function renderAdminLoginPage(setupMode = false) {
                 const res = await fetch('/admin/api/setup-password', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ password: pwd, confirm })
+                    body: JSON.stringify({ setupToken, password: pwd, confirm })
                 });
                 const data = await res.json();
                 if (res.ok) { location.href = '/admin'; }
@@ -3890,7 +3912,7 @@ function renderAdminDashboardPage() {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Kata-Tunnel 运维管理中枢 (Pro Admin)</title>
+    <title>${escapeHtml(machineTag())} · Kata-Tunnel 后台</title>
     <style>
         :root {
             --primary: #2563eb;
@@ -5210,16 +5232,21 @@ function renderAdminDashboardPage() {
         async function fetchUsers() {
             try {
                 const res = await fetch('/admin/api/users');
-                const data = await res.json();
-                if (res.ok) {
-                    cachedUsersList = data.users || [];
-                    cachedUsersMap.clear();
-                    cachedUsersList.forEach(u => cachedUsersMap.set(u.uuid, u));
-                    document.getElementById('kpi_user_count').innerText = cachedUsersList.length;
-                    filterUsers();
+                if (res.status === 401) {
+                    showToast('登录已失效，请刷新页面后重新登录', 'error');
+                    return;
                 }
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                const data = await res.json();
+                if (!Array.isArray(data.users)) throw new Error('无效的用户列表');
+                cachedUsersList = data.users;
+                cachedUsersMap.clear();
+                cachedUsersList.forEach(u => cachedUsersMap.set(u.uuid, u));
+                document.getElementById('kpi_user_count').innerText = cachedUsersList.length;
+                filterUsers();
             } catch (err) {
                 console.error(err);
+                showToast('用户列表加载失败，请点击刷新重试', 'error');
             }
         }
 
@@ -5444,6 +5471,13 @@ function renderAdminDashboardPage() {
                 return;
             }
             tbody.innerHTML = list.map(function(u) {
+                const safeUuid = esc(u.uuid);
+                const safeName = esc(u.username || '');
+                const safeTrafficUsed = esc(u.trafficUsedStr || '0 B');
+                const safeTrafficLimit = esc(u.trafficLimitStr || '0 B');
+                const safeCreated = esc(u.createdDateStr || '-');
+                const safeExpire = esc(u.expireDateStr || '-');
+                const safeOnline = esc(u.onlineConns || 0);
                 let statusDot = u.enabled ? (u.isExpired ? '到期' : (u.isExhausted ? '超额' : '正常')) : '封禁';
                 let statusColor = u.enabled ? (u.isExpired || u.isExhausted ? '#d97706' : '#16a34a') : '#dc2626';
                 let statusHtml = '<span class="tag tag-ok">● 正常</span>';
@@ -5453,42 +5487,42 @@ function renderAdminDashboardPage() {
 
                 const pct = Math.min(100, Math.round(((u.trafficUsed || 0) / (u.trafficLimit || 1)) * 100));
                 const connBadge = (u.onlineConns > 0)
-                    ? ('<span style="display:inline-flex; align-items:center; gap:5px; padding:4px 12px; border-radius:999px; background:#dcfce7; color:#15803d; font-size:15px; font-weight:700;"><span style="width:12px;height:12px;border-radius:50%;background:#4d9f2e;display:inline-block;"></span>' + u.onlineConns + '</span>')
+                    ? ('<span style="display:inline-flex; align-items:center; gap:5px; padding:4px 12px; border-radius:999px; background:#dcfce7; color:#15803d; font-size:15px; font-weight:700;"><span style="width:12px;height:12px;border-radius:50%;background:#4d9f2e;display:inline-block;"></span>' + safeOnline + '</span>')
                     : '<span style="color:#94a3b8; font-size:14px;">0</span>';
                 const banBtnText = u.enabled ? '🚫 封禁' : '🔓 解封';
 
                 return '<tr>' +
                     // 1. 账号名称（点击直接打开弹窗编辑，手机/PC通用，极致顺手）
                     '<td class="col-mobile-user">' +
-                        '<div class="mobile-clickable-cell" data-uuid="' + u.uuid + '" onclick="openEditUserModal(this.dataset.uuid)" title="点击直接编辑该账号">' +
+                        '<div class="mobile-clickable-cell" data-uuid="' + safeUuid + '" onclick="openEditUserModal(this.dataset.uuid)" title="点击直接编辑该账号">' +
                             '<div style="font-weight:700; color:#2563eb; display:flex; align-items:center; justify-content:space-between;">' +
-                                '<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + (u.username || '') + '</span>' +
+                                '<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + safeName + '</span>' +
                                 '<span style="font-size:11px; opacity:0.75; margin-left:2px;">✏️</span>' +
                             '</div>' +
                             '<div class="mobile-sub-tag" style="color:' + statusColor + ';">● ' + statusDot + '</div>' +
                         '</div>' +
                     '</td>' +
                     // 2. UUID（手机端隐藏）
-                    '<td class="col-desktop"><span class="uuid-badge" onclick="copyText(this.innerText)" title="点击复制 UUID">' + u.uuid + '</span></td>' +
+                    '<td class="col-desktop"><span class="uuid-badge" onclick="copyText(this.innerText)" title="点击复制 UUID">' + safeUuid + '</span></td>' +
                     // 3. 已用流量
                     '<td class="col-mobile-traffic">' +
-                        '<div style="font-size:15px; color:#334155; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + (u.trafficUsedStr || '0 B') + ' / ' + (u.trafficLimitGB ? (u.trafficLimitGB + 'G') : (u.trafficLimitStr || '0 B')) + '</div>' +
+                        '<div style="font-size:15px; color:#334155; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + safeTrafficUsed + ' / ' + (u.trafficLimitGB ? esc(u.trafficLimitGB) + 'G' : safeTrafficLimit) + '</div>' +
                         '<div class="progress-bar-wrap" style="margin-top:5px;"><div class="progress-bar-inner" style="width:' + pct + '%; background:#cbd5e1;"></div></div>' +
                     '</td>' +
                     // 4. 注册时间（手机端隐藏）
-                    '<td class="col-desktop" style="color:#475569; font-size:12px; white-space:nowrap;">' + (u.createdDateStr || '-') + '</td>' +
+                    '<td class="col-desktop" style="color:#475569; font-size:12px; white-space:nowrap;">' + safeCreated + '</td>' +
                     // 5. 到期时间（手机端隐藏）
-                    '<td class="col-desktop" style="color:#475569; font-size:12px; white-space:nowrap;">' + (u.expireDateStr || '-') + '</td>' +
+                    '<td class="col-desktop" style="color:#475569; font-size:12px; white-space:nowrap;">' + safeExpire + '</td>' +
                     // 6. 状态（手机端隐藏）
                     '<td class="col-desktop">' + statusHtml + '</td>' +
                     // 7. 在线
                     '<td class="col-mobile-online" style="text-align:center;">' + connBadge + '</td>' +
                     // 8. 运维按钮（手机端隐藏）
                     '<td class="col-desktop"><div style="display:flex; gap:4px; flex-wrap:nowrap;">' +
-                        '<button class="btn btn-sm btn-primary" data-uuid="' + u.uuid + '" onclick="openEditUserModal(this.dataset.uuid)">✏️ 设置</button>' +
-                        '<button class="btn btn-sm" data-uuid="' + u.uuid + '" onclick="toggleBan(this.dataset.uuid)">' + banBtnText + '</button>' +
-                        '<button class="btn btn-sm" data-uuid="' + u.uuid + '" onclick="renewUser(this.dataset.uuid)">⏳ +30天</button>' +
-                        '<button class="btn btn-sm btn-danger" data-uuid="' + u.uuid + '" data-name="' + (u.username || '') + '" onclick="deleteUser(this.dataset.uuid, this.dataset.name)">🗑️ 删除</button>' +
+                        '<button class="btn btn-sm btn-primary" data-uuid="' + safeUuid + '" onclick="openEditUserModal(this.dataset.uuid)">✏️ 设置</button>' +
+                        '<button class="btn btn-sm" data-uuid="' + safeUuid + '" onclick="toggleBan(this.dataset.uuid)">' + banBtnText + '</button>' +
+                        '<button class="btn btn-sm" data-uuid="' + safeUuid + '" onclick="renewUser(this.dataset.uuid)">⏳ +30天</button>' +
+                        '<button class="btn btn-sm btn-danger" data-uuid="' + safeUuid + '" data-name="' + safeName + '" onclick="deleteUser(this.dataset.uuid, this.dataset.name)">🗑️ 删除</button>' +
                     '</div></td>' +
                 '</tr>';
             }).join('');
@@ -5695,12 +5729,18 @@ function renderAdminDashboardPage() {
                 optCUIp: document.getElementById('cfg_optCUIp').value.trim(),
                 optCMIp: document.getElementById('cfg_optCMIp').value.trim()
             };
-            const res = await fetch('/admin/api/settings', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-            if (res.ok) showToast('三网优选策略已保存', 'success');
+            try {
+                const res = await fetch('/admin/api/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const d = await res.json().catch(() => ({}));
+                if (res.ok) showToast('三网优选策略已保存', 'success');
+                else showToast('保存失败：' + (d.error || '请求未成功'), 'error');
+            } catch (e) {
+                showToast('保存失败：网络异常，请检查连接', 'error');
+            }
         }
 
         async function saveSystemSettings() {
@@ -5721,15 +5761,23 @@ function renderAdminDashboardPage() {
                 argoDomain: document.getElementById('cfg_argoDomain').value.trim(),
                 newAdminPassword: document.getElementById('cfg_newAdminPassword').value.trim()
             };
-            const res = await fetch('/admin/api/settings', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-            if (res.ok) {
-                showToast('系统配置已保存；如修改管理员密码，请重新登录', 'success');
-                document.getElementById('cfg_newAdminPassword').value = '';
-                fetchStatus();
+            try {
+                const res = await fetch('/admin/api/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const d = await res.json().catch(() => ({}));
+                if (res.ok) {
+                    showToast('系统配置已保存；如修改管理员密码，请重新登录', 'success');
+                    const pwdField = document.getElementById('cfg_newAdminPassword');
+                    if (pwdField) pwdField.value = '';
+                    fetchStatus();
+                } else {
+                    showToast('保存失败：' + (d.error || '请求未成功'), 'error');
+                }
+            } catch (e) {
+                showToast('保存失败：网络异常，请检查连接', 'error');
             }
         }
 
@@ -5783,9 +5831,9 @@ function gracefulShutdown(signal) {
     shuttingDown = true;
     console.log(`[System] 收到 ${signal}，正在关闭服务并保存用户数据...`);
     saveUsers();
-    stopArgoTunnel();
-    server.close(() => process.exit(0));
-    setTimeout(() => process.exit(1), 5000).unref();
+    argoSupervisor.shutdown();
+    server.close();
+    setTimeout(() => process.exit(0), 4500).unref();
 }
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));

@@ -21,6 +21,7 @@ const fs = require('fs');
 const path = require('path');
 const url = require('url');
 const { spawn } = require('child_process');
+const { createArgoSupervisor, effectiveToken } = require('./src/argo-supervisor');
 const { hashPassword, verifyPassword, safeUser, createRateLimiter, MAX_BODY_BYTES } = require('./src/security');
 // 现代订阅转换引擎（六格式）：从 liuyang 移植，零依赖，支持 ECH 规范处理
 const subConverter = require('./src/sub_converter');
@@ -100,20 +101,9 @@ function updateEnvFile(updates) {
 // 1. 本地已有合法程序 -> 绝不重复下载，0毫秒直接启动；
 // 2. 换服务器/新环境无程序 -> 自动探测 CPU/OS 架构，静默下载高速二进制并赋权运行；
 // 3. 进程异常退出 -> 自动拉起自愈，无缝保障隧道高可用。
-let argoProcess = null;
-let argoStatus = 'stopped'; // 'connected', 'running', 'downloading', 'stopped', 'error', 'reconnecting'
+let argoStatus = 'stopped';
 let argoLastLog = '';
 let isArgoDownloading = false;
-// 隧道自愈：区分「主动停止」与「异常掉线」。只有清空 token 或程序关闭才算主动停止，
-// 其它任何退出（崩溃、SIGTERM、网络抖动）只要 token 仍在，就带退避自动重连。
-let argoStopRequested = false;      // 是否为主动停止（token 清空 / 程序退出）
-let argoReconnectTimer = null;      // 重连定时器
-let argoReconnectDelay = 3000;      // 当前退避间隔（毫秒）
-const ARGO_RECONNECT_MAX_DELAY = 60000; // 退避上限 60 秒
-let argoHealthTimer = null;         // 健康检查定时器
-const ARGO_HEALTH_CHECK_MS = 60000; // 每 60 秒检测一次隧道是否仍连通
-let argoLastConnectedAt = 0;        // 上次握手成功的时间戳
-const ARGO_STALE_CONNECT_MS = 180000; // 超过 3 分钟未握手视为假死
 
 function downloadFileWithRedirect(targetUrl, destPath, maxRedirects = 5) {
     return new Promise((resolve, reject) => {
@@ -204,150 +194,41 @@ async function autoFetchCloudflared(destPath) {
     }
 }
 
-// 重连调度：仅在 token 仍配置且非主动停止时，带指数退避自动拉起隧道
-function scheduleArgoReconnect(reason) {
-    if (argoStopRequested) return;
-    if (!siteSettings.argoToken || !siteSettings.argoToken.trim()) return;
-    if (argoReconnectTimer) return; // 已有重连在排队
-    argoStatus = 'reconnecting';
-    console.log(`[Argo] 🔄 ${reason || '隧道掉线'}，${argoReconnectDelay / 1000}s 后自动重连...`);
-    argoReconnectTimer = setTimeout(() => {
-        argoReconnectTimer = null;
-        if (argoStopRequested) return;
-        if (!siteSettings.argoToken || !siteSettings.argoToken.trim()) return;
-        // 递增退避；传 true 表示自愈重连，避免在 startArgoTunnel 里重置退避
-        argoReconnectDelay = Math.min(argoReconnectDelay * 2, ARGO_RECONNECT_MAX_DELAY);
-        startArgoTunnel(siteSettings.argoToken, true);
-    }, argoReconnectDelay);
-}
+const normalizeArgoToken = value => typeof value === 'string' ? value.trim() : '';
 
-// 隧道健康检查：检测进程存活 + 是否真正连上，异常则自动重连/重启
-function startArgoHealthCheck() {
-    if (argoHealthTimer) return;
-    argoHealthTimer = setInterval(() => {
-        if (argoStopRequested) return;
-        if (!siteSettings.argoToken || !siteSettings.argoToken.trim()) return;
-        // 情形1：进程已不在 → 重连
-        if (!argoProcess) {
-            console.log('[Argo] 🩺 健康检查发现隧道进程离线，准备自动重连...');
-            scheduleArgoReconnect('健康检查-进程离线');
-            return;
-        }
-        // 情形2：进程在但长时间未握手成功（假死）→ 主动重启
-        if (argoStatus !== 'connected' && argoLastConnectedAt &&
-            Date.now() - argoLastConnectedAt > ARGO_STALE_CONNECT_MS) {
-            console.log('[Argo] 🩺 健康检查发现隧道长时间未连通（假死），准备重启...');
-            if (argoReconnectTimer) { clearTimeout(argoReconnectTimer); argoReconnectTimer = null; }
-            scheduleArgoReconnect('健康检查-假死');
-        }
-    }, ARGO_HEALTH_CHECK_MS);
-    argoHealthTimer.unref();
-}
-
-async function startArgoTunnel(token, isAutoReconnect = false) {
-    if (!token || token.trim() === '') {
-        // 空 token = 主动停止，不再自愈
-        argoStopRequested = true;
-        if (argoReconnectTimer) { clearTimeout(argoReconnectTimer); argoReconnectTimer = null; }
-        stopArgoTunnel();
-        return;
-    }
-    // 有 token = 期望隧道运行，关闭「主动停止」标志并启动健康检查
-    argoStopRequested = false;
-    if (!isAutoReconnect) argoReconnectDelay = 3000; // 仅首次启动/手动重启重置退避
-    startArgoHealthCheck();
-    stopArgoTunnel();
-
-    const binPath = path.join(BASE_DIR, 'cloudflared');
-
-    // 智能检测机制：检查本地是否有完整合法的程序 (大于 10MB)
-    let needDownload = true;
-    if (fs.existsSync(binPath)) {
-        try {
-            const stat = fs.statSync(binPath);
-            if (stat.size > 10 * 1024 * 1024) {
-                needDownload = false;
-                console.log(`[Argo] ✅ 检测到本地已存在合法的 cloudflared 程序 (${formatBytes(stat.size)})，直接启动，绝不重复下载！`);
-            } else {
-                console.log(`[Argo] ⚠️ 本地文件大小异常 (${stat.size} 字节)，将重新拉取`);
-            }
-        } catch (e) {}
-    }
-
-    if (needDownload) {
-        try {
-            await autoFetchCloudflared(binPath);
-        } catch (err) {
-            console.error(`[Argo] ❌ 自动下载程序失败: ${err.message}`);
-            argoStatus = 'error';
-            return;
-        }
-    }
-
+async function launchArgo(token, stillWanted) {
+    let binPath = path.join(BASE_DIR, 'cloudflared');
+    let needsDownload = true;
     try {
-        fs.chmodSync(binPath, 0o755);
-    } catch (e) {}
-
-    console.log('[Argo] 🚀 正在拉起 Cloudflare Argo 隧道守护进程...');
-    argoStatus = 'starting';
-
-    try {
-        argoProcess = spawn(binPath, ['tunnel', '--no-autoupdate', 'run', '--token', token.trim()], {
-            cwd: BASE_DIR,
-            stdio: ['ignore', 'pipe', 'pipe']
-        });
-
-        argoProcess.stdout.on('data', chunk => {
-            const str = chunk.toString();
-            argoLastLog = str.trim();
-            console.log(`[Argo STDOUT] ${argoLastLog}`);
-        });
-
-        argoProcess.stderr.on('data', chunk => {
-            const str = chunk.toString();
-            argoLastLog = str.trim();
-            if (str.includes('Registered tunnel connection') || (str.includes('Connection') && str.includes('registered'))) {
-                argoStatus = 'connected';
-                argoLastConnectedAt = Date.now();
-                console.log(`[Argo] 🟢 隧道已成功握手接入 Cloudflare 全球边缘网络！443端口直通与三网优选已全面激活！`);
-            }
-            console.log(`[Argo LOG] ${argoLastLog}`);
-        });
-
-        argoProcess.on('exit', (code, signal) => {
-            console.log(`[Argo] 进程退出: code=${code}, signal=${signal}`);
-            argoProcess = null;
-            argoStatus = 'stopped';
-            // 自愈：非主动停止且 token 仍在 → 自动重连
-            if (!argoStopRequested && siteSettings.argoToken && siteSettings.argoToken.trim()) {
-                scheduleArgoReconnect('进程退出');
-            }
-        });
-
-        argoProcess.on('error', err => {
-            console.error(`[Argo] 进程异常: ${err.message}`);
-            argoProcess = null;
-            argoStatus = 'error';
-            if (!argoStopRequested && siteSettings.argoToken && siteSettings.argoToken.trim()) {
-                scheduleArgoReconnect('进程异常');
-            }
-        });
-    } catch (err) {
-        console.error(`[Argo] 进程启动抛出异常: ${err.message}`);
-        argoStatus = 'error';
-    }
+        needsDownload = fs.statSync(binPath).size <= 10 * 1024 * 1024;
+    } catch (_) { /* Look for an installed binary or download it. */ }
+    if (needsDownload) await autoFetchCloudflared(binPath);
+    if (!stillWanted()) return null;
+    fs.accessSync(binPath, fs.constants.X_OK);
+    const env = { ...process.env, TUNNEL_TOKEN: token, TUNNEL_GRACE_PERIOD: '3s' };
+    const child = spawn(binPath, ['tunnel', '--no-autoupdate', '--metrics', '127.0.0.1:0', 'run'], {
+        cwd: BASE_DIR, stdio: ['ignore', 'pipe', 'pipe'], env
+    });
+    return new Promise((resolve, reject) => {
+        child.once('error', reject);
+        child.once('spawn', () => resolve(child));
+    });
 }
 
-function stopArgoTunnel() {
-    if (argoReconnectTimer) { clearTimeout(argoReconnectTimer); argoReconnectTimer = null; }
-    if (argoProcess) {
-        console.log('[Argo] 🛑 停止现有 Argo 隧道守护进程...');
-        try {
-            argoProcess.kill('SIGTERM');
-        } catch (e) {}
-        argoProcess = null;
-        argoStatus = 'stopped';
+const argoSupervisor = createArgoSupervisor({
+    launch: launchArgo,
+    onState(state) {
+        if (state !== argoStatus) console.log('[Argo] 状态:', state);
+        argoStatus = state;
+    },
+    onLog(line) {
+        argoLastLog = line;
+        console.log('[Argo]', line);
     }
+});
+
+function startArgoTunnel(token) {
+    argoSupervisor.configure(normalizeArgoToken(token));
 }
 
 // 优先读取 .env
@@ -358,7 +239,6 @@ const initialEnv = parseEnvFile(ENV_FILE);
 // ==========================================
 let envWatchDebounce = null;
 function reloadEnvHot() {
-    if (!fs.existsSync(ENV_FILE)) return;
     try {
         const newEnv = parseEnvFile(ENV_FILE);
         console.log('[Env] ⚡ 监听到外部 .env 文件变动，正在执行内存双向热重载...');
@@ -373,16 +253,11 @@ function reloadEnvHot() {
         if (newEnv.DEFAULT_TRAFFIC_GB !== undefined) siteSettings.defaultTrafficGB = parseInt(newEnv.DEFAULT_TRAFFIC_GB, 10) || siteSettings.defaultTrafficGB;
         if (newEnv.WETEST_API_URL !== undefined) siteSettings.wetestApiUrl = newEnv.WETEST_API_URL.trim();
 
-        if (newEnv.ARGO_TOKEN !== undefined) {
-            const diskToken = (newEnv.ARGO_TOKEN || '').trim();
-            const memToken = (siteSettings.argoToken || '').trim();
-            // 后台表单留空不会写 .env，所以只有这里才会出现 token 真正变化。
-            // 用 trim 后比较，避免空格/换行差异造成误判；空值代表主动清空 -> 停止隧道。
-            if (diskToken !== memToken) {
-                siteSettings.argoToken = diskToken;
-                startArgoTunnel(siteSettings.argoToken); // 空=停止；非空=启动/重启
-                console.log('[Env] ⚡ Argo Token 已变更（' + (diskToken ? '重启' : '停止') + '）');
-            }
+        const nextToken = effectiveToken(newEnv, process.env, normalizeArgoToken);
+        if (nextToken !== siteSettings.argoToken) {
+            siteSettings.argoToken = nextToken;
+            startArgoTunnel(nextToken);
+            console.log('[Env] Argo Token 已变更:', nextToken ? '更换隧道进程' : '停止隧道');
         }
 
         if (newEnv.ARGO_DOMAIN !== undefined && newEnv.ARGO_DOMAIN !== siteSettings.argoDomain) {
@@ -433,17 +308,15 @@ function reloadEnvHot() {
     }
 }
 
-if (fs.existsSync(ENV_FILE)) {
-    try {
-        fs.watch(ENV_FILE, (eventType) => {
-            if (eventType === 'change' || eventType === 'rename') {
-                if (envWatchDebounce) clearTimeout(envWatchDebounce);
-                envWatchDebounce = setTimeout(() => {
-                    reloadEnvHot();
-                }, 500);
-            }
-        });
-    } catch (e) {}
+// 监听父目录，原子替换或首次写入 .env 后仍能继续收取事件。
+try {
+    fs.watch(BASE_DIR, { persistent: false }, (_event, filename) => {
+        if (filename && filename !== path.basename(ENV_FILE)) return;
+        clearTimeout(envWatchDebounce);
+        envWatchDebounce = setTimeout(reloadEnvHot, 500);
+    });
+} catch (err) {
+    console.error('[Env] 无法监听配置:', err.code || 'unknown');
 }
 
 function getEnv(key, defVal = '') {
@@ -582,7 +455,7 @@ const PORT = detectedPort;
 if (!Number.isInteger(PORT)) {
     console.warn('[Startup] ⚠️ 未自动探测到面板端口，服务挂起等待端口配置；不监听假端口。');
 }
-let ADMIN_PASSWORD = getEnv('ADMIN_PASSWORD', '');
+let ADMIN_PASSWORD = initialEnv.ADMIN_PASSWORD || getEnv('ADMIN_PASSWORD', '');
 let passwordSetupRequired = !ADMIN_PASSWORD; // 未在 .env 预置密码时，首次进入后台强制设置
 if (passwordSetupRequired) {
     console.warn('[Security] ⚠️ 未在 .env 检测到 ADMIN_PASSWORD：将要求管理员首次进入后台时设置密码（设置前禁止进入）。');
@@ -867,7 +740,7 @@ const DEFAULT_SETTINGS = {
     subConfig: getEnv('SUBCONFIG', 'https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/config/ACL4SSR_Online.ini'),
     // SUB_DOMAIN 自动：隧道域名优先，否则留空由 detectedPublicIp 兜底（见 resolvePublicHost）
     subDomain: getEnv('SUB_DOMAIN', '') || getEnv('ARGO_DOMAIN', ''),
-    argoToken: getEnv('ARGO_TOKEN', ''),
+    argoToken: effectiveToken(initialEnv, process.env, normalizeArgoToken),
     argoDomain: getEnv('ARGO_DOMAIN', ''),
 
     // 🚀 ECH 全局安全防探测与客户端混淆指纹
@@ -937,21 +810,19 @@ if (fs.existsSync(SETTINGS_FILE)) {
     try {
         const loaded = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8'));
         siteSettings = Object.assign({}, DEFAULT_SETTINGS, loaded);
-        // settings.json 里可能残留空的 argoToken（历史保存写入），
-        // 若 .env 中存在有效 token，则以 .env 为准，避免空值覆盖导致隧道不启动。
-        if ((!siteSettings.argoToken || !siteSettings.argoToken.trim()) &&
-            DEFAULT_SETTINGS.argoToken && DEFAULT_SETTINGS.argoToken.trim()) {
-            siteSettings.argoToken = DEFAULT_SETTINGS.argoToken;
-        }
     } catch (e) {
         console.error('[Settings] 读取 settings.json 异常，使用默认配置:', e.message);
     }
 }
 
+// 隧道凭据只来自部署环境或 .env，旧 settings.json 中的副本不得覆盖。
+siteSettings.argoToken = DEFAULT_SETTINGS.argoToken;
+
 function saveSettings() {
     try {
         const tmp = SETTINGS_FILE + '.tmp.' + Date.now();
-        fs.writeFileSync(tmp, JSON.stringify(siteSettings, null, 2), 'utf-8');
+        const { argoToken, ...settingsToSave } = siteSettings;
+        fs.writeFileSync(tmp, JSON.stringify(settingsToSave, null, 2), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
         fs.renameSync(tmp, SETTINGS_FILE);
     } catch (e) {
         console.error('[Settings] 保存 settings.json 失败:', e.message);
@@ -2374,7 +2245,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
                 return sendJson({ error: '初始化口令无效' }, 403);
             }
             const pwd = typeof data.password === 'string' ? data.password.trim() : '';
-            const confirm = typeof data.confirm === 'string' ? data.confirm.trim() : '';
+            const confirm = typeof data?.confirm === 'string' ? data.confirm.trim() : '';
             if (pwd.length < 10 || pwd.length > 256 || /[\r\n\0]/.test(pwd)) {
                 return sendJson({ error: '密码须为 10 至 256 位，且不能包含换行或空字符' }, 400);
             }
@@ -2413,7 +2284,7 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
             sendJson({ success: true, message: '核心微服务正在安全自愈重启中，平台守护将即刻载入最新代码...' });
             setTimeout(() => {
                 console.log('[Kernel] 🔄 管理员下发重启指令，进程即将退出由翼龙平台守护自动恢复...');
-                process.exit(1);
+                gracefulShutdown('admin restart');
             }, 300);
             return;
         }
@@ -2519,17 +2390,10 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
                     envUpdates.WETEST_API_URL = siteSettings.wetestApiUrl;
                 }
 
-                // 3. Cloudflare Argo 隧道配置
-                if (typeof data.argoToken === 'string' && data.argoToken.trim()) {
-                    const nextToken = data.argoToken.trim();
-                    const tokenChanged = nextToken !== siteSettings.argoToken;
-                    siteSettings.argoToken = nextToken;
-                    envUpdates.ARGO_TOKEN = siteSettings.argoToken;
-                    // 后台保存即刻拉起/重载隧道，不依赖 fs.watch（容器里可能不触发）
-                    if (tokenChanged) {
-                        startArgoTunnel(siteSettings.argoToken);
-                        console.log('[Env] ⚡ 后台保存隧道 Token，已直接拉起/重载 cloudflared 进程');
-                    }
+                // 表单留空保持原值。显式清除只通过 .env 或明确的控制操作。
+                const nextToken = normalizeArgoToken(data.argoToken);
+                if (nextToken && nextToken !== siteSettings.argoToken) {
+                    envUpdates.ARGO_TOKEN = nextToken;
                 }
                 if (data.argoDomain !== undefined) {
                     siteSettings.argoDomain = data.argoDomain.trim();
@@ -2552,6 +2416,10 @@ async function convertSubWithZeroTrust(user, target, rawNodes, settings, localEn
 
                 if (Object.keys(envUpdates).length > 0) {
                     updateEnvFile(envUpdates);
+                    if (Object.hasOwn(envUpdates, 'ARGO_TOKEN')) {
+                        siteSettings.argoToken = envUpdates.ARGO_TOKEN;
+                        startArgoTunnel(siteSettings.argoToken);
+                    }
                 }
 
                 saveSettings();
@@ -3269,7 +3137,7 @@ function renderHomepage(currentUser) {
             </div>
             <div class="nav-right">
                 ${currentUser ? `
-                    <span style="font-size:13px; color:var(--text-sub);">👤 <strong>${currentUser.username}</strong></span>
+                    <span style="font-size:13px; color:var(--text-sub);">👤 <strong>${escapeHtml(currentUser.username)}</strong></span>
                     <button type="button" class="btn btn-sm" onclick="logoutUser()">退出登录</button>
                 ` : `
                     <button class="btn btn-sm btn-primary" onclick="openModal('loginModal')">登录控制台</button>
@@ -5971,12 +5839,9 @@ function gracefulShutdown(signal) {
     shuttingDown = true;
     console.log(`[System] 收到 ${signal}，正在关闭服务并保存用户数据...`);
     saveUsers();
-    argoStopRequested = true; // 程序关闭属于主动停止，禁止自愈重连
-    if (argoReconnectTimer) { clearTimeout(argoReconnectTimer); argoReconnectTimer = null; }
-    if (argoHealthTimer) { clearInterval(argoHealthTimer); argoHealthTimer = null; }
-    stopArgoTunnel();
-    server.close(() => process.exit(0));
-    setTimeout(() => process.exit(1), 5000).unref();
+    argoSupervisor.shutdown();
+    server.close();
+    setTimeout(() => process.exit(0), 4500).unref();
 }
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));

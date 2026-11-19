@@ -48,7 +48,7 @@
 
 订阅转换由 `src/sub_converter.js`（从 liuyang 移植的现代引擎，零依赖）完成，ECH 字段按各客户端官方规范处理：Base64 用 `ech`、Clash 用 `ech-opts`、sing-box 用 `tls.ech`（无 enabled 字段）；Surge/QX/Loon 不支持 ECH 则降级为普通 TLS。带 ECH 的节点会在生成前用 `getCachedECH` 把 DNS 查询表达式解析成 PEM，确保不被兼容性诊断误过滤。
 
-> **部署必传文件**：`index.js`、`package.json`、`src/security.js`、`src/sub_converter.js`、`src/yaml-lite.js`。缺少 `src/` 下任一模块会导致 `Cannot find module` 启动失败。一键安装脚本（`setup.sh`）已自动下载全部文件。
+> **部署必传文件**：`index.js`、`package.json`、`src/security.js`、`src/sub_converter.js`、`src/yaml-lite.js`、`src/argo-supervisor.js`。缺少 `src/` 下任一模块会导致 `Cannot find module` 启动失败。一键安装脚本（`setup.sh`）已自动下载全部文件。
 
 ---
 
@@ -166,3 +166,11 @@ SUBCONFIG=https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/config/
 bash /opt/vps-tunnel/optimize_bbr.sh
 ```
 该脚本将一键开启 Linux 内核 **BBR 拥塞控制算法**、扩大 TCP 发送接收 Buffer 并调优网络队列，跨国回国长连接测速延迟与丢包抖动可降低 **30%~50%**。
+
+### 隧道启动、停止与自愈
+
+后台 Token 输入框留空会保留已有值。提交不同的 Token 会等旧连接进程退出，再启动新进程。将 `.env` 中的 `ARGO_TOKEN` 显式置空可停止隧道。运行时环境变量用于没有该配置项的部署。
+
+程序通过 cloudflared 的回环 `/ready` 接口检测边缘连通性。退出会按 3 到 60 秒退避重试，连续就绪失败且启动宽限期已过会重启当前连接进程。公开域名和实际回源还需独立验收。
+
+首次部署可省略 `ADMIN_PASSWORD`。在 `.env` 配置至少 20 位的随机 `ADMIN_SETUP_TOKEN`，使用 HTTPS 打开 `/admin` 完成设密。保存成功后初始化口令会从 `.env` 清除。已有部署沿用管理员密码。
