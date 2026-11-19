@@ -484,6 +484,61 @@ function detectPublicIp() {
 }
 detectPublicIp();
 
+// 公网 IP 归属地探测（国家码 + 国旗 + 中文名），用于节点标签区分多台机器。
+// 多个免费源互为备份，结果缓存在内存；失败时回退为空，不影响节点生成。
+let detectedGeo = null; // { code, flag, name }
+const COUNTRY_FLAGS = {
+    CN:'🇨🇳', HK:'🇭🇰', TW:'🇹🇼', MO:'🇲🇴', SG:'🇸🇬', JP:'🇯🇵', KR:'🇰🇷', MN:'🇲🇳',
+    US:'🇺🇸', CA:'🇨🇦', GB:'🇬🇧', DE:'🇩🇪', FR:'🇫🇷', NL:'🇳🇱', RU:'🇷🇺', AU:'🇦🇺',
+    IN:'🇮🇳', VN:'🇻🇳', TH:'🇹🇭', MY:'🇲🇾', ID:'🇮🇩', PH:'🇵🇭', BR:'🇧🇷', TR:'🇹🇷'
+};
+const COUNTRY_NAMES = {
+    CN:'中国', HK:'中国香港', TW:'中国台湾', MO:'中国澳门', SG:'新加坡', JP:'日本', KR:'韩国', MN:'蒙古',
+    US:'美国', CA:'加拿大', GB:'英国', DE:'德国', FR:'法国', NL:'荷兰', RU:'俄罗斯', AU:'澳大利亚',
+    IN:'印度', VN:'越南', TH:'泰国', MY:'马来西亚', ID:'印度尼西亚', PH:'菲律宾', BR:'巴西', TR:'土耳其'
+};
+function detectGeo() {
+    const ip = detectedPublicIp || getEnv('SERVER_IP', '');
+    if (!ip || !net.isIPv4(ip)) { console.log('[Geo] ⏭️ 无公网 IPv4，跳过归属地探测'); return; }
+    const sources = [
+        `https://ip-api.com/json/${ip}?fields=status,countryCode,country`,
+        `https://ipinfo.io/${ip}/json`
+    ];
+    let done = false;
+    sources.forEach(src => {
+        if (done) return;
+        try {
+            const u = new URL(src);
+            const req = (u.protocol === 'https:' ? https : http).get(src, { timeout: 6000 }, res => {
+                let data = '';
+                res.on('data', c => { data += c; });
+                res.on('end', () => {
+                    if (done) return;
+                    try {
+                        const o = JSON.parse(data);
+                        const code = String(o.countryCode || (o.country || '')).toUpperCase().slice(0, 2);
+                        if (code && /^[A-Z]{2}$/.test(code)) {
+                            detectedGeo = { code, flag: COUNTRY_FLAGS[code] || '🌐', name: COUNTRY_NAMES[code] || o.country || code };
+                            done = true;
+                            console.log(`[Geo] 📍 机器归属地: ${detectedGeo.flag} ${detectedGeo.name} (${code})`);
+                        }
+                    } catch (_) {}
+                });
+            });
+            req.on('error', () => {});
+            req.on('timeout', () => req.destroy());
+        } catch (_) {}
+    });
+}
+detectGeo();
+
+// 机器标识：地区 + 面板端口，用于节点标签区分同一订阅下的多台机器
+function machineTag() {
+    const geo = detectedGeo;
+    const region = geo ? `${geo.flag}${geo.name}` : '🌐未知地区';
+    return `${region}·${PORT}`;
+}
+
 // 端口自动探测：适配翼龙面板（Altare/Lunes）纯 Node.js 环境
 // 依次从显式配置 → process.env → /proc/1/environ → 命令行 → 模糊匹配中探测面板分配端口
 function resolvePanelPort() {
@@ -1395,25 +1450,25 @@ function generateUserNodes(user) {
 
     // 1. Altare 原生端口直连节点 (直连宿主机公网 IP + 面板端口，必须走 IP 不能用域名)
     const directIp = resolveDirectIp() || host;
-    const directTag = `【Altare·原生直连·${PORT}】-VLESS-WS`;
+    const directTag = `【${machineTag()}·原生直连·Altare】-VLESS-WS`;
     list.push(`vless://${user.uuid}@${directIp}:${PORT}?encryption=none&security=none&type=ws&host=${encodeURIComponent(directIp)}&path=%2F#${encodeURIComponent(directTag)}`);
 
     // 1.1 若配置了 Cloudflare Argo 隧道域名，额外下发专属 443 端口隧道直连节点
     if (siteSettings.argoDomain) {
-        const argoTag = `【CF·Argo隧道直连·443】-VLESS-WS`;
+        const argoTag = `【${machineTag()}·CF·Argo隧道·443】-VLESS-WS`;
         list.push(`vless://${user.uuid}@${siteSettings.argoDomain}:443?encryption=none&security=tls&sni=${encodeURIComponent(siteSettings.argoDomain)}&type=ws&host=${encodeURIComponent(siteSettings.argoDomain)}&path=%2F${tlsExtra}#${encodeURIComponent(argoTag)}`);
     }
 
     // 1.2 若配置了端口回溯域名，下发专属 443 端口回溯直连节点
     if (hasBacktrackDomain) {
-        const btTag = `【CF·端口回溯主节点·443】-VLESS-WS`;
+        const btTag = `【${machineTag()}·CF·端口回溯·443】-VLESS-WS`;
         list.push(`vless://${user.uuid}@${siteSettings.subDomain}:443?encryption=none&security=tls&sni=${encodeURIComponent(siteSettings.subDomain)}&type=ws&host=${encodeURIComponent(siteSettings.subDomain)}&path=%2F${tlsExtra}#${encodeURIComponent(btTag)}`);
     }
 
     // 2. CF 官方 Anycast
     if (siteSettings.enableOptOfficial !== false) {
         const anyIp = siteSettings.optOfficialIp || (siteSettings.cfNodes.official[0] && siteSettings.cfNodes.official[0].ip) || domain;
-        const tag = `【CF·Anycast·443】-VLESS-WS`;
+        const tag = `【${machineTag()}·CF·Anycast·443】-VLESS-WS`;
         list.push(`vless://${user.uuid}@${anyIp}:443?encryption=none&security=tls&sni=${encodeURIComponent(effectiveSni)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F${tlsExtra}#${encodeURIComponent(tag)}`);
     }
 
@@ -1422,7 +1477,7 @@ function generateUserNodes(user) {
         const ctList = siteSettings.cfNodes.ct || [];
         ctList.forEach((n, idx) => {
             const ip = (idx === 0 && siteSettings.optCTIp) ? siteSettings.optCTIp : n.ip;
-            const tag = `【CF·电信优选·${idx + 1}·${n.colo || 'FRA'}·${n.rtt || 160}ms】-VLESS-WS`;
+            const tag = `【${machineTag()}·CF·电信优选·${idx + 1}·${n.colo || 'FRA'}】-VLESS-WS`;
             list.push(`vless://${user.uuid}@${ip}:443?encryption=none&security=tls&sni=${encodeURIComponent(effectiveSni)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F${tlsExtra}#${encodeURIComponent(tag)}`);
         });
     }
@@ -1432,7 +1487,7 @@ function generateUserNodes(user) {
         const cuList = siteSettings.cfNodes.cu || [];
         cuList.forEach((n, idx) => {
             const ip = (idx === 0 && siteSettings.optCUIp) ? siteSettings.optCUIp : n.ip;
-            const tag = `【CF·联通优选·${idx + 1}·${n.colo || 'SJC'}·${n.rtt || 130}ms】-VLESS-WS`;
+            const tag = `【${machineTag()}·CF·联通优选·${idx + 1}·${n.colo || 'SJC'}】-VLESS-WS`;
             list.push(`vless://${user.uuid}@${ip}:443?encryption=none&security=tls&sni=${encodeURIComponent(effectiveSni)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F${tlsExtra}#${encodeURIComponent(tag)}`);
         });
     }
@@ -1442,7 +1497,7 @@ function generateUserNodes(user) {
         const cmList = siteSettings.cfNodes.cm || [];
         cmList.forEach((n, idx) => {
             const ip = (idx === 0 && siteSettings.optCMIp) ? siteSettings.optCMIp : n.ip;
-            const tag = `【CF·移动优选·${idx + 1}·${n.colo || 'HKG'}·${n.rtt || 48}ms】-VLESS-WS`;
+            const tag = `【${machineTag()}·CF·移动优选·${idx + 1}·${n.colo || 'HKG'}】-VLESS-WS`;
             list.push(`vless://${user.uuid}@${ip}:443?encryption=none&security=tls&sni=${encodeURIComponent(effectiveSni)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F${tlsExtra}#${encodeURIComponent(tag)}`);
         });
     }
@@ -1453,7 +1508,7 @@ function generateUserNodes(user) {
         lines.forEach(line => {
             const item = parseCustomDomainLine(line);
             if (item) {
-                const tag = `【自定义优选·${item.remark}】-VLESS-WS`;
+                const tag = `【${machineTag()}·自定义·${item.remark}】-VLESS-WS`;
                 list.push(`vless://${user.uuid}@${item.host}:${item.port}?encryption=none&security=tls&sni=${encodeURIComponent(domain)}&type=ws&host=${encodeURIComponent(domain)}&path=%2F${tlsExtra}#${encodeURIComponent(tag)}`);
             }
         });
@@ -1571,7 +1626,11 @@ function isSameOriginRequest(req) {
         const trusted = new Set();
         const host = req.headers.host;
         if (host) trusted.add(host.toLowerCase().split(':')[0]);
-        for (const c of [siteSettings.subDomain, siteSettings.argoDomain]) {
+        // 对外域名同时取 settings.json 与 .env（DEFAULT_SETTINGS）：
+        // settings.json 可能残留空 subDomain 覆盖 .env，导致反代回源 Host 与
+        // Origin 不一致而误杀登录。补入 .env 中的值，避免重启后再次 403。
+        for (const c of [siteSettings.subDomain, siteSettings.argoDomain,
+                         DEFAULT_SETTINGS.subDomain, DEFAULT_SETTINGS.argoDomain]) {
             if (!c) continue;
             try { trusted.add(new URL(c.includes('://') ? c : 'https://' + c).hostname.toLowerCase()); }
             catch (_) { trusted.add(String(c).toLowerCase().split(':')[0]); }
