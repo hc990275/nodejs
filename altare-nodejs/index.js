@@ -101,9 +101,19 @@ function updateEnvFile(updates) {
 // 2. 换服务器/新环境无程序 -> 自动探测 CPU/OS 架构，静默下载高速二进制并赋权运行；
 // 3. 进程异常退出 -> 自动拉起自愈，无缝保障隧道高可用。
 let argoProcess = null;
-let argoStatus = 'stopped'; // 'connected', 'running', 'downloading', 'stopped', 'error'
+let argoStatus = 'stopped'; // 'connected', 'running', 'downloading', 'stopped', 'error', 'reconnecting'
 let argoLastLog = '';
 let isArgoDownloading = false;
+// 隧道自愈：区分「主动停止」与「异常掉线」。只有清空 token 或程序关闭才算主动停止，
+// 其它任何退出（崩溃、SIGTERM、网络抖动）只要 token 仍在，就带退避自动重连。
+let argoStopRequested = false;      // 是否为主动停止（token 清空 / 程序退出）
+let argoReconnectTimer = null;      // 重连定时器
+let argoReconnectDelay = 3000;      // 当前退避间隔（毫秒）
+const ARGO_RECONNECT_MAX_DELAY = 60000; // 退避上限 60 秒
+let argoHealthTimer = null;         // 健康检查定时器
+const ARGO_HEALTH_CHECK_MS = 60000; // 每 60 秒检测一次隧道是否仍连通
+let argoLastConnectedAt = 0;        // 上次握手成功的时间戳
+const ARGO_STALE_CONNECT_MS = 180000; // 超过 3 分钟未握手视为假死
 
 function downloadFileWithRedirect(targetUrl, destPath, maxRedirects = 5) {
     return new Promise((resolve, reject) => {
@@ -194,11 +204,58 @@ async function autoFetchCloudflared(destPath) {
     }
 }
 
-async function startArgoTunnel(token) {
+// 重连调度：仅在 token 仍配置且非主动停止时，带指数退避自动拉起隧道
+function scheduleArgoReconnect(reason) {
+    if (argoStopRequested) return;
+    if (!siteSettings.argoToken || !siteSettings.argoToken.trim()) return;
+    if (argoReconnectTimer) return; // 已有重连在排队
+    argoStatus = 'reconnecting';
+    console.log(`[Argo] 🔄 ${reason || '隧道掉线'}，${argoReconnectDelay / 1000}s 后自动重连...`);
+    argoReconnectTimer = setTimeout(() => {
+        argoReconnectTimer = null;
+        if (argoStopRequested) return;
+        if (!siteSettings.argoToken || !siteSettings.argoToken.trim()) return;
+        // 递增退避；传 true 表示自愈重连，避免在 startArgoTunnel 里重置退避
+        argoReconnectDelay = Math.min(argoReconnectDelay * 2, ARGO_RECONNECT_MAX_DELAY);
+        startArgoTunnel(siteSettings.argoToken, true);
+    }, argoReconnectDelay);
+}
+
+// 隧道健康检查：检测进程存活 + 是否真正连上，异常则自动重连/重启
+function startArgoHealthCheck() {
+    if (argoHealthTimer) return;
+    argoHealthTimer = setInterval(() => {
+        if (argoStopRequested) return;
+        if (!siteSettings.argoToken || !siteSettings.argoToken.trim()) return;
+        // 情形1：进程已不在 → 重连
+        if (!argoProcess) {
+            console.log('[Argo] 🩺 健康检查发现隧道进程离线，准备自动重连...');
+            scheduleArgoReconnect('健康检查-进程离线');
+            return;
+        }
+        // 情形2：进程在但长时间未握手成功（假死）→ 主动重启
+        if (argoStatus !== 'connected' && argoLastConnectedAt &&
+            Date.now() - argoLastConnectedAt > ARGO_STALE_CONNECT_MS) {
+            console.log('[Argo] 🩺 健康检查发现隧道长时间未连通（假死），准备重启...');
+            if (argoReconnectTimer) { clearTimeout(argoReconnectTimer); argoReconnectTimer = null; }
+            scheduleArgoReconnect('健康检查-假死');
+        }
+    }, ARGO_HEALTH_CHECK_MS);
+    argoHealthTimer.unref();
+}
+
+async function startArgoTunnel(token, isAutoReconnect = false) {
     if (!token || token.trim() === '') {
+        // 空 token = 主动停止，不再自愈
+        argoStopRequested = true;
+        if (argoReconnectTimer) { clearTimeout(argoReconnectTimer); argoReconnectTimer = null; }
         stopArgoTunnel();
         return;
     }
+    // 有 token = 期望隧道运行，关闭「主动停止」标志并启动健康检查
+    argoStopRequested = false;
+    if (!isAutoReconnect) argoReconnectDelay = 3000; // 仅首次启动/手动重启重置退避
+    startArgoHealthCheck();
     stopArgoTunnel();
 
     const binPath = path.join(BASE_DIR, 'cloudflared');
@@ -251,6 +308,7 @@ async function startArgoTunnel(token) {
             argoLastLog = str.trim();
             if (str.includes('Registered tunnel connection') || (str.includes('Connection') && str.includes('registered'))) {
                 argoStatus = 'connected';
+                argoLastConnectedAt = Date.now();
                 console.log(`[Argo] 🟢 隧道已成功握手接入 Cloudflare 全球边缘网络！443端口直通与三网优选已全面激活！`);
             }
             console.log(`[Argo LOG] ${argoLastLog}`);
@@ -258,14 +316,21 @@ async function startArgoTunnel(token) {
 
         argoProcess.on('exit', (code, signal) => {
             console.log(`[Argo] 进程退出: code=${code}, signal=${signal}`);
-            argoStatus = 'stopped';
             argoProcess = null;
+            argoStatus = 'stopped';
+            // 自愈：非主动停止且 token 仍在 → 自动重连
+            if (!argoStopRequested && siteSettings.argoToken && siteSettings.argoToken.trim()) {
+                scheduleArgoReconnect('进程退出');
+            }
         });
 
         argoProcess.on('error', err => {
             console.error(`[Argo] 进程异常: ${err.message}`);
-            argoStatus = 'error';
             argoProcess = null;
+            argoStatus = 'error';
+            if (!argoStopRequested && siteSettings.argoToken && siteSettings.argoToken.trim()) {
+                scheduleArgoReconnect('进程异常');
+            }
         });
     } catch (err) {
         console.error(`[Argo] 进程启动抛出异常: ${err.message}`);
@@ -274,6 +339,7 @@ async function startArgoTunnel(token) {
 }
 
 function stopArgoTunnel() {
+    if (argoReconnectTimer) { clearTimeout(argoReconnectTimer); argoReconnectTimer = null; }
     if (argoProcess) {
         console.log('[Argo] 🛑 停止现有 Argo 隧道守护进程...');
         try {
@@ -307,10 +373,16 @@ function reloadEnvHot() {
         if (newEnv.DEFAULT_TRAFFIC_GB !== undefined) siteSettings.defaultTrafficGB = parseInt(newEnv.DEFAULT_TRAFFIC_GB, 10) || siteSettings.defaultTrafficGB;
         if (newEnv.WETEST_API_URL !== undefined) siteSettings.wetestApiUrl = newEnv.WETEST_API_URL.trim();
 
-        if (newEnv.ARGO_TOKEN !== undefined && newEnv.ARGO_TOKEN !== siteSettings.argoToken) {
-            siteSettings.argoToken = newEnv.ARGO_TOKEN.trim();
-            startArgoTunnel(siteSettings.argoToken);
-            console.log('[Env] ⚡ Argo Token 已热更新，隧道进程已自动重载！');
+        if (newEnv.ARGO_TOKEN !== undefined) {
+            const diskToken = (newEnv.ARGO_TOKEN || '').trim();
+            const memToken = (siteSettings.argoToken || '').trim();
+            // 后台表单留空不会写 .env，所以只有这里才会出现 token 真正变化。
+            // 用 trim 后比较，避免空格/换行差异造成误判；空值代表主动清空 -> 停止隧道。
+            if (diskToken !== memToken) {
+                siteSettings.argoToken = diskToken;
+                startArgoTunnel(siteSettings.argoToken); // 空=停止；非空=启动/重启
+                console.log('[Env] ⚡ Argo Token 已变更（' + (diskToken ? '重启' : '停止') + '）');
+            }
         }
 
         if (newEnv.ARGO_DOMAIN !== undefined && newEnv.ARGO_DOMAIN !== siteSettings.argoDomain) {
@@ -5799,6 +5871,9 @@ function gracefulShutdown(signal) {
     shuttingDown = true;
     console.log(`[System] 收到 ${signal}，正在关闭服务并保存用户数据...`);
     saveUsers();
+    argoStopRequested = true; // 程序关闭属于主动停止，禁止自愈重连
+    if (argoReconnectTimer) { clearTimeout(argoReconnectTimer); argoReconnectTimer = null; }
+    if (argoHealthTimer) { clearInterval(argoHealthTimer); argoHealthTimer = null; }
     stopArgoTunnel();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(1), 5000).unref();
