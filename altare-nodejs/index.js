@@ -2790,7 +2790,7 @@ function renderHomepage(currentUser) {
         .btn-success { background: var(--success); color: #ffffff; border-color: var(--success); }
         .btn-success:hover { background: #15803d; }
         .btn-sm { min-height: 44px; padding: 6px 12px; font-size: 12px; }
-        .toast-stack { position: fixed; right: 18px; bottom: calc(18px + env(safe-area-inset-bottom)); z-index: 2000; display: grid; gap: 8px; width: min(360px, calc(100vw - 36px)); }
+        .toast-stack { position: fixed; right: 18px; bottom: 18px; bottom: calc(18px + env(safe-area-inset-bottom)); z-index: 3000; display: grid; gap: 8px; width: min(360px, calc(100vw - 36px)); }
         .toast { background: #0f172a; color: #f8fafc; border: 1px solid rgba(255,255,255,.12); border-radius: 8px; padding: 12px 14px; box-shadow: 0 12px 30px rgba(15,23,42,.18); font-size: 13px; }
         .toast.error { background: #7f1d1d; }
         .toast.success { background: #065f46; }
@@ -4071,7 +4071,7 @@ function renderAdminDashboardPage() {
             width: 100%;
             margin: 0 auto;
         }
-        .toast-stack { position: fixed; right: 18px; bottom: calc(18px + env(safe-area-inset-bottom)); z-index: 2000; display: grid; gap: 8px; width: min(360px, calc(100vw - 36px)); }
+        .toast-stack { position: fixed; right: 18px; bottom: 18px; bottom: calc(18px + env(safe-area-inset-bottom)); z-index: 3000; display: grid; gap: 8px; width: min(360px, calc(100vw - 36px)); }
         .toast { background: #18181b; color: #f4f4f5; border: 1px solid rgba(255,255,255,.12); border-radius: 8px; padding: 12px 14px; box-shadow: 0 12px 30px rgba(15,23,42,.18); }
         .toast.error { background: #7f1d1d; }
         .toast.success { background: #065f46; }
@@ -5095,9 +5095,11 @@ function renderAdminDashboardPage() {
             location.href = '/admin';
         }
         function showToast(message, kind = '') {
-            const stack = document.getElementById('toastStack');
+            let stack = document.getElementById('toastStack');
+            if (!stack) { stack = document.createElement('div'); stack.id = 'toastStack'; stack.className = 'toast-stack'; document.body.appendChild(stack); }
             const item = document.createElement('div'); item.className = 'toast ' + kind; item.textContent = message;
-            stack.appendChild(item); setTimeout(() => item.remove(), 4200);
+            stack.appendChild(item); item.scrollIntoView({ block: 'nearest' });
+            setTimeout(() => item.remove(), 6000);
         }
         function confirmAction(message) {
             return new Promise(resolve => {
@@ -5695,12 +5697,18 @@ function renderAdminDashboardPage() {
                 optCUIp: document.getElementById('cfg_optCUIp').value.trim(),
                 optCMIp: document.getElementById('cfg_optCMIp').value.trim()
             };
-            const res = await fetch('/admin/api/settings', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-            if (res.ok) showToast('三网优选策略已保存', 'success');
+            try {
+                const res = await fetch('/admin/api/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const d = await res.json().catch(() => ({}));
+                if (res.ok) showToast('三网优选策略已保存', 'success');
+                else showToast('保存失败：' + (d.error || '请求未成功'), 'error');
+            } catch (e) {
+                showToast('保存失败：网络异常，请检查连接', 'error');
+            }
         }
 
         async function saveSystemSettings() {
@@ -5721,15 +5729,23 @@ function renderAdminDashboardPage() {
                 argoDomain: document.getElementById('cfg_argoDomain').value.trim(),
                 newAdminPassword: document.getElementById('cfg_newAdminPassword').value.trim()
             };
-            const res = await fetch('/admin/api/settings', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-            if (res.ok) {
-                showToast('系统配置已保存；如修改管理员密码，请重新登录', 'success');
-                document.getElementById('cfg_newAdminPassword').value = '';
-                fetchStatus();
+            try {
+                const res = await fetch('/admin/api/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const d = await res.json().catch(() => ({}));
+                if (res.ok) {
+                    showToast('系统配置已保存；如修改管理员密码，请重新登录', 'success');
+                    const pwdField = document.getElementById('cfg_newAdminPassword');
+                    if (pwdField) pwdField.value = '';
+                    fetchStatus();
+                } else {
+                    showToast('保存失败：' + (d.error || '请求未成功'), 'error');
+                }
+            } catch (e) {
+                showToast('保存失败：网络异常，请检查连接', 'error');
             }
         }
 
