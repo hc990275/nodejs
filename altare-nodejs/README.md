@@ -184,9 +184,9 @@ API=https://console.altare.gg/api
 altare() {
   local endpoint=$1
   shift
-  printf 'header = "Authorization: Bearer %s"\n' "$ALTARE_TOKEN" |
-    curl --config - --fail-with-body --silent --show-error \
-      --connect-timeout 10 --max-time 90 "$API$endpoint" "$@"
+  curl --header @<(printf 'Authorization: Bearer %s\n' "$ALTARE_TOKEN") \
+    --fail-with-body --silent --show-error \
+    --connect-timeout 10 --max-time 90 "$API$endpoint" "$@"
 }
 
 altare /api-tokens/self
