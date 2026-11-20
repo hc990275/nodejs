@@ -1,4 +1,4 @@
-> **项目定位**：本项目由 `kata-nodejs`（Kata-Tunnel）复刻而来，面向 **Altare 平台**（https://altare.gg）的 Node.js 容器环境。已将品牌字样、订阅名称、管理界面、容器规格等从 Kata/卡塔 统一改为 Altare。功能与上游一致：纯原生零依赖的 VLESS-WebSocket 隧道、三网优选节点池、订阅转换（6 格式 + ECH）和 Web 管理后台。
+> **项目定位**：本项目由 `kata-nodejs`（Kata-Tunnel）复刻而来，面向 **Altare 平台**（https://altare.gg）的 Node.js 容器环境。提供零依赖 VLESS-WebSocket 隧道、三网优选节点池、订阅转换（6 格式 + ECH）和 Web 管理后台。首页及后台按实例所在国家／地区显示标题，资源配额以平台实际返回为准。
 
 # Altare-Tunnel（altare-nodejs）使用与部署说明
 
@@ -74,6 +74,7 @@ npm start         # 启动
 | --- | --- |
 | `SERVER_PORT` / `PORT` | 业务端口。面板注入时留空，程序自动探测；手动部署才填 |
 | `ADMIN_PASSWORD` | 管理员密码。留空则走首次设置向导（见第 5 节） |
+| `ADMIN_SETUP_TOKEN` | 首次设置的随机初始化口令，至少 20 位；设置密码成功后清空 |
 | `SUB_DOMAIN` | 首选公网域名或 IP。留空时自动使用隧道域名 `ARGO_DOMAIN`，无隧道则自动探测公网 IPv4 |
 | `SERVER_IP` | 公网 IPv4 回退值。留空时自动探测（无需手动填） |
 | `DEFAULT_ALLOW_REGISTER` | 首次启动是否开放注册，`true` / `false` |
@@ -169,7 +170,7 @@ npm test
 
 ## 12. Altare 平台 API（已核对的用法）
 
-文档入口：<https://docs.altare.gg/altare-api>。以下路径属于平台管理 API，和项目自己的 `/admin/api/` 是两套接口。平台 Token 用来管理容器文件、启动配置及电源；项目管理密码用于本项目的用户和订阅设置，不能混用。
+文档入口：<https://docs.altare.gg/altare-api>；核心 OpenAPI：<https://console.altare.gg/api/openapi.json>。官方文档中的 Beta 端点可能尚未进入 OpenAPI。以下路径属于平台管理 API，和项目自己的 `/admin/api/` 是两套接口。平台 Token 用来管理容器文件、启动配置及电源；项目管理密码用于本项目的用户和订阅设置。
 
 ### 12.1 认证、团队和实例 ID
 
@@ -177,7 +178,6 @@ npm test
 
 ```bash
 read -rsp 'Altare Token: ' ALTARE_TOKEN; printf '\n'
-export ALTARE_TOKEN
 API=https://console.altare.gg/api
 
 altare() {
@@ -204,7 +204,7 @@ altare "$BASE/details" | jq '{name,ip,location,node,sftp,sandbox,git,imageApp}'
 altare "$BASE/startup" | jq '{startup,dockerImage,dockerImages,variables}'
 ```
 
-详情必须使用 **`/details`**。省略末尾路径、直接请求 `/servers/{id}` 不是此处的公开详情端点。`/details` 返回机房、节点、分配端口及 SFTP 地址；`/startup` 的 `P_SERVER_LOCATION`（如 `de-fra`）也能确认地区。不要只根据 `sg`、`flkf` 等自定义实例名称猜地区。
+详情必须使用 **`/details`**。省略末尾路径、直接请求 `/servers/{id}` 不是此处的公开详情端点。`/details` 返回机房、节点、分配端口及 SFTP 地址；`/startup` 的 `P_SERVER_LOCATION`（如 `de-fra`）也能确认地区。不要只根据 `sg`、`flkf` 等自定义实例名称猜地区。`/startup` 可能包含敏感环境变量，只保存到私有临时目录，不打印完整响应或提交 Git。
 
 ### 12.2 最小权限
 
@@ -278,7 +278,7 @@ altare "$BASE/power" -X POST \
   -H 'Content-Type: application/json' -d '{"signal":"restart"}'
 ```
 
-正确端点是 **`POST .../power` + `{"signal":"restart"}`**，不是 `/power/restart`。`signal` 支持 `start`、`stop`、`restart`、`kill`。`kill` 是强制终止，不作为普通重启默认动作。
+正确端点是 **`POST .../power` + `{"signal":"restart"}`**，不是 `/power/restart`。`signal` 支持 `start`、`stop`、`restart`、`kill`。已停止的新容器使用 `{"signal":"start"}`；运行中的容器更新代码后才使用 `restart`。`kill` 是强制终止，不作为普通重启默认动作。示例中的 V8 堆上限须按目标实例实际内存配额调整。
 
 响应 `200 {ok:true}` 只表示信号接受，必须继续验收。`202` 且 `queued:true` 表示正在排队，不等于已启动。写入超时后不能盲目重复重启，先读启动状态、日志和文件确认是否已应用。
 
@@ -312,7 +312,7 @@ altare "$BASE/network/allocations" | jq
 
 自建 Tunnel 管理面板是独立应用，并非 Altare 官方 API。其入口、账号、Zone、实例与隧道对应关系及部署记录仅保存在部署者本地私有档案。公开文档只使用示例参数；面板接口以对应项目的公开文档为准。
 
-### 12.7 超时、错误与重试
+### 12.8 超时、错误与重试
 
 节点接口偶发 502 或慢响应时，查询可有限退避重试；不要把短超时当作实例不存在。
 
@@ -324,9 +324,14 @@ altare "$BASE/network/allocations" | jq
 | `403` 无 code | 检查 scope 和实例范围 |
 | `409` | 状态冲突、实例尚在准备或配额已满 |
 | `422` | JSON 字段或模板变量校验失败 |
-| `429` | 等待 `Retry-After`，降低频次 |
+| `429` | 等待 `Retry-After`，降低频次；重试次数有上限 |
 | `502/5xx`、连接超时 | 查询可重试；写操作先回读，避免重复变更 |
 
-官方上限为每 Token 每分钟 600 请求，部分文件操作有更低上限。列表通常使用 `{items:[...]}` 一次返回；持久日志使用游标分页。不要把 API 的 JSON、错误 HTML 和 Cloudflare 边缘拦截页混在一起解析。以前 Python 默认 User-Agent 曾得到边缘 `1010`，curl 则正常；排错时同时检查 HTTP 状态、响应类型和正文。
+官方上限为每 Token 每分钟 600 请求，响应中的 `X-RateLimit-Limit`、`X-RateLimit-Remaining`、`X-RateLimit-Reset` 描述当前窗口。部分文件操作有更低上限。列表通常使用 `{items:[...]}` 一次返回；持久日志使用游标分页。
+
+遇到 HTML 429 时按 Retry-After 退避，有限重试并区分网关响应和 API JSON；不能据此认定 Token 失效。写请求结果不明时先回读对账，避免重复执行。
+
+处理响应时先检查 HTTP 状态和 Content-Type，再解析 JSON。写请求超时后的步骤是回读对账；若文件或电源状态无法核实，保持“未确认”，不要报部署成功。
 
 参考：官方 API 的 [Apps](https://docs.altare.gg/altare-api/apps)、[Files](https://docs.altare.gg/altare-api/files)、[Tokens](https://docs.altare.gg/altare-api/tokens)、[Domains](https://docs.altare.gg/altare-api/domains)、[Logs](https://docs.altare.gg/altare-api/logs)、[Errors](https://docs.altare.gg/altare-api/errors)、[Deploys](https://docs.altare.gg/altare-api/deploys)。
+
