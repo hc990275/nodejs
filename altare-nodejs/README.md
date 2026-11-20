@@ -2,7 +2,7 @@
 
 # Altare-Tunnel（altare-nodejs）使用与部署说明
 
-原生 Node.js 实现的 VLESS over WebSocket 隧道服务，带用户管理、订阅导出、三网优选节点池和可选 Cloudflare Tunnel。无第三方运行依赖，适合小内存容器（Altare / Lunes Host / 翼龙面板）。
+原生 Node.js 实现的 VLESS over WebSocket 隧道服务，带用户管理、订阅导出、三网优选节点池和可选 Cloudflare Tunnel。无第三方运行依赖，面向 Altare 的 Node.js 容器运行。内存、CPU、磁盘配额由每个实例的套餐分配，部署时查询目标实例的实际额度，不按固定容器规格假设。
 
 仓库位置：`https://github.com/hc990275/nodejs` 的 `altare-nodejs/` 目录。
 
@@ -55,7 +55,7 @@ npm start         # 启动
 2. 用面板 Settings 里给出的 SFTP 主机、端口、用户名、密码连接。SFTP 根目录通常对应 `/home/container`。
 3. 上传这些文件到容器根目录：`index.js`、`package.json`、整个 `src/` 目录。首次部署把 `.env.example` 复制为 `.env` 并填写配置。不要上传整个父目录，也不要上传 `test/`。
 4. 端口：面板注入 `SERVER_PORT` 时，`.env` 里的 `SERVER_PORT`、`PORT` 留空即可；程序会自动探测面板端口（进程环境变量 → `/proc` → 命令行 → 模糊匹配）。手动部署才需要显式填写。不再有固定默认端口，探测不到端口时服务挂起等待。
-5. 启动命令填写：`node --max-old-space-size=96 /home/container/index.js`（或在项目根目录用 `npm start`）。
+5. 启动命令填写：`node --max-old-space-size=<按目标实例内存配额设置> /home/container/index.js`（或在项目根目录用 `npm start`）。
 6. 点击启动，查看控制台是否出现核心启动标记，然后打开首页与 `/admin`。观察约两分钟确认稳定，不要只看面板 Running。
 7. 公网建议通过自己的 HTTPS 反代或 Cloudflare Tunnel 访问。
 
@@ -167,7 +167,6 @@ npm test
 
 程序通过 cloudflared 的回环 `/ready` 接口检测边缘连通性。退出会按 3 到 60 秒退避重试，连续就绪失败且启动宽限期已过会重启当前连接进程。公开域名和实际回源还需独立验收。
 
-
 ## 12. Altare 平台 API（已核对的用法）
 
 文档入口：<https://docs.altare.gg/altare-api>。以下路径属于平台管理 API，和项目自己的 `/admin/api/` 是两套接口。平台 Token 用来管理容器文件、启动配置及电源；项目管理密码用于本项目的用户和订阅设置，不能混用。
@@ -184,9 +183,9 @@ API=https://console.altare.gg/api
 altare() {
   local endpoint=$1
   shift
-  curl --header @<(printf 'Authorization: Bearer %s\n' "$ALTARE_TOKEN") \
+  curl --config <(printf 'url = "%s%s"\nheader = "Authorization: Bearer %s"\n' "$API" "$endpoint" "$ALTARE_TOKEN") \
     --fail-with-body --silent --show-error \
-    --connect-timeout 10 --max-time 90 "$API$endpoint" "$@"
+    --connect-timeout 10 --max-time 90 "$@"
 }
 
 altare /api-tokens/self
@@ -308,6 +307,10 @@ altare "$BASE/network/allocations" | jq
 - Altare 平台域名：`POST .../network/domains`，提供 `label`、`kind:"https"`、`app:"web"`、`allocationId`，指向平台分配端口。自有域名还需 DNS 验证。
 - Cloudflare Tunnel：在 Cloudflare 账号下创建/配置隧道，域名 CNAME 到 `<tunnel-id>.cfargotunnel.com`，`cloudflared` 在容器里运行，并回源 `http://localhost:8001`。最终加兜底 `http_status:404`。修改前检查已有 DNS，不能覆盖其他机器使用的名字。
 - 当前这些模板容器并非 GitHub App，`/git/deploy` 不适用。只有已从 GitHub 部署的 App 才能 `POST .../git/deploy`（`ref`/`sha`），并用 `GET .../git/deployments/{id}` 跟踪结果。
+
+### 12.7 自建隧道管理面板
+
+自建 Tunnel 管理面板是独立应用，并非 Altare 官方 API。其入口、账号、Zone、实例与隧道对应关系及部署记录仅保存在部署者本地私有档案。公开文档只使用示例参数；面板接口以对应项目的公开文档为准。
 
 ### 12.7 超时、错误与重试
 

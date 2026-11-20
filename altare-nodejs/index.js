@@ -2,7 +2,7 @@
  * =========================================================================
  * 🚀 Altare-Tunnel: 纯原生 Node.js VLESS-WebSocket 隧道与微测网三网优选管理中枢
  * =========================================================================
- * 适配硬件规格：308 MB RAM | 716 MB NVMe | 25% CPU | 翼龙面板单端口环境
+ * 适配硬件资源由各平台实例实际配额决定；以 Node/V8 进程配置及平台返回额度为准。
  * 核心设计指标：
  *   1. 纯原生 0 外部重型依赖，常态内存仅 20MB~30MB，彻底杜绝 OOM 崩溃；
  *   2. 原生 VLESS-over-WebSocket 协议握手与 RFC 6455 帧解析，0 二进制开销；
@@ -3192,7 +3192,7 @@ function renderHomepage(currentUser) {
                 <div>
                     <div class="kpi-title">常驻内存 RSS</div>
                     <div class="kpi-metric" style="color:#16a34a;">${formatBytes(process.memoryUsage().rss)}</div>
-                    <div class="kpi-hint">规格 512MB (占用约 8%)</div>
+                    <div class="kpi-hint">当前 Altare 容器</div>
                 </div>
                 <div class="kpi-icon-box" style="background:#f0fdf4; color:#16a34a;">🧠</div>
             </div>
@@ -3314,7 +3314,7 @@ function renderHomepage(currentUser) {
         </div>
 
         <footer class="page-footer">
-            <p>Altare-Tunnel 纯原生 Node.js VLESS 极速中枢 · 512MB RAM 轻量规格专享</p>
+            <p>Altare-Tunnel · VLESS WebSocket 节点服务</p>
         </footer>
     </div>
 
@@ -4676,8 +4676,8 @@ function renderAdminDashboardPage() {
             </li>
         </ul>
         <div class="sidebar-footer">
-            <div style="color:#e2e8f0; font-weight:600;">Altare 512MB 轻量中枢</div>
-            <div>0依赖 · 单端口 · 0ms即刻生效</div>
+            <div style="color:#e2e8f0; font-weight:600;">Altare 容器节点服务</div>
+            <div>地区自动识别 · 单端口部署</div>
         </div>
     </aside>
 
@@ -4722,7 +4722,7 @@ function renderAdminDashboardPage() {
                     <div>
                         <div class="kpi-label">Node.js RSS 内存</div>
                         <div class="kpi-val" id="kpi_rss" style="color:#2563eb;">--</div>
-                        <div class="kpi-sub">占 512MB 限额约 8%~10%</div>
+                        <div class="kpi-sub">当前容器内存占用</div>
                     </div>
                     <div class="kpi-icon-wrap" style="background:#eff6ff; color:#2563eb;">🧠</div>
                 </div>
@@ -5005,8 +5005,8 @@ function renderAdminDashboardPage() {
             <div class="card-panel" id="panel_status" style="display:none;">
                 <div class="panel-header">
                     <div>
-                        <div class="panel-title">📊 512MB Altare 轻核容器深度探针</div>
-                        <div class="panel-subtitle">实时掌控内存常驻指标与底层运行日志，杜绝 OOM 崩溃。</div>
+                        <div class="panel-title">📊 容器运行探针</div>
+                        <div class="panel-subtitle">查看当前内存用量与服务运行信息。</div>
                     </div>
                     <button class="btn" onclick="fetchStatus()">🔄 刷新探针数据</button>
                 </div>
@@ -5032,7 +5032,7 @@ function renderAdminDashboardPage() {
                 <div style="margin-top:12px;">
                     <div style="font-weight:600; font-size:12px; margin-bottom:6px; color:#334155;">实时核心运行终端视窗 (Console Log):</div>
                     <div class="terminal-box" id="terminalLogBox">> [Kernel] Altare-Tunnel Pro 核心微服务正在运行...
-> [Memory] 规格 512MB RAM | 翼龙面板单端口专享
+> [Memory] RSS: -- | 由平台分配
 > [Security] 0 毫秒定向掐断引擎处于待命状态</div>
                 </div>
             </div>
@@ -5213,7 +5213,7 @@ function renderAdminDashboardPage() {
                     const term = document.getElementById('terminalLogBox');
                     const logLines = [
                         '> [Kernel] Altare-Tunnel Pro 核心微服务正在运行...',
-                        '> [Memory] 常驻 RSS: ' + (data.memoryRss || '--') + ' | 限额 512MB',
+                        '> [Memory] RSS: ' + (data.memoryRss || '--') + ' | 容器运行中',
                         '> [Connections] 当前在线长连接: ' + (data.onlineConnections || 0),
                         '> [Wetest] 微测网最近更新: ' + wetestTime,
                         '> [Argo] 隧道穿透域名: ' + (currentSettings.argoDomain || '未绑定'),
@@ -5847,7 +5847,7 @@ server.listen(PORT, '0.0.0.0', () => {
     if (siteSettings.argoToken) {
         startArgoTunnel(siteSettings.argoToken);
     }
-    console.log(`🛡️ 内存使用: ${formatBytes(process.memoryUsage().rss)} (规格 512MB)`);
+    console.log(`🛡️ 内存使用: ${formatBytes(process.memoryUsage().rss)} (平台限额见实例配置)`);
     console.log(`========================================================\n`);
 });
 }
