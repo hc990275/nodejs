@@ -312,7 +312,68 @@ altare "$BASE/network/allocations" | jq
 
 自建 Tunnel 管理面板是独立应用，并非 Altare 官方 API。其入口、账号、Zone、实例与隧道对应关系及部署记录仅保存在部署者本地私有档案。公开文档只使用示例参数；面板接口以对应项目的公开文档为准。
 
-### 12.8 超时、错误与重试
+### 12.8 Jobs 与 Schedules（定时与按需任务）
+
+
+| 类型 | 对象 | 查询 | 写入权限 | 含义 |
+|---|---|---|---|---|
+| Jobs | GitHub 部署的应用 | `GET $BASE/jobs`（`servers:view`） | `servers:schedules` | 在应用文件及变量环境中运行命令，保存运行历史和输出 |
+| Schedules | 模板服务器／沙盒 | `GET $BASE/schedules`（`servers:schedules`） | `servers:schedules` | 按顺序执行控制台文本、power 或 backup 任务 |
+
+Jobs 创建为 `POST $BASE/jobs`，字段 `name`、`schedule`、`command` 必填，可选 `timeoutSeconds`（10 秒至 6 小时，默认 3600）、`allowOverlap`（默认 false）。名称为字母开头的小写字母、数字和短横线，最多 30 字符，创建后不能改；每应用最多 20 个。`PATCH $BASE/jobs/{jobId}` 修改计划或启用状态，`POST .../{jobId}/run` 手动运行，`GET .../{jobId}/runs` 查询历史，`DELETE .../{jobId}` 删除。运行输出用 `GET $BASE/jobs/{jobId}/runs/{runId}/output`，需要 `servers:console`。Jobs 查询返回的 `needsRestart:true` 表示旧 runner 不支持当前任务能力。
+
+Schedules 创建为 `POST $BASE/schedules`，提供 `name, minute, hour, day_of_month, month, day_of_week`，可选 `is_active`；创建后另用 `POST .../schedules/{scheduleId}/tasks` 添加任务。任务字段为 `action`（`command/power/backup`）、`payload` 和 `time_offset`（相对前一任务的等待秒数）。`POST .../schedules/{scheduleId}/run` 执行，`PATCH .../{scheduleId}` 更新完整计划字段；更新单个 task 使用 **POST** `.../{scheduleId}/tasks/{taskId}`，删除 task／schedule 使用 DELETE。响应常用 camelCase，写入字段使用文档指定的 snake_case，不能混用。
+
+```bash
+# 只读查询：本项目属于模板容器，用 schedules，不用 jobs。
+altare "$BASE/schedules" | jq '.items'
+# 活动记录辅助判断电源动作何时发生；不等于实时电源状态。
+altare "$BASE/activity" | jq '.items[] | {action,occurredAt}'
+```
+
+`command` task 发送的是应用控制台文本，**不等于 SSH 或任意 Shell**。官方提供“不可能匹配的 cron（如 2 月 31 日）+ 手动 run”的按需控制台方式；paused schedule 不能手动 run。只有应用确实支持相应 stdin 命令时才有意义，不能据此声称 Node.js 进程能够执行 `ls` 或其他 Shell 命令。本项目没有为此创建 schedule。镜像沙盒至少启动一次后才能配置 schedules。
+
+参考：<https://docs.altare.gg/altare-api/schedules>。
+
+### 12.9 持久日志分页与模板日志的区别
+
+模板容器仍读取本项目 `boot.log`，不要因 `/logs` 不支持模板就判定应用没有运行。GitHub／Docker App 的 `GET $BASE/logs` 可用 `since/until`（ISO 8601）、`q`、`stream`、`process`、`limit`、`before` 过滤。`limit` 为 1–1000，默认 200；未传 `before` 时取最新一页，但页内行按时间从旧到新排列。把响应的 `next` 原样作为下一次 `before`，保留原过滤条件，直到 `next:null`。
+
+```bash
+# 仅适用于支持持久日志的 GitHub / Docker App。
+altare "$BASE/logs" -G --data-urlencode 'q=error' \
+  --data-urlencode 'stream=all' --data-urlencode 'limit=200'
+# 下一页：NEXT 从上一响应的 next 取得，不手动构造游标。
+altare "$BASE/logs" -G --data-urlencode "before=$NEXT" \
+  --data-urlencode 'q=error' --data-urlencode 'stream=all' \
+  --data-urlencode 'limit=200'
+altare "$BASE/logs/info"
+```
+
+`GET .../logs/info` 返回保留策略和占用。API 不提供实时流；轮询 `since` 时应按时间及内容去重，避免边界重复，并限制频率。参考：<https://docs.altare.gg/altare-api/logs>。
+
+### 12.10 Token 边界、状态判定与文件扩展操作
+
+Token 的实际能力同时受 scopes、实例限制和创建者当前角色影响；角色缩减时 Token 能力也缩减。`servers:resources` 即使出现在 scopes 中，也不授权消耗 bolts 的资源调整。Token 不能管理 Token 本身、成员／角色、购买资源、创建／删除／迁移实例或设置 SSH 身份。实时控制台端点受限；通过 Jobs／Schedules 执行仍受对应对象和动作权限限制。参考：<https://docs.altare.gg/altare-api/tokens>。
+
+`GET /servers` 中的 `memoryMb/diskMb/cpuPercent` 是资源配额；不能把它们作为当前用量。`/details` 和列表响应没有可靠实时状态时，不猜测 `running`。用已接受电源响应、活动时间、最新启动日志、连接器就绪和公开页面联合判断。历史日志的 connected 不单独证明当前仍在线。
+
+其他 Files API（均需 `servers:files`；未在本轮调用的写操作只按官方文档登记）：
+
+| 方法与 `$BASE` 后路径 | 参数／用途 |
+|---|---|
+| `POST /files/rename` | `from,to` 完整路径，移动或重命名 |
+| `POST /files/copy` | `location`，在旁边复制文件 |
+| `POST /files/compress` | `root,files`，目录内文件名列表 |
+| `POST /files/decompress` | `root,file`，解压指定归档 |
+| `GET /files/download` | `path`，返回短时免 Token 下载链接 |
+| `POST /files/archive` | `root,paths,format`，最多 200 项；响应 `supported:false` 时可尝试 tar.gz |
+| `POST /files/pull` | `url,directory,filename,overwrite`；异步公网拉取，不支持内部／私网地址 |
+| `POST /files/delete` | `paths` 完整路径数组；目录递归删除，是破坏性操作 |
+
+archive 限每分钟 10 次，pull 限每分钟 20 次；不要把 JSON 文本写接口当二进制上传接口。`pull` 未允许覆盖而同名文件存在时返回 `409 file_exists`。下载／上传签名链接不带平台 Authorization，也不写进普通日志。参考：<https://docs.altare.gg/altare-api/files>。
+
+### 12.11 超时、错误与重试
 
 节点接口偶发 502 或慢响应时，查询可有限退避重试；不要把短超时当作实例不存在。
 
