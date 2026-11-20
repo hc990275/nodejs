@@ -102,3 +102,12 @@ sync.ps1
 sync.bat
 sync.sh
 .git_sync_cache/
+
+# Local operator records and generated identities must never be published
+**/error_report.md
+**/ip_registers.json
+**/reality.json
+**/uuid.txt
+*.bundle
+*.local.md
+**/PRIVATE/

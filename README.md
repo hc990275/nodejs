@@ -130,3 +130,7 @@ npm install && npm start
 ### v4.0.1 (2026-03-09)
 * **fix**: 修复了 `Lunes` 环境下模板字符串反引号未闭合导致的 `Unexpected identifier 'bash'` 语法错误。
 * **feat**: 区分了不同宿主机环境的节点名称，现在 `Kata-Node` 环境下生成的节点名统一定义为 `kata-TUIC` 和 `kata-vless`，`Lunes` 为 `Lunes-TUIC` 和 `Lunes-vless`。
+
+## Publication boundary
+
+This repository contains reusable source code and generic setup/API examples only. Keep account inventories, live domains and addresses, instance/tunnel identifiers, deployment activity, support transcripts and generated user/configuration data in a separate local private archive. Never commit private keys or operator-specific defaults. Repository visibility is private while historical exposure is being remediated; this does not revoke copies previously cloned or forked.
