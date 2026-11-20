@@ -158,10 +158,172 @@ npm test
 ```
 
 - 优先读取 Altare 注入的 `P_SERVER_LOCATION`。缺少机房地区时，按公网 IPv4 查询 ipinfo.io，失败时显示「未知地区」。
-- 首页页头、浏览器标题和订阅节点名都显示国家或地区及面板端口。
+- 首页、管理登录页、后台顶部和浏览器标题显示国家／地区及机房城市，不显示端口或版本数字。
+- 订阅节点名仍保留端口作为机器标识，便于区分同一地区的多个实例。
 
 ### 隧道启动、停止与自愈
 
 后台 Token 输入框留空会保留已有值。提交不同的 Token 会等旧连接进程退出，再启动新进程。将 `.env` 中的 `ARGO_TOKEN` 显式置空可停止隧道。运行时环境变量用于没有该配置项的部署。
 
 程序通过 cloudflared 的回环 `/ready` 接口检测边缘连通性。退出会按 3 到 60 秒退避重试，连续就绪失败且启动宽限期已过会重启当前连接进程。公开域名和实际回源还需独立验收。
+
+
+## 12. Altare 平台 API（已核对的用法）
+
+文档入口：<https://docs.altare.gg/altare-api>。以下路径属于平台管理 API，和项目自己的 `/admin/api/` 是两套接口。平台 Token 用来管理容器文件、启动配置及电源；项目管理密码用于本项目的用户和订阅设置，不能混用。
+
+### 12.1 认证、团队和实例 ID
+
+平台地址为 `https://console.altare.gg/api`。API Token 属于一个团队，使用 `Authorization: Bearer` 认证。不要把真实 Token 写入脚本、仓库或示例；下面从终端隐藏输入：
+
+```bash
+read -rsp 'Altare Token: ' ALTARE_TOKEN; printf '\n'
+export ALTARE_TOKEN
+API=https://console.altare.gg/api
+
+altare() {
+  local endpoint=$1
+  shift
+  printf 'header = "Authorization: Bearer %s"\n' "$ALTARE_TOKEN" |
+    curl --config - --fail-with-body --silent --show-error \
+      --connect-timeout 10 --max-time 90 "$API$endpoint" "$@"
+}
+
+altare /api-tokens/self
+TEAM=$(altare /api-tokens/self | jq -r '.team.id')
+altare "/tenants/$TEAM/servers" | jq '.items[] | {id,name,memoryMb,diskMb,cpuPercent}'
+```
+
+`jq` 用于示例中的 JSON 选择。`team.id` 是路径中的 `tenantId`；机器列表每项的 `id` 才是后续使用的 `serverId`。`cpuPercent=100` 表示一个核心的配额，磁盘和内存字段是配额，不代表当前用量。`serverIds: null` 表示 Token 没有限定具体实例，最终权限仍取决于它的 scopes 和创建者当前角色。
+
+选定实例后：
+
+```bash
+APP=YOUR_SERVER_ID  # 从实例列表选择目标 ID
+BASE="/tenants/$TEAM/servers/$APP"
+altare "$BASE/details" | jq '{name,ip,location,node,sftp,sandbox,git,imageApp}'
+altare "$BASE/startup" | jq '{startup,dockerImage,dockerImages,variables}'
+```
+
+详情必须使用 **`/details`**。省略末尾路径、直接请求 `/servers/{id}` 不是此处的公开详情端点。`/details` 返回机房、节点、分配端口及 SFTP 地址；`/startup` 的 `P_SERVER_LOCATION`（如 `de-fra`）也能确认地区。不要只根据 `sg`、`flkf` 等自定义实例名称猜地区。
+
+### 12.2 最小权限
+
+| scope | 此次项目中的用途 |
+| --- | --- |
+| `servers:view` | 列表与 `/details` |
+| `servers:files` | 列目录、读写源码、上传二进制 |
+| `servers:startup` | 查询与修改启动命令、镜像、模板变量 |
+| `servers:power` | 开机、关机、重启 |
+| `servers:network` | 查询平台分配端口、配置平台域名 |
+| `servers:activity` | 查看修改活动 |
+| `servers:console` | GitHub/Docker App 的持久日志；不等于实时控制台权限 |
+
+Token 不能创建/删除/迁移实例，不能购买资源，不能设置 SSH 密码或添加 SSH Key，也不能直接打开实时控制台。`403 TOKEN_ROUTE_NOT_ALLOWED` 不是再加一个 scope 就能解决的错误。需要这些操作时使用平台控制台。Cloudflare 隧道和 DNS 由 Cloudflare 自己的 API 管理，不是 Altare Token 的权限范围。
+
+### 12.3 文件部署
+
+模板容器的 Files API 根路径 `/` 对应容器工作目录 `/home/container`，不是 Linux 系统根目录。此次项目是模板 Node.js 容器，部署路径为上传文件并设置启动命令。
+
+```bash
+# 根目录、源码模块目录
+altare "$BASE/files?path=%2F" | jq
+altare "$BASE/files?path=%2Fsrc" | jq
+
+# 读取一个文本文件
+altare "$BASE/files/contents?path=%2Fpackage.json" | jq -r '.content'
+
+# 新建目录：只对尚不存在的 src 执行
+altare "$BASE/files/directories" -X POST \
+  -H 'Content-Type: application/json' -d '{"path":"/","name":"src"}'
+
+# 从本地文件构造 JSON，不手工转义 JavaScript 或中文
+jq -n --rawfile content ./index.js '{path:"/index.js",content:$content}' |
+  altare "$BASE/files/write" -X POST \
+    -H 'Content-Type: application/json' --data-binary @-
+
+# 上传后读回并比对，写接口 200 不等于部署验收完成
+cmp ./index.js <(altare "$BASE/files/contents?path=%2Findex.js" | jq -j '.content')
+```
+
+需要部署 `index.js`、`package.json`、`src/` 全部五个模块。只传入口文件会因为缺模块启动失败。更新时保留线上 `.env`、`data/`、已有 `cloudflared`，不能用新实例模板或本地测试用户库覆盖线上配置及用户数据。
+
+二进制走短时上传链接：
+
+```bash
+UPLOAD_URL=$(altare "$BASE/files/uploads/url" -X POST \
+  -H 'Content-Type: application/json' -d '{"directory":"/"}' | jq -r '.url')
+printf 'url = "%s"\n' "$UPLOAD_URL" |
+  curl --config - --fail-with-body --silent --show-error --max-time 120 \
+    -F 'files=@./cloudflared'
+unset UPLOAD_URL
+```
+
+上传链接本身是短时凭据，不要打印、分享或提交。可以用 `/files/pull` 让节点下载公开文件；该动作是异步的，返回 `{ok:true}` 后还要检查文件是否完整。下载来源应固定版本并验证 SHA-256。新环境下项目启动器会给 `cloudflared` 设置执行权限。
+
+### 12.4 启动配置与电源
+
+官方文档允许只修改部分启动字段，但本次实测曾返回 `422 The startup field is required` 或 `The image field is required`。因此先读当前配置，再保留原镜像和完整模板变量一起 PATCH：
+
+```bash
+# startup.json 包含模板环境变量，应放在私有临时目录，不进入 Git。
+umask 077
+altare "$BASE/startup" > startup.json
+jq '{startup:"cd /home/container && exec /usr/local/bin/node --max-old-space-size=512 index.js >> boot.log 2>&1",dockerImage,environment}' \
+  startup.json | altare "$BASE/startup" -X PATCH \
+    -H 'Content-Type: application/json' --data-binary @-
+rm -f startup.json
+
+# 这是一个端点，动作用 JSON 的 signal 指定
+altare "$BASE/power" -X POST \
+  -H 'Content-Type: application/json' -d '{"signal":"restart"}'
+```
+
+正确端点是 **`POST .../power` + `{"signal":"restart"}`**，不是 `/power/restart`。`signal` 支持 `start`、`stop`、`restart`、`kill`。`kill` 是强制终止，不作为普通重启默认动作。
+
+响应 `200 {ok:true}` 只表示信号接受，必须继续验收。`202` 且 `queued:true` 表示正在排队，不等于已启动。写入超时后不能盲目重复重启，先读启动状态、日志和文件确认是否已应用。
+
+### 12.5 运行验证与日志
+
+普通模板容器不提供 GitHub App 那样的持久 Logs API。为它设置 `boot.log` 输出后，使用 Files API 读日志：
+
+```bash
+altare "$BASE/files/contents?path=%2Fboot.log" | jq -r '.content' | tail -60
+curl --fail --silent --show-error --max-time 15 https://你的域名/
+curl --fail --silent --show-error --max-time 15 https://你的域名/admin
+# 未登录的用户列表应返回 401，不能只凭首页 200 判断鉴权正常。
+curl --silent --output /dev/null --write-out '%{http_code}\n' \
+  https://你的域名/admin/api/users
+```
+
+完整部署验收包括：源文件回读一致、启动标记、隧道 `/ready` 成功、公开 HTTPS、后台会话登录、用户列表及异常日志。平台详情接口不等于电源状态接口；仅看到实例仍在列表中不能认定它正在运行。
+
+### 12.6 域名、Cloudflare Tunnel 与 GitHub 部署的区别
+
+```bash
+altare "$BASE/network/domains" | jq '{items,allocations}'
+altare "$BASE/network/allocations" | jq
+```
+
+- Altare 平台域名：`POST .../network/domains`，提供 `label`、`kind:"https"`、`app:"web"`、`allocationId`，指向平台分配端口。自有域名还需 DNS 验证。
+- Cloudflare Tunnel：在 Cloudflare 账号下创建/配置隧道，域名 CNAME 到 `<tunnel-id>.cfargotunnel.com`，`cloudflared` 在容器里运行，并回源 `http://localhost:8001`。最终加兜底 `http_status:404`。修改前检查已有 DNS，不能覆盖其他机器使用的名字。
+- 当前这些模板容器并非 GitHub App，`/git/deploy` 不适用。只有已从 GitHub 部署的 App 才能 `POST .../git/deploy`（`ref`/`sha`），并用 `GET .../git/deployments/{id}` 跟踪结果。
+
+### 12.7 超时、错误与重试
+
+节点接口偶发 502 或慢响应时，查询可有限退避重试；不要把短超时当作实例不存在。
+
+| HTTP / code | 处理 |
+| --- | --- |
+| `401 TOKEN_INVALID/TOKEN_EXPIRED/TOKEN_REVOKED` | 核对 Token 状态 |
+| `403 TOKEN_WRONG_TEAM` | 核对团队 ID |
+| `403 TOKEN_ROUTE_NOT_ALLOWED` | 此端点不允许 Token 使用，改走控制台 |
+| `403` 无 code | 检查 scope 和实例范围 |
+| `409` | 状态冲突、实例尚在准备或配额已满 |
+| `422` | JSON 字段或模板变量校验失败 |
+| `429` | 等待 `Retry-After`，降低频次 |
+| `502/5xx`、连接超时 | 查询可重试；写操作先回读，避免重复变更 |
+
+官方上限为每 Token 每分钟 600 请求，部分文件操作有更低上限。列表通常使用 `{items:[...]}` 一次返回；持久日志使用游标分页。不要把 API 的 JSON、错误 HTML 和 Cloudflare 边缘拦截页混在一起解析。以前 Python 默认 User-Agent 曾得到边缘 `1010`，curl 则正常；排错时同时检查 HTTP 状态、响应类型和正文。
+
+参考：官方 API 的 [Apps](https://docs.altare.gg/altare-api/apps)、[Files](https://docs.altare.gg/altare-api/files)、[Tokens](https://docs.altare.gg/altare-api/tokens)、[Domains](https://docs.altare.gg/altare-api/domains)、[Logs](https://docs.altare.gg/altare-api/logs)、[Errors](https://docs.altare.gg/altare-api/errors)、[Deploys](https://docs.altare.gg/altare-api/deploys)。

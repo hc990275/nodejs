@@ -4,7 +4,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(require.resolve('../index.js'), 'utf8').replace(/\r\n/g, '\n');
-const machineTag = () => '🇲🇳蒙古·25206';
+const machineTag = () => '🇲🇳蒙古 · 乌兰巴托·25206';
+const regionTitle = () => '🇲🇳蒙古 · 乌兰巴托';
 const escapeHtml = value => String(value);
 function declaration(name) {
     const start = source.indexOf('function ' + name + '(');
@@ -15,7 +16,7 @@ test('rendered page scripts parse and initialize in their own page context', () 
         const callbacks = [];
         const context = {
             siteSettings: { cfNodes: { ct: [], cu: [], cm: [], official: [] } },
-            PORT: 20255, process, formatBytes: () => '-', machineTag, escapeHtml,
+            PORT: 20255, process, formatBytes: () => '-', machineTag, regionTitle, escapeHtml,
             renderCarrierRows: () => '',
             document: { getElementById: () => ({ value: '', style: {}, dataset: {}, focus() {}, addEventListener() {} }) },
             window: { addEventListener: (event, callback) => callbacks.push(callback) },
@@ -28,7 +29,10 @@ test('rendered page scripts parse and initialize in their own page context', () 
         vm.runInContext(declaration(name), context);
         const html = vm.runInContext(name + '(null)', context);
         assert.match(html, /<!DOCTYPE html>/);
-        assert.match(html, /<title>🇲🇳蒙古·25206 · Altare/);
+        const title = /<title>([^<]+)<\/title>/.exec(html)[1];
+        assert.match(title, /🇲🇳蒙古 · 乌兰巴托/);
+        assert.doesNotMatch(title, /[0-9]|Altare[- ]Tunnel/);
+        assert.match(html, /(?:<h1>|class="brand-title">|class="brand-name">)🇲🇳蒙古 · 乌兰巴托</);
         if (name === 'renderAdminLoginPage') {
             assert.doesNotMatch(html, /id="setupToken"/);
             const setup = vm.runInContext('renderAdminLoginPage(true)', context);
@@ -49,7 +53,7 @@ test('admin user list renders existing users as text and sorts both ways', async
         return elements.get(id);
     };
     const context = {
-        document:{getElementById:element}, location:{origin:'https://example.test'}, machineTag, escapeHtml,
+        document:{getElementById:element}, location:{origin:'https://example.test'}, machineTag, regionTitle, escapeHtml,
         fetch: async path => path === '/admin/api/users'
             ? { ok: true, json: async () => ({ users: [] }) }
             : { ok: false, status: 401, json: async () => ({}) },
@@ -87,6 +91,19 @@ test('panel region code resolves to a localized country label', () => {
     assert.equal(vm.runInContext("countryLabel('mn')", context), '🇲🇳蒙古');
     assert.equal(vm.runInContext("countryLabel('sg')", context), '🇸🇬新加坡');
     assert.equal(vm.runInContext("countryLabel('invalid')", context), '');
+});
+
+test('page region titles omit ports while subscriptions keep their machine identifier', () => {
+    const context = vm.createContext({ panelLocation: 'mn-uln', detectedGeo: '🇲🇳蒙古', PORT: 25206 });
+    vm.runInContext(declaration('regionTitle') + '\n' + declaration('machineTag'), context);
+    assert.equal(vm.runInContext('regionTitle()', context), '🇲🇳蒙古 · 乌兰巴托');
+    assert.equal(vm.runInContext('machineTag()', context), '🇲🇳蒙古 · 乌兰巴托·25206');
+    context.panelLocation = 'de-fra';
+    context.detectedGeo = '🇩🇪德国';
+    assert.equal(vm.runInContext('regionTitle()', context), '🇩🇪德国 · 法兰克福');
+    context.panelLocation = 'sg-sgp';
+    context.detectedGeo = '🇸🇬新加坡';
+    assert.equal(vm.runInContext('regionTitle()', context), '🇸🇬新加坡');
 });
 
 test('first-run admin setup requires the initialization token and a successful write', () => {

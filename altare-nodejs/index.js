@@ -204,6 +204,7 @@ async function launchArgo(token, stillWanted) {
     } catch (_) { /* Look for an installed binary or download it. */ }
     if (needsDownload) await autoFetchCloudflared(binPath);
     if (!stillWanted()) return null;
+    fs.chmodSync(binPath, 0o755);
     fs.accessSync(binPath, fs.constants.X_OK);
     const env = { ...process.env, TUNNEL_TOKEN: token, TUNNEL_GRACE_PERIOD: '3s' };
     const child = spawn(binPath, ['tunnel', '--no-autoupdate', '--metrics', '127.0.0.1:0', 'run'], {
@@ -395,8 +396,22 @@ function detectGeoByIp(ip) {
 if (!detectedGeo && net.isIPv4(configuredIp)) detectGeoByIp(configuredIp);
 detectPublicIp();
 
+function regionTitle() {
+    // 机房地区来自 Altare 的部署环境。界面只显示地区，不混入端口或版本数字。
+    const cities = {
+        uln: '乌兰巴托', fra: '法兰克福', lax: '洛杉矶', sgp: '新加坡',
+        sin: '新加坡', hkg: '香港', tpe: '台北', nrt: '东京', kix: '大阪',
+        icn: '首尔', par: '巴黎', ams: '阿姆斯特丹', lon: '伦敦'
+    };
+    const cityCode = /^[a-z]{2}-([a-z]{3})(?:-|$)/i.exec(panelLocation)?.[1]?.toLowerCase();
+    const city = cities[cityCode];
+    const country = detectedGeo || '🌐地区待识别';
+    return city && !country.endsWith(city) ? `${country} · ${city}` : country;
+}
+
 function machineTag() {
-    return [detectedGeo || '🌐未知地区', PORT].filter(Boolean).join('·');
+    // 订阅标签继续保留业务端口，区分同一地区的多台实例。
+    return [regionTitle(), PORT].filter(Boolean).join('·');
 }
 
 function escapeHtml(value) {
@@ -2710,7 +2725,7 @@ function renderHomepage(currentUser) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>${escapeHtml(machineTag())} · Altare Tunnel</title>
+    <title>${escapeHtml(regionTitle())} · 节点控制台</title>
     <style>
         :root {
             --primary: #2563eb;
@@ -3131,7 +3146,7 @@ function renderHomepage(currentUser) {
             <div class="nav-brand">
                 <div class="brand-icon">⚡</div>
                 <div class="brand-text">
-                    <h1>Altare Tunnel · ${escapeHtml(machineTag())}</h1>
+                    <h1>${escapeHtml(regionTitle())}</h1>
                     <p>三网节点与订阅控制台</p>
                 </div>
             </div>
@@ -3652,7 +3667,7 @@ function renderAdminLoginPage(setupMode = false) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>${escapeHtml(machineTag())} · Altare-Tunnel 登录</title>
+    <title>${escapeHtml(regionTitle())} · 管理登录</title>
     <style>
         :root {
             --el-primary: #2563eb;
@@ -3786,8 +3801,8 @@ function renderAdminLoginPage(setupMode = false) {
     <div class="login-box">
         <div class="brand-header">
             <div class="brand-badge">🛡️</div>
-            <div class="brand-title">Altare-Tunnel 运维控制台</div>
-            <div class="brand-desc">512MB 原生轻核 · 0依赖高性能隧道</div>
+            <div class="brand-title">${escapeHtml(regionTitle())}</div>
+            <div class="brand-desc">节点管理控制台</div>
         </div>
 
         <div id="errMsg" class="error-alert"></div>
@@ -3918,7 +3933,7 @@ function renderAdminDashboardPage() {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>${escapeHtml(machineTag())} · Altare-Tunnel 后台</title>
+    <title>${escapeHtml(regionTitle())} · 管理后台</title>
     <style>
         :root {
             --primary: #2563eb;
@@ -3981,6 +3996,10 @@ function renderAdminDashboardPage() {
             color: #fff;
         }
         .brand-name {
+            flex: 1;
+            min-width: 0;
+            line-height: 1.45;
+            overflow-wrap: anywhere;
             font-size: 14px;
             font-weight: 700;
             color: #ffffff;
@@ -4639,8 +4658,8 @@ function renderAdminDashboardPage() {
     <aside class="sidebar">
         <div class="sidebar-brand">
             <div class="brand-logo">🛡️</div>
-            <div class="brand-name">Altare-Tunnel</div>
-            <span class="brand-tag">v2.5 Pro</span>
+            <div class="brand-name">${escapeHtml(regionTitle())}</div>
+            <span class="brand-tag">管理后台</span>
         </div>
         <ul class="sidebar-menu">
             <li class="menu-item active" id="menu_users" onclick="switchNav('users')">
