@@ -133,4 +133,4 @@ npm install && npm start
 
 ## Publication boundary
 
-This repository contains reusable source code and generic setup/API examples only. Keep account inventories, live domains and addresses, instance/tunnel identifiers, deployment activity, support transcripts and generated user/configuration data in a separate local private archive. Never commit private keys or operator-specific defaults. Repository visibility is private while historical exposure is being remediated; this does not revoke copies previously cloned or forked.
+This repository contains reusable source code and generic setup/API examples only. Keep account inventories, live domains and addresses, instance/tunnel identifiers, deployment activity, support transcripts and generated user/configuration data in a separate local private archive. Never commit private keys or operator-specific defaults. The published branches contain sanitized source history. Server-side removal of old cached objects requires a separate support process and is not implied by a clean branch or a new push.
